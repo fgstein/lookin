@@ -274,7 +274,7 @@ def test_the_last_column_is_not_offered_for_removal(home):
     opened = len(home.ctx.page.opened)
     home._on_remove_column(bd.load()["columns"][0])
     assert len(home.ctx.page.opened) == opened
-    assert "last column" in home.status.content.controls[1].value
+    assert "last group" in home.status.content.controls[1].value
 
 
 # ---- fetching at scale --------------------------------------------------------

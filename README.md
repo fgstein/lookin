@@ -384,7 +384,7 @@ back at any time):
   experiments scored on it, plus the snapshots (saved views) made from it.
   Drag a run or a CSV -- or a whole selection -- onto a workspace to add
   it. A run with several CSVs asks which ones. The workspaces sit in
-  columns you name (a project, a stage...); each column's **+** creates one
+  groups you name (a project, a stage...); each group's **+** creates one
   in it. The dataset is optional at creation: set it on the card, in the
   Data tab once the workspace is open, or let the first run added bring it
   (its `datamodule/configs/database/csv_path` parameter, configurable). A
