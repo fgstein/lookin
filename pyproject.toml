@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lookin"
+dynamic = ["version"]
+description = "A visual explorer for deep-learning classification results: dataset stats, an image gallery, and cross-experiment metrics -- with an optional MLflow-backed experiment browser."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # flet and flet-web are pinned to the exact same version on purpose:
+    # Flet checks flet_web.version == flet.version at startup and, on any
+    # mismatch (or if flet-web is simply missing), shells out to `pip
+    # install` over the network to fetch it -- which is exactly the
+    # "fetching from Flutter" failure this app needs to never hit offline.
+    # Bundling both at the same pinned version means that check always
+    # passes locally, no network call, ever.
+    "flet==0.28.3",
+    "flet-web==0.28.3",
+    "httpx>=0.28.1",
+    "matplotlib>=3.11.1",
+    "numpy>=2.5.1",
+    "pandas>=3.0.5",
+    "pillow>=12.3.0",
+    "pip>=26.1.2",
+    "python-pptx>=1.0.2",
+    "scikit-learn>=1.9.0",
+    "umap-learn>=0.5.6",
+]
+
+[project.scripts]
+lookin = "lookin.cli:main"
+
+[dependency-groups]
+# Installed by `uv sync` (which includes dependency groups by default) and
+# excluded from the wheel -- the app itself must stay dependency-light, see
+# the offline notes in CLAUDE.md.
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Quiet the per-load "[lookin] ..." prints unless a test actually fails.
+addopts = "-q"
+
+[tool.hatch.version]
+path = "src/lookin/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lookin"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/lookin/**/*"]
