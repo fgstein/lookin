@@ -47,6 +47,10 @@ class FakePanel:
     def open_panel(self, e=None, select=None):
         pass
 
+    def follow_workspace(self, ws):
+        self.followed = ws
+        return True
+
 
 class FakeCtx:
     def __init__(self):
@@ -229,6 +233,40 @@ def test_removing_a_column_asks_first_then_moves_its_workspaces(home):
     dialog.actions[0].on_click(None)
     assert bd.column_of(bd.load(), ws.id)["name"] == "group 1"
     assert [c["name"] for c in bd.load()["columns"]] == ["group 1"]
+
+
+def _new_workspace(home, name, column=None, open_it=False):
+    home._on_new_workspace(None, column)
+    dialog = home.ctx.page.opened[-1]
+    dialog.content.content.controls[0].value = name
+    dialog.actions[0 if open_it else 1].on_click(None)
+    return next(w for w in lib.list_workspaces() if w.name == name)
+
+
+def test_a_workspace_created_from_a_column_goes_in_it(home):
+    from lookin.core import board as bd
+    second = bd.add_column("project B")["columns"][1]
+    ws = _new_workspace(home, "in B", column=second)
+    assert bd.column_of(bd.load(), ws.id)["name"] == "project B"
+    assert not ws.mount.dataset_path, "the dataset is optional"
+
+
+def test_create_and_open_opens_the_new_workspace(home):
+    ws = _new_workspace(home, "fresh", open_it=True)
+    [(opened, _)] = home.workspace_panel.requested
+    assert opened.id == ws.id
+
+
+def test_a_dataset_set_on_the_open_workspaces_card_reaches_its_tab(home, tmp_path):
+    dataset = tmp_path / "ships.csv"
+    dataset.write_text("uuid,crop,label\n")
+    ws = lib.create_workspace("A", lib.Mount(), hash_dataset=False)
+    home.ctx.current_workspace = ws
+    home._on_set_dataset(ws)
+    dialog = home.ctx.page.opened[-1]
+    dialog.content.content.controls[0].controls[0].value = str(dataset)
+    dialog.actions[0].on_click(None)
+    assert home.workspace_panel.followed.mount.dataset_path == str(dataset)
 
 
 def test_the_last_column_is_not_offered_for_removal(home):

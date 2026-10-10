@@ -1226,6 +1226,24 @@ class UploadView:
         self.ctx.notify_change()
         self.root.update()
 
+    def add_mount_experiments(self, experiments: list) -> None:
+        """Load a workspace's experiments into what is already loaded --
+        runs added to the open workspace from its Home card (see
+        WorkspacePanel.follow_workspace)."""
+        if self.ctx.state.dataset is None or not experiments:
+            return
+        self.ctx.busy.begin("Loading experiments")
+        try:
+            self._load_mount_experiments(experiments)
+        finally:
+            self.ctx.busy.end()
+        self.ctx.notify_change()
+        if self.root.page:
+            self.root.update()
+
+    def is_loading(self) -> bool:
+        return self._dataset_loading
+
     def _load_mount_experiments(self, experiments: list) -> None:
         for experiment in experiments:
             if not experiment.path:

@@ -45,6 +45,12 @@ class FakeUploadView:
     def restore_mount(self, mount):
         self.restored = mount
 
+    def is_loading(self):
+        return False
+
+    def add_mount_experiments(self, experiments):
+        self.added = list(experiments)
+
 
 class FakeViewState:
     def __init__(self, state=None, warnings=None):
@@ -407,3 +413,77 @@ def test_the_open_workspace_can_be_updated_in_place(panel, mount, tmp_path):
 def test_no_update_is_offered_without_an_open_workspace(panel):
     panel.reload()
     assert not panel.update_workspace_btn.visible
+
+
+# ---- following changes made from Home or another tab ---------------------
+
+def test_a_dataset_set_from_home_loads_into_the_open_empty_tab(panel, mount):
+    ws = lib.create_workspace("Empty", Mount(), hash_dataset=False)
+    panel.ctx.upload_view = FakeUploadView(session=None)
+    panel.open_from_link(ws)
+
+    fresh = lib.update_workspace(ws.path, lambda w: setattr(w.mount, "dataset_path", mount.dataset_path) or True)
+    panel.follow_workspace(fresh)
+
+    assert panel.ctx.upload_view.restored.dataset_path == mount.dataset_path
+    assert panel.ctx.current_workspace.mount.dataset_path == mount.dataset_path
+
+
+def test_a_change_made_in_another_tab_is_noticed(panel, mount):
+    ws = lib.create_workspace("Empty", Mount(), hash_dataset=False)
+    panel.ctx.upload_view = FakeUploadView(session=None)
+    panel.open_from_link(ws)
+    panel.check_current_workspace()               # nothing changed: nothing loaded
+    assert panel.ctx.upload_view.restored.dataset_path == ""
+
+    lib.update_workspace(ws.path, lambda w: setattr(w.mount, "dataset_path", mount.dataset_path) or True)
+    panel.check_current_workspace()
+    assert panel.ctx.upload_view.restored.dataset_path == mount.dataset_path
+
+
+def test_runs_added_from_home_load_and_removed_ones_stay_removed(panel, mount, tmp_path):
+    kept, removed, added = (tmp_path / f"{n}.csv" for n in ("kept", "removed", "added"))
+    for path in (kept, removed, added):
+        path.write_text("uuid,a\n", encoding="utf-8")
+    ws = lib.create_workspace("WS", Mount(dataset_path=mount.dataset_path, experiments=[
+        lib.MountExperiment(name="kept", path=str(kept)),
+        lib.MountExperiment(name="removed", path=str(removed))]), hash_dataset=False)
+    panel.open_from_link(ws)
+    # This tab has "removed" taken out, not saved yet.
+    panel.ctx.upload_view = FakeUploadView(Mount(dataset_path=mount.dataset_path, experiments=[
+        lib.MountExperiment(name="kept", path=str(kept))]))
+
+    def add(w):
+        w.mount.experiments.append(lib.MountExperiment(name="added", path=str(added)))
+        return True
+
+    panel.follow_workspace(lib.update_workspace(ws.path, add))
+    assert [e.name for e in panel.ctx.upload_view.added] == ["added"]
+
+
+def test_save_writes_the_open_workspace_in_place(panel, mount):
+    ws = lib.create_workspace("WS", Mount(dataset_path=mount.dataset_path), hash_dataset=False)
+    panel.ctx.current_workspace = ws
+    panel.ctx.upload_view = FakeUploadView(Mount(dataset_path=mount.dataset_path, split_kind="train"))
+    assert not save_status.compute(panel.ctx).workspace_saved
+
+    panel.save_current()
+
+    assert [w.id for w in lib.list_workspaces()] == [ws.id]
+    assert lib.load_workspace(ws.path).mount.split_kind == "train"
+    assert save_status.compute(panel.ctx).workspace_saved
+
+
+def test_save_without_an_open_workspace_asks_for_a_name(panel):
+    panel.save_current()
+    assert panel.ctx.page.opened == [panel.dialog]
+    assert lib.list_workspaces() == []
+
+
+def test_the_save_button_shows_only_when_there_is_something_to_save(panel, mount):
+    indicator = save_status.SaveStatusIndicator(panel.ctx, on_save=panel.save_current)
+    assert indicator.save_button.visible and indicator.save_button.text == "Save as workspace"
+
+    panel._on_save_workspace(None)
+    indicator.refresh()
+    assert not indicator.save_button.visible

@@ -383,10 +383,20 @@ back at any time):
 - **On the right, your workspaces.** A workspace is one dataset and the
   experiments scored on it, plus the snapshots (saved views) made from it.
   Drag a run or a CSV -- or a whole selection -- onto a workspace to add
-  it. A run with several CSVs asks which ones. The workspace's dataset is
-  taken from the first run added (its
-  `datamodule/configs/database/csv_path` parameter, configurable), and a
+  it. A run with several CSVs asks which ones. The workspaces sit in
+  columns you name (a project, a stage...); each column's **+** creates one
+  in it. The dataset is optional at creation: set it on the card, in the
+  Data tab once the workspace is open, or let the first run added bring it
+  (its `datamodule/configs/database/csv_path` parameter, configurable). A
   run evaluated on another dataset is refused.
+- **An open workspace follows its card.** A dataset or a run added on Home
+  -- in this tab or another -- shows up in the tab where the workspace is
+  open within a few seconds.
+- **Saving is explicit.** What you load or change in the Data tab is not
+  written into the workspace until you click **Save** in the app bar, which
+  appears as soon as the two differ (or **Save as workspace** when no
+  workspace is open). Snapshots of the view are saved separately, from the
+  Workspaces window.
 - **Adding is not downloading.** A workspace records which run and artifact
   each experiment is; its download button fetches them into
   `~/.cache/lookin/`, and a green dot says everything is here. Opening a

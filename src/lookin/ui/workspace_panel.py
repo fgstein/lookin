@@ -34,6 +34,8 @@ core/library.py; this panel only offers them as two different buttons.
 """
 from __future__ import annotations
 
+import threading
+import traceback
 from pathlib import Path
 
 import flet as ft
@@ -47,6 +49,10 @@ from lookin.ui.browser_panel import (
 )
 from lookin.ui.components import ACCENT, info_banner, saved_path_message, status_row
 from lookin.ui.server_browser import ServerFileBrowser
+
+# How often a tab looks at the manifest of the workspace it has open, to
+# follow a change made from Home or from another tab (see follow_workspace).
+WATCH_S = 3.0
 
 COLUMN_FRACTIONS = (0.30, 0.30)
 COLUMN_MIN_WIDTHS = (240, 240)
@@ -66,6 +72,13 @@ SNAPSHOT_SORTS = (
 )
 
 
+def _content(workspace) -> dict:
+    """A workspace as saved, less the stamp every write moves."""
+    payload = lib.workspace_to_dict(workspace)
+    payload.pop("updated_at", None)
+    return payload
+
+
 def _tags_of(text: str) -> list:
     return [t.strip() for t in (text or "").split(",") if t.strip()]
 
@@ -79,6 +92,11 @@ class WorkspacePanel:
         self.selected_snapshot = None
         self._workspace_rows: dict = {}
         self._snapshot_rows: dict = {}
+        # Following the open workspace (see follow_workspace).
+        self._loadable_seen: set = set()
+        self._seen_manifest = None
+        self._follow_lock = threading.Lock()
+        self._stop = threading.Event()
 
         # ---- lists ----
         self.workspace_filter = ft.TextField(
@@ -626,7 +644,7 @@ class WorkspacePanel:
             dialog.actions = [ft.TextButton("Close", on_click=lambda e: self.ctx.page.close(dialog))]
             self.ctx.page.open(dialog)
 
-    def _open(self, workspace, snapshot, mount=None) -> None:
+    def _open(self, workspace, snapshot, mount=None, switch_tab: bool = True) -> None:
         if workspace is None or self.ctx.upload_view is None:
             return
         # Only when it is actually on screen: opening a ?snapshot= link
@@ -643,7 +661,7 @@ class WorkspacePanel:
         # tells them apart -- so the tab is named after what it holds.
         self.ctx.page.title = f"{workspace.label()} \u2014 Lookin"
         show_analysis = getattr(self.ctx, "show_analysis", None)
-        if show_analysis is not None:
+        if show_analysis is not None and switch_tab:
             show_analysis()
         # Set before the load, not after: from here on a report exported
         # from this session bookmarks its view into this workspace (see
@@ -653,8 +671,9 @@ class WorkspacePanel:
         self.ctx.current_snapshot = None
         self.ctx.upload_view.restore_mount(mount if mount is not None else workspace.mount)
         self._adopt_loaded_mount(workspace)
+        self._remember_loadable(workspace)
         lib.mark_opened(workspace.id)
-        if self.ctx.state.dataset is None:
+        if self.ctx.state.dataset is None and switch_tab:
             # No dataset yet, or not on this machine: the Data tab is where
             # it gets set up, so that is where the tab opens.
             go_to_data_tab = getattr(self.ctx, "go_to_data_tab", None)
@@ -752,6 +771,112 @@ class WorkspacePanel:
         self._adopt_loaded_mount(workspace)
         self._refresh_save_status(baseline=True)
         self.ctx.page.title = f"{workspace.label()} \u2014 Lookin"
+
+    # ---- following changes made elsewhere -----------------------------
+
+    def follow_workspace(self, fresh) -> bool:
+        """The open workspace's manifest changed outside this tab's Data
+        tab -- on its Home card, in this tab or another one. Bring what is
+        loaded along, as far as that is safe:
+
+        - nothing loaded and the workspace now names a dataset it did not
+          name before: load the whole workspace. That is a dataset set on
+          the Home page after the workspace was opened, and an empty Data
+          tab next to a card that names one is what this is for.
+        - the same dataset loaded: load the experiments that have become
+          loadable since this tab last looked -- added from Home, or just
+          downloaded. Only those: one the user removed here and has not
+          saved yet is not one to bring back.
+
+        Anything else -- a different dataset loaded here -- is left as it
+        is, and the app bar says the two differ. Returns False when it could
+        not look yet (a load is running), so the caller tries again.
+        """
+        upload_view = self.ctx.upload_view
+        previous = getattr(self.ctx, "current_workspace", None)
+        if upload_view is None or previous is None or previous.id != fresh.id:
+            return True
+        if upload_view.is_loading() or not self._follow_lock.acquire(blocking=False):
+            return False
+        try:
+            from lookin.core import workspace_sources as wss
+            loaded = upload_view.current_mount()
+            self.ctx.current_workspace = fresh
+            if loaded is None:
+                if fresh.mount.dataset_path and fresh.mount.dataset_path != previous.mount.dataset_path:
+                    self._open(fresh, None, wss.downloaded_only(fresh.mount), switch_tab=False)
+                    return True
+            elif loaded.dataset_path == fresh.mount.dataset_path:
+                here = {e.name for e in loaded.experiments}
+                new = [e for e in fresh.mount.experiments
+                       if e.name not in here and (e.name, e.path) not in self._loadable_seen
+                       and wss.is_downloaded(e)]
+                if new:
+                    upload_view.add_mount_experiments(new)
+                    self._adopt_loaded_mount(fresh)
+            self._remember_loadable(fresh)
+            self._refresh_save_status()
+            return True
+        finally:
+            self._follow_lock.release()
+
+    def _remember_loadable(self, workspace) -> None:
+        """What of `workspace` this tab could have loaded, as (name, path):
+        anything outside this set that turns up loadable later is new."""
+        from lookin.core import workspace_sources as wss
+        self._loadable_seen = {(e.name, e.path) for e in workspace.mount.experiments if wss.is_downloaded(e)}
+
+    def start_watching(self) -> None:
+        """Follow the open workspace's manifest from now until stop_watching.
+
+        A thread per tab rather than a signal between tabs: every browser
+        tab is its own session, and the only thing two of them share is the
+        library on disk. One stat every few seconds is the whole cost.
+        """
+        threading.Thread(target=self._watch, daemon=True).start()
+
+    def stop_watching(self) -> None:
+        self._stop.set()
+
+    def _watch(self) -> None:
+        while not self._stop.wait(WATCH_S):
+            try:
+                self.check_current_workspace()
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+
+    def check_current_workspace(self) -> None:
+        workspace = getattr(self.ctx, "current_workspace", None)
+        if workspace is None or workspace.path is None:
+            return
+        try:
+            stat = (Path(workspace.path) / lib.MANIFEST_NAME).stat()
+        except OSError:
+            return
+        # The inode too: every write is a replace (see library._atomic_write_json),
+        # so it moves on each one even when two land within one mtime tick.
+        seen = (workspace.id, stat.st_ino, stat.st_mtime_ns)
+        if self._seen_manifest == seen:
+            return
+        fresh = lib.load_workspace(workspace.path)
+        if fresh is None:
+            return
+        if _content(fresh) == _content(workspace) or self.follow_workspace(fresh):
+            self._seen_manifest = seen
+
+    # ---- the app bar's Save -------------------------------------------
+
+    def save_current(self, e=None) -> None:
+        """Write what is loaded into the workspace open in this tab -- or,
+        with none open, ask for a name and make it one."""
+        workspace = getattr(self.ctx, "current_workspace", None)
+        mount = self.ctx.upload_view.current_mount() if self.ctx.upload_view else None
+        if mount is None:
+            return
+        if workspace is None or not workspace.exists():
+            self.open_panel()
+            return
+        self._update_workspace(workspace, mount)
 
     def _report_loaded(self, workspace, snapshot, warnings: list, restored: bool) -> None:
         """Say that the snapshot is in, and what did not make it.

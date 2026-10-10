@@ -1105,6 +1105,9 @@ class HomeView:
             ft.Container(content=ft.Text(str(total), size=TEXT_SMALL, color=ft.Colors.ON_SURFACE_VARIANT),
                          padding=ft.padding.symmetric(horizontal=7, vertical=1), border_radius=8,
                          bgcolor=ft.Colors.with_opacity(0.10, ft.Colors.ON_SURFACE)),
+            ft.IconButton(ft.Icons.ADD, icon_size=16, width=30, height=30, style=ft.ButtonStyle(padding=0),
+                          tooltip="New workspace in this column",
+                          on_click=lambda e: self._on_new_workspace(e, column)),
             ft.PopupMenuButton(icon=ft.Icons.MORE_HORIZ, icon_size=16, width=30, height=30, items=[
                 ft.PopupMenuItem(text="Rename...", icon=ft.Icons.EDIT_OUTLINED,
                                  on_click=lambda e: self._on_rename_column(column)),
@@ -1673,9 +1676,9 @@ class HomeView:
         self.expanded_workspaces.add(ws.id)
         current = getattr(self.ctx, "current_workspace", None)
         if current is not None and current.id == ws.id:
-            self.ctx.current_workspace = ws
-            if getattr(self.ctx, "save_status", None) is not None:
-                self.ctx.save_status.refresh()
+            # The workspace open in this tab: a dataset set here has to
+            # reach its Data tab, not only its card.
+            self.workspace_panel.follow_workspace(ws)
         self.reload_workspaces()
         self._render_runs()
         self._render_workspaces()
@@ -1802,24 +1805,36 @@ class HomeView:
                                    extensions={".csv"}, title="Which dataset CSV?"))
         return field_, ft.Row([field_, browse], spacing=6)
 
-    def _on_new_workspace(self, e) -> None:
+    def _on_new_workspace(self, e, column: Optional[dict] = None) -> None:
+        """`column` is the board column the workspace goes in -- the one
+        whose + was clicked. From the header's New, the first column is
+        offered and the dropdown picks another."""
+        board = bd.load()
         name = ft.TextField(label="Name", dense=True, border_radius=8, autofocus=True, text_size=TEXT_SUB)
         dataset, dataset_row = self._dataset_field()
+        dataset.label = "Dataset CSV (optional)"
+        # Keyed by column id, never by name: two columns may share a name.
+        column_picker = ft.Dropdown(
+            label="Column", dense=True, border_radius=8, text_size=TEXT_SUB,
+            value=(column or board["columns"][0])["id"],
+            options=[ft.dropdown.Option(c["id"], c["name"]) for c in board["columns"]],
+            visible=len(board["columns"]) > 1,
+        )
         add_selected = ft.Checkbox(label=f"Add the {len(self.selected)} selected item(s)", value=True,
                                    visible=bool(self.selected))
         error = ft.Text("", color=ft.Colors.RED, size=TEXT_SUB)
         dialog = ft.AlertDialog(
             modal=True, title=ft.Text("New workspace", weight=ft.FontWeight.BOLD),
             content=ft.Container(width=560, content=ft.Column([
-                name, dataset_row,
-                ft.Text(f"Leave the dataset empty to take it from the first run added -- the value of its "
-                        f"'{self.config.dataset_param}' parameter.", size=TEXT_SMALL,
-                        color=ft.Colors.ON_SURFACE_VARIANT),
+                name, column_picker, dataset_row,
+                ft.Text(f"Can be left empty: set it later in the Data tab of the open workspace, or let the "
+                        f"first run added bring it (its '{self.config.dataset_param}' parameter).",
+                        size=TEXT_SMALL, color=ft.Colors.ON_SURFACE_VARIANT),
                 add_selected, error,
             ], spacing=10, tight=True)),
         )
 
-        def create(ev):
+        def create(ev, open_it: bool = False):
             if not (name.value or "").strip():
                 error.value = "Enter a name."
                 bp.safe_update(error)
@@ -1833,12 +1848,23 @@ class HomeView:
                 return
             self.expanded_workspaces.add(ws.id)
             self.reload_workspaces()
+            bd.move(ws.id, column_picker.value, known_ids=[w.id for w in self.workspaces])
             self._render_workspaces()
             self._status(f"Created {ws.label()} ({ws.id}).")
             if add_selected.visible and add_selected.value and self.selected:
                 self.add_keys(ws, sorted(self.selected))
+            if open_it:
+                # Still inside the click, which is what lets the browser
+                # open the tab (see _offer_open). Runs added above that
+                # finish after this land in the open tab on their own (see
+                # WorkspacePanel.follow_workspace).
+                self.workspace_panel.open_in_new_tab(ws)
 
-        dialog.actions = [ft.FilledButton("Create", on_click=create, style=ft.ButtonStyle(bgcolor=ACCENT)),
+        name.on_submit = create
+        dialog.actions = [ft.FilledButton("Create and open", icon=ft.Icons.OPEN_IN_NEW,
+                                          on_click=lambda ev: create(ev, open_it=True),
+                                          style=ft.ButtonStyle(bgcolor=ACCENT)),
+                          ft.OutlinedButton("Create", on_click=create),
                           ft.TextButton("Cancel", on_click=lambda ev: self.ctx.page.close(dialog))]
         self.ctx.page.open(dialog)
 

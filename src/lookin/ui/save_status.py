@@ -153,9 +153,10 @@ class SaveStatusIndicator:
     saved for a moment; clicking through to the Workspaces window recomputes.
     """
 
-    def __init__(self, ctx, on_click=None):
+    def __init__(self, ctx, on_click=None, on_save=None):
         self.ctx = ctx
         self._on_click = on_click
+        self._on_save = on_save
         self.workspace_icon = ft.Icon(ft.Icons.INVENTORY_2_OUTLINED, size=15)
         self.workspace_text = ft.Text("", size=11)
         self.snapshot_icon = ft.Icon(ft.Icons.BOOKMARK_OUTLINE, size=15)
@@ -171,12 +172,26 @@ class SaveStatusIndicator:
             padding=ft.padding.symmetric(horizontal=8, vertical=4),
             border_radius=8, ink=True, on_click=self._clicked,
         )
-        self.control = ft.Row([self.workspace_chip, self.snapshot_chip], spacing=2, tight=True)
+        # The one-click answer to the workspace chip turning amber: shown
+        # only while there is something to save, so its being there is the
+        # signal. Snapshots stay a deliberate act in the Workspaces window --
+        # each is an id a report may quote, not a file to keep overwriting.
+        self.save_button = ft.FilledButton(
+            "Save", icon=ft.Icons.SAVE_OUTLINED, visible=False, on_click=self._save_clicked,
+            style=ft.ButtonStyle(bgcolor=ACCENT, padding=ft.padding.symmetric(horizontal=12)),
+        )
+        self.control = ft.Row([self.save_button, self.workspace_chip, self.snapshot_chip],
+                              spacing=2, tight=True,
+                              vertical_alignment=ft.CrossAxisAlignment.CENTER)
         self.refresh()
 
     def _clicked(self, e):
         if self._on_click is not None:
             self._on_click(e)
+
+    def _save_clicked(self, e):
+        if self._on_save is not None:
+            self._on_save(e)
 
     def refresh(self) -> None:
         status = compute(self.ctx)
@@ -190,14 +205,28 @@ class SaveStatusIndicator:
         self._apply(
             self.snapshot_chip, self.snapshot_icon, self.snapshot_text,
             saved=status.snapshot_saved, name=status.snapshot_name, has_data=status.has_data,
-            saved_word="Snapshot", unsaved_word="Unsaved",
+            saved_word="Snapshot", unsaved_word="No snapshot",
             saved_tip="What is on screen matches this snapshot.",
             unsaved_tip="The filters and settings on screen are not saved in any snapshot.",
         )
-        for control in (self.workspace_chip, self.snapshot_chip, self.workspace_text,
+        self._apply_save_button(status)
+        for control in (self.save_button, self.workspace_chip, self.snapshot_chip, self.workspace_text,
                         self.snapshot_text, self.workspace_icon, self.snapshot_icon):
             if control.page:
                 control.update()
+
+    def _apply_save_button(self, status: SaveStatus) -> None:
+        button = self.save_button
+        button.visible = self._on_save is not None and status.has_data and not status.workspace_saved
+        if not button.visible:
+            return
+        if status.workspace_name:
+            button.text = "Save"
+            button.tooltip = (f"Write the dataset and experiments loaded now into '{status.workspace_name}'. "
+                              "Its id and its snapshots are kept.")
+        else:
+            button.text = "Save as workspace"
+            button.tooltip = "Keep the dataset and experiments loaded now as a named workspace."
 
     @staticmethod
     def _apply(chip, icon, text, *, saved, name, has_data, saved_word, unsaved_word,
