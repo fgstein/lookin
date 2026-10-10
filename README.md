@@ -414,6 +414,43 @@ loads a single CSV from a run into the session on screen.
 A bundled CIFAR-10-based example dataset loads by default so the tool is
 usable immediately.
 
+## AI agents: the MCP endpoint
+
+`lookin ui` also serves an [MCP](https://modelcontextprotocol.io) endpoint
+at `/mcp`, on the same host and port as the web interface. An agent pointed
+at it can read your workspaces and their results on its own: "check my
+results", "which experiment has the best macro F1, and what does it still
+confuse?". It works with any MCP client that can reach the server, such as
+OpenCode with a local LLM:
+
+```json
+{ "mcp": { "lookin": { "type": "remote", "url": "http://lookin-server:8550/mcp" } } }
+```
+
+The model needs to support tool calling. The tools are read-only and
+answer in compact JSON:
+
+| tool | what it answers |
+| --- | --- |
+| `list_workspaces` | every workspace: id, name, dataset, experiments, download state |
+| `get_workspace` | one workspace's dataset, experiments (and their MLflow runs), snapshots |
+| `get_metrics` | the summary metrics of each experiment of a workspace |
+| `get_per_class` | per-class precision, recall, F1, AUC... worst classes first |
+| `get_confusions` | the most frequent (true -> predicted) mistakes |
+| `compare_experiments` | crops fixed and broken by a candidate, per-class changes |
+| `get_examples` | individual crops, most confident errors first |
+| `search_mlflow_runs` | runs on the MLflow servers configured on Home, with MLflow's filter syntax |
+
+Metrics are computed on the server, where the data is, on the workspace's
+original labels. An experiment whose MLflow files are not downloaded is
+reported as not loaded, not silently left out. Every answer carries the
+same warnings the UI would show (dataset changed since the workspace was
+saved, experiment barely overlapping the dataset). The last two
+workspaces loaded stay in memory, so follow-up questions are fast.
+
+Whoever can reach the UI can reach the endpoint. The endpoint writes
+nothing, and exposes nothing the UI does not. `--no-mcp` turns it off.
+
 ## Development
 
 ```bash

@@ -20,6 +20,7 @@ dependencies = [
     "flet-web==0.28.3",
     "httpx>=0.28.1",
     "matplotlib>=3.11.1",
+    "mcp>=2.3.0",
     "numpy>=2.5.1",
     "pandas>=3.0.5",
     "pillow>=12.3.0",
