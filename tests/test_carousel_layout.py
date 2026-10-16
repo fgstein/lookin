@@ -20,7 +20,7 @@ import pytest
 
 from lookin.ui.carousel import (
     BADGE_MAX_CHARS, CARD_PADDING, DEFAULT_ZOOM, DIALOG_CHROME_H, INFO_MAX_WIDTH,
-    INFO_MIN_WIDTH, MAX_TILES_PER_PAGE, MIN_TILE_SIZE, TILE_GAP, TOOLBAR_HEIGHT,
+    INFO_MIN_WIDTH, MIN_TILE_SIZE, TILE_GAP, TOOLBAR_HEIGHT,
     ZOOM_STEPS, Carousel,
 )
 from lookin.ui.review_widgets import MIN_PICKER_WIDTH, PICKER_GAP, RESET_BTN_WIDTH, DecisionBar
@@ -66,7 +66,9 @@ def _mosaic(width=1440, height=920, reviewable=True, similarity=None,
     view.label_col = "label"
     view.dataset = FakeDataset()
     view.total = total
-    view.page_index = 0
+    view.loaded = 0
+    view.first_visible = 0
+    view.scroll_area = type("Unmounted", (), {"page": None})()
     view.show_labels = True
     view.show_info = info
     view._colors = None
@@ -90,7 +92,7 @@ def test_the_mosaic_opens_without_the_details():
 
 def test_the_mosaic_shows_far_more_crops_than_the_filmstrip_did():
     """Three at a time was the old page size."""
-    assert _mosaic()._tiles_per_page() > 3
+    assert _mosaic()._tiles_per_screen() > 3
 
 
 # ---- zooming -----------------------------------------------------------
@@ -101,7 +103,7 @@ def test_zooming_in_grows_the_tile_and_thins_the_page():
         smaller = _mosaic(width=3000, height=2000, zoom=step)
         bigger = _mosaic(width=3000, height=2000, zoom=step + 1)
         assert bigger._tile_size() > smaller._tile_size()
-        assert bigger._tiles_per_page() <= smaller._tiles_per_page()
+        assert bigger._tiles_per_screen() <= smaller._tiles_per_screen()
 
 
 def test_zooming_all_the_way_in_gets_to_a_single_row():
@@ -109,19 +111,25 @@ def test_zooming_all_the_way_in_gets_to_a_single_row():
     rows of crops and a zoom-in button that would not make it one."""
     for height, info in [(h, i) for h in (760, 920, 1200, 1600) for i in (False, True)]:
         view = _mosaic(width=1440, height=height, total=100, zoom=0, info=info)
-        view._render = lambda: None
+        view._render = lambda through=0: None
         view._push_update = lambda: None
         for _ in range(len(ZOOM_STEPS) * 2):
             view._zoom_in(None)
         assert view._rows() == 1, f"still {view._rows()} rows at {height}px, info={info}"
 
 
-def test_a_page_is_bounded_however_far_out_it_zooms():
-    """Every tile is a full-resolution crop pushed to the browser, so the
-    grid is capped rather than filling a 4K screen with them."""
+def test_a_batch_is_one_screen_and_a_row_in_whole_rows():
+    """Every tile is a full-resolution crop pushed to the browser, so a load
+    is what the user is about to see -- and one row more, or the first batch
+    fits the area exactly and there is no scroll to report that more is
+    wanted."""
     for width, height in ((1440, 920), (2560, 1440), (3840, 2160)):
-        view = _mosaic(width=width, height=height, zoom=0)
-        assert 1 <= view._tiles_per_page() <= MAX_TILES_PER_PAGE
+        for zoom in range(len(ZOOM_STEPS)):
+            view = _mosaic(width=width, height=height, zoom=zoom)
+            assert view._batch_size() % view._columns() == 0
+            assert view._batch_size() == view._tiles_per_screen() + view._columns()
+            rows = view._batch_size() // view._columns()
+            assert rows * view._row_height() > view._grid_height(), "the first batch does not overflow"
 
 
 def test_a_tile_never_grows_wider_than_the_grid():
@@ -131,17 +139,70 @@ def test_a_tile_never_grows_wider_than_the_grid():
 
 
 def test_zooming_keeps_the_crops_the_user_was_looking_at():
-    """Zooming out on page 9 of 30 used to land on an unrelated page: the
-    index survived and the page size under it did not."""
+    """A row holds a different number of crops after a zoom step, so the
+    crop at the top of the view is what is kept, not the scroll offset."""
     view = _mosaic()
-    view.page_index = 8
-    anchor = view.page_index * view._tiles_per_page()
-    view._render = lambda: None
+    view.first_visible = 8 * view._columns() + 3
+    rendered = []
+    view._render = lambda through=0: rendered.append(through)
     view._push_update = lambda: None
 
+    anchor = view.first_visible
     view._zoom_out(None)
-    start = view.page_index * view._tiles_per_page()
-    assert start <= anchor < start + view._tiles_per_page()
+    assert rendered == [anchor], "the grid is rebuilt with the anchor loaded"
+    columns = view._columns()
+    assert view.first_visible <= anchor < view.first_visible + columns
+    assert view.first_visible % columns == 0, "and the view lands on the start of its row"
+
+
+class _ScrollEvent:
+    def __init__(self, pixels, max_extent, viewport):
+        self.pixels, self.max_scroll_extent, self.viewport_dimension = pixels, max_extent, viewport
+
+
+def _scrolling_mosaic(total):
+    """A mosaic whose loading is real but whose tiles are stand-ins."""
+    view = _mosaic(total=total)
+    rows = [{"uuid": str(i)} for i in range(total)]
+    view.page_provider = lambda start, end: rows[start:end]
+    view._order = None
+    view._load_lock = __import__("threading").Lock()
+    view.grid = type("Grid", (), {"controls": [], "page": None})()
+    view.count_label = type("Label", (), {"value": ""})()
+    view.footer = type("Footer", (), {"visible": False})()
+    view._build_tile = lambda rec: rec["uuid"]
+    return view
+
+
+def test_scrolling_near_the_bottom_appends_the_next_batch():
+    view = _scrolling_mosaic(1000)
+    view._append(view._batch_size())
+    first = list(view.grid.controls)
+
+    view._on_scroll(_ScrollEvent(pixels=0, max_extent=5000, viewport=700))
+    assert view.loaded == len(first), "nowhere near the bottom yet"
+
+    view._on_scroll(_ScrollEvent(pixels=4400, max_extent=5000, viewport=700))
+    assert view.loaded == 2 * len(first)
+    assert view.grid.controls[:len(first)] == first, "the tiles already shown are kept"
+    assert view.grid.controls == [str(i) for i in range(view.loaded)]
+
+
+def test_loading_stops_at_the_end_of_the_set():
+    view = _scrolling_mosaic(30)
+    for _ in range(10):
+        view._load_more()
+    assert view.loaded == 30
+    assert view.grid.controls == [str(i) for i in range(30)]
+    assert view.footer.visible is False
+
+
+def test_a_load_already_running_is_not_doubled():
+    """Scroll events arrive in bursts, each on a worker thread."""
+    view = _scrolling_mosaic(1000)
+    view._load_lock.acquire()
+    view._load_more()
+    assert view.loaded == 0
 
 
 # ---- the opening zoom follows the size of the match set ----------------
@@ -155,7 +216,7 @@ def test_one_crop_opens_as_large_as_the_window_allows():
 def test_a_whole_match_set_opens_on_one_page_when_it_can():
     for total in (1, 2, 6, 12, 24, 40):
         view = _mosaic(total=total, zoom=None)
-        assert view._tiles_per_page() >= total, f"{total} crops did not fit one page"
+        assert view._tiles_per_screen() >= total, f"{total} crops did not fit one screen"
 
 
 def test_a_bigger_set_opens_further_out():
@@ -198,7 +259,7 @@ def test_zooming_in_stops_where_it_stops_doing_anything():
     click that did nothing on the way up would need one back on the way
     down."""
     view = _mosaic(height=600, zoom=0)
-    view._render = lambda: None
+    view._render = lambda through=0: None
     view._push_update = lambda: None
     for _ in range(len(ZOOM_STEPS) * 2):
         view._zoom_in(None)
@@ -231,7 +292,7 @@ def test_the_cards_share_out_the_width_the_row_does_not_use(width):
 def test_details_mode_pays_for_the_controls_in_height():
     tight, detailed = _mosaic(), _mosaic(info=True)
     assert detailed._cell_size()[1] > tight._cell_size()[1]
-    assert detailed._tiles_per_page() < tight._tiles_per_page()
+    assert detailed._tiles_per_screen() < tight._tiles_per_screen()
 
 
 def test_a_read_only_mosaic_spends_less_height_on_a_card():

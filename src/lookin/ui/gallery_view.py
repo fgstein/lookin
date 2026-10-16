@@ -1,4 +1,4 @@
-"""Tab 3: filterable image gallery with an adjustable rows x columns mosaic.
+"""Tab 3: filterable image gallery, a mosaic that loads as it is scrolled.
 
 Filters: checkboxes for label/categorical/binary columns, range sliders for
 numeric columns. Nothing is filtered by default -- the user adds the
@@ -7,10 +7,17 @@ them individually. Optionally color each thumbnail's border by whether a
 chosen experiment's prediction was correct, and filter by predicted label
 too (used by the confusion-matrix drill-down). Clicking a thumbnail opens a
 full-size detail dialog with all of its data.
+
+The mosaic has no pages: it opens with enough rows to fill the window and
+appends the next rows whenever the scroll position nears the bottom (see
+_on_scroll), so the first crops show immediately and the rest are a scroll
+away rather than a click on "next page" away. The user sets how many crops
+sit on a row; how many rows there are is the size of the filtered set.
 """
 from __future__ import annotations
 
 import math
+import threading
 
 import flet as ft
 import numpy as np
@@ -19,11 +26,17 @@ import pandas as pd
 from lookin.core.class_focus import FOCUS_MAX
 from lookin.ui.class_matrix import ClassPicker, picker_checks
 from lookin.ui.components import crop_display, file_to_full_base64, section_title, info_banner, card, ACCENT, BackgroundRebuild, StaleBanner
-from lookin.ui.carousel import build_carousel_from_list
+from lookin.ui.carousel import Carousel
 
-MAX_ROWS = 12
 MAX_COLS = 12
+DEFAULT_COLS = 6
 NONE_EXPERIMENT = "__none__"
+# Height a row takes beyond its thumbnail: the caption under it, the
+# cell's padding and border, and the spacing to the next row.
+ROW_EXTRA_HEIGHT = 44
+# Load the next rows once the bottom is less than this many screens away.
+PREFETCH_SCREENS = 1.0
+SCROLL_EVENT_INTERVAL = 120  # ms between scroll reports, at most
 
 
 class GalleryView:
@@ -32,8 +45,13 @@ class GalleryView:
         self.active_filter_cols: list[str] = []
         self.filter_controls: dict = {}  # col -> {"type": ..., ...}
         self.predicted_label_checks: dict = {}
-        self.page_index = 0
+        # The filtered (and possibly shuffled) frame the mosaic draws from,
+        # the records of its first `len(_current_records)` rows -- the ones
+        # in the grid so far -- and the number of crops per row.
+        self._filtered: pd.DataFrame | None = None
         self._current_records: list = []
+        self._cols_n = DEFAULT_COLS
+        self._load_lock = threading.Lock()
         self._dirty = False
         self.progress_text = ft.Text("", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
         self.progress_banner = ft.Row(
@@ -43,13 +61,12 @@ class GalleryView:
         self.stale_banner = StaleBanner(self._on_update_click)
         self.rebuild_job = BackgroundRebuild(ctx, "Gallery")
 
-        self.rows_field = ft.TextField(label="rows", value="4", width=100, border_radius=8)
-        self.cols_field = ft.TextField(label="cols", value="6", width=100, border_radius=8)
-        self.grid_shape_label = ft.Text("4 × 6", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.cols_field = ft.TextField(label="images per row", value=str(DEFAULT_COLS), width=160, border_radius=8)
+        self.grid_shape_label = ft.Text(f"{DEFAULT_COLS} per row", size=12, color=ft.Colors.ON_SURFACE_VARIANT)
         self.settings_dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("Mosaic settings"),
-            content=ft.Row([self.rows_field, self.cols_field], spacing=12),
+            content=ft.Row([self.cols_field], spacing=12),
             actions=[
                 ft.TextButton("Apply", on_click=self._on_apply_settings),
                 ft.TextButton("Close", on_click=lambda e: self.ctx.page.close(self.settings_dialog)),
@@ -72,9 +89,12 @@ class GalleryView:
         self.filters_column = ft.Column(spacing=14)
         self.predicted_filter_container = ft.Column()
         self.grid_area = ft.Column(spacing=4)
-        self.page_label = ft.Text()
-        self.prev_btn = ft.IconButton(ft.Icons.CHEVRON_LEFT, on_click=self._on_prev)
-        self.next_btn = ft.IconButton(ft.Icons.CHEVRON_RIGHT, on_click=self._on_next)
+        self.count_label = ft.Text()
+        # Fallback for a window tall enough that the loaded rows do not
+        # overflow it: with nothing to scroll, no scroll event comes.
+        self.more_btn = ft.TextButton("Show more", icon=ft.Icons.EXPAND_MORE, on_click=self._load_more)
+        self.footer = ft.Container(content=self.more_btn, alignment=ft.alignment.center, visible=False)
+        self.right_panel: ft.Column | None = None
 
         self.detail_title = ft.Text(weight=ft.FontWeight.BOLD)
         self.detail_content = ft.Container()  # width comes from the carousel, which sizes itself to the page
@@ -260,12 +280,11 @@ class GalleryView:
         )
 
     def _on_filter_change(self, e):
-        self.page_index = 0
         self._render_grid()
         self.root.update()
+        self._to_top()
 
     def _on_experiment_change(self, e):
-        self.page_index = 0
         self._rebuild_predicted_filter()
         self._render_grid()
         self.root.update()
@@ -275,7 +294,6 @@ class GalleryView:
 
     def _on_apply_settings(self, e):
         self.ctx.page.close(self.settings_dialog)
-        self.page_index = 0
         self._render_grid()
         self.root.update()
 
@@ -292,21 +310,36 @@ class GalleryView:
         self.shuffle_seed = seed
         self.shuffle_switch.value = bool(seed)
         self.reshuffle_btn.visible = bool(seed)
-        self.page_index = 0
         self._render_grid()
         if self.root.page:
             self.root.update()
+        self._to_top()
 
-    def _on_prev(self, e):
-        if self.page_index > 0:
-            self.page_index -= 1
-            self._render_grid()
-            self.root.update()
+    # ---- scrolling ----
+    def _on_scroll(self, e):
+        if e.max_scroll_extent is None or e.pixels is None:
+            return
+        viewport = e.viewport_dimension or self._page_height()
+        if e.max_scroll_extent - e.pixels <= viewport * PREFETCH_SCREENS:
+            self._load_more()
 
-    def _on_next(self, e):
-        self.page_index += 1
-        self._render_grid()
-        self.root.update()
+    def _load_more(self, e=None):
+        if not self._load_lock.acquire(blocking=False):
+            return  # scroll events come in bursts; one batch at a time
+        try:
+            if not self._has_more():
+                return
+            self._append_rows(self._batch_rows())
+        finally:
+            self._load_lock.release()
+        if self.grid_area.page:
+            self.grid_area.update()
+            self.count_label.update()
+            self.footer.update()
+
+    def _to_top(self):
+        if self.right_panel is not None and self.right_panel.page:
+            self.right_panel.scroll_to(offset=0, duration=0)
 
     # ---- filtering ----
     def _filtered_df(self) -> pd.DataFrame:
@@ -337,51 +370,69 @@ class GalleryView:
         return filtered
 
     # ---- grid rendering ----
-    def _grid_shape(self):
-        def parse(field, default, max_val):
-            try:
-                v = int(field.value)
-            except (TypeError, ValueError):
-                v = default
-            return max(1, min(max_val, v))
-        return parse(self.rows_field, 4, MAX_ROWS), parse(self.cols_field, 6, MAX_COLS)
+    def _grid_cols(self) -> int:
+        try:
+            v = int(self.cols_field.value)
+        except (TypeError, ValueError):
+            v = DEFAULT_COLS
+        return max(1, min(MAX_COLS, v))
+
+    def _thumb_size(self) -> int:
+        return max(56, min(150, 920 // self._cols_n))
+
+    def _page_height(self) -> float:
+        return float(getattr(self.ctx.page, "height", None) or 900)
+
+    def _batch_rows(self) -> int:
+        """Rows per load: a window's worth plus one, so the first load
+        overflows the panel and there is something to scroll."""
+        return math.ceil(self._page_height() / (self._thumb_size() + ROW_EXTRA_HEIGHT)) + 1
+
+    def _total(self) -> int:
+        return 0 if self._filtered is None else len(self._filtered)
+
+    def _has_more(self) -> bool:
+        return len(self._current_records) < self._total()
 
     def _render_grid(self):
+        """Start the mosaic over from the top of the current filtered set."""
         self.grid_area.controls.clear()
+        self._current_records = []
+        self._filtered = None
         state = self.ctx.state
         if state.dataset is None:
             self.grid_area.controls.append(info_banner("Load a dataset in the 'Data' tab first."))
-            self.page_label.value = ""
+            self.count_label.value = ""
+            self.footer.visible = False
             return
 
-        cols_cfg = state.dataset.columns
-        rows_n, cols_n = self._grid_shape()
-        self.grid_shape_label.value = f"{rows_n} × {cols_n}"
-        page_size = rows_n * cols_n
+        self._cols_n = self._grid_cols()
+        self.grid_shape_label.value = f"{self._cols_n} per row"
         filtered = self._filtered_df()
         if self.shuffle_seed:
             order = np.random.default_rng(self.shuffle_seed).permutation(len(filtered))
             filtered = filtered.iloc[order]
-        total = len(filtered)
-        total_pages = max(1, math.ceil(total / page_size))
-        self.page_index = min(self.page_index, total_pages - 1)
-        start = self.page_index * page_size
-        page_df = filtered.iloc[start:start + page_size]
+        self._filtered = filtered
+        self._append_rows(self._batch_rows())
 
-        thumb_size = max(56, min(150, 920 // cols_n))
+    def _append_rows(self, n_rows: int):
+        """Add the next `n_rows` rows of crops under the ones already shown.
+        The rows already in the grid are not touched, so the update that
+        follows sends only the new ones to the browser."""
+        state = self.ctx.state
+        cols_cfg = state.dataset.columns
+        cols_n = self._cols_n
+        thumb_size = self._thumb_size()
         show_prediction = bool(self.experiment_dropdown.value) and self.experiment_dropdown.value != NONE_EXPERIMENT
 
-        records = page_df.to_dict("records")
-        self._current_records = records
+        start = len(self._current_records)
+        records = self._filtered.iloc[start:start + n_rows * cols_n].to_dict("records")
+        self._current_records.extend(records)
 
-        for r in range(rows_n):
+        for r in range(0, len(records), cols_n):
             row_controls = []
-            for c in range(cols_n):
-                i = r * cols_n + c
-                if i >= len(records):
-                    row_controls.append(ft.Container(width=thumb_size, height=thumb_size + 30))
-                    continue
-                rec = records[i]
+            for i in range(start + r, start + min(r + cols_n, len(records))):
+                rec = self._current_records[i]
                 img_path = state.dataset.resolve_crop_path(rec[cols_cfg.crop_col])
                 b64 = file_to_full_base64(img_path, *crop_display(self.ctx, rec))
                 # A crop with no annotation shows no label rather than "nan",
@@ -409,28 +460,38 @@ class GalleryView:
                 row_controls.append(cell)
             self.grid_area.controls.append(ft.Row(controls=row_controls, spacing=6))
 
-        self.page_label.value = f"Page {self.page_index + 1} / {total_pages}  ({total} matching rows)"
+        shown, total = len(self._current_records), self._total()
+        self.count_label.value = (
+            f"{total:,} matching rows" if shown >= total
+            else f"{shown:,} of {total:,} matching rows shown  ·  scroll for more"
+        )
+        self.footer.visible = shown < total
 
-    # ---- detail dialog (paginated image carousel) ----
+    # ---- detail dialog (the shared scrolling carousel) ----
     def _open_detail(self, index: int):
         state = self.ctx.state
-        if not self._current_records:
+        if not self._current_records or self._filtered is None:
             return
         cols_cfg = state.dataset.columns
-        # Reorder so the clicked image leads the carousel; the rest of the
-        # current page follows, still reachable via the carousel's own
-        # prev/next paging.
-        ordered = self._current_records[index:] + self._current_records[:index]
+        # The whole filtered set, in the mosaic's order, starting at the
+        # clicked image and wrapping round -- rows are read from the frame
+        # as the carousel scrolls to them, so this costs nothing up front.
+        filtered, total = self._filtered, self._total()
+
+        def provider(start: int, end: int) -> list:
+            positions = [(index + i) % total for i in range(start, end)]
+            return filtered.iloc[positions].to_dict("records")
+
         # No uuid column: nothing to highlight by, and nothing to key a
         # review decision on -- the carousel leaves both out for None.
         uuid_col = cols_cfg.uuid_col or None
         clicked_uuid = self._current_records[index].get(uuid_col) if uuid_col else None
 
-        self.detail_title.value = f"{len(ordered)} image(s) on this page"
-        self.detail_content.content = build_carousel_from_list(
-            state.dataset, ordered, cols_cfg.crop_col, uuid_col, highlight_uuid=clicked_uuid,
+        self.detail_title.value = f"{total:,} matching image(s), from the one clicked"
+        self.detail_content.content = Carousel(
+            state.dataset, total, provider, cols_cfg.crop_col, uuid_col, highlight_uuid=clicked_uuid,
             ctx=self.ctx, review_source="gallery", label_col=cols_cfg.label_col,
-        )
+        ).build()
         self.ctx.page.open(self.detail_dialog)
 
     def _detail_close(self, e):
@@ -472,10 +533,10 @@ class GalleryView:
         if predicted_label in self.predicted_label_checks:
             self.predicted_label_checks[predicted_label].value = True
 
-        self.page_index = 0
         self._render_grid()
         if self.root.page:
             self.root.update()
+        self._to_top()
 
     def rename_experiment(self, old_name: str, new_name: str) -> None:
         """Follow an experiment rename (see AppContext.notify_rename): the
@@ -521,9 +582,7 @@ class GalleryView:
             "filters": filters,
             "experiment": self.experiment_dropdown.value or NONE_EXPERIMENT,
             "predicted": [str(v) for v, cb in self.predicted_label_checks.items() if cb.value],
-            "rows": str(self.rows_field.value or ""),
             "cols": str(self.cols_field.value or ""),
-            "page": int(self.page_index),
             "shuffle": int(self.shuffle_seed),
         }
 
@@ -582,14 +641,10 @@ class GalleryView:
         for value, check in self.predicted_label_checks.items():
             check.value = str(value) in predicted
 
-        if state.get("rows"):
-            self.rows_field.value = str(state["rows"])
+        # Snapshots from before the mosaic scrolled also carry "rows" and
+        # "page"; there is nothing left for either to set.
         if state.get("cols"):
             self.cols_field.value = str(state["cols"])
-        try:
-            self.page_index = max(0, int(state.get("page", 0)))
-        except (TypeError, ValueError):
-            self.page_index = 0
         try:
             self.shuffle_seed = max(0, int(state.get("shuffle", 0) or 0))
         except (TypeError, ValueError):
@@ -608,7 +663,7 @@ class GalleryView:
         real work at scale, so this never happens automatically -- it just
         flags the view as stale and shows a banner; _on_update_click() (or
         adding/removing a filter, which needs a fresh render anyway) does
-        the actual rebuild. Pagination and toggling *existing* filters stay
+        the actual rebuild. Scrolling and toggling *existing* filters stay
         instant regardless -- they just re-render the grid from whatever
         filters/data are already in front of the user."""
         self._dirty = True
@@ -633,7 +688,7 @@ class GalleryView:
         scaling.md -- and on the UI thread that froze the app outright.
         Ignored while a rebuild is already running.
 
-        Note this is only the *filter panel*: paging the mosaic and toggling
+        Note this is only the *filter panel*: scrolling the mosaic and toggling
         filters that already exist stay synchronous, because they are flat
         in dataset size and instant either way."""
         self._set_progress("Rebuilding filters...")
@@ -649,7 +704,6 @@ class GalleryView:
 
     def _refresh_now(self):
         self._rebuild_filters()
-        self.page_index = 0
         self._render_grid()
         self._dirty = False
         self.stale_banner.hide()
@@ -666,7 +720,6 @@ class GalleryView:
             self.shuffle_switch,
             self.reshuffle_btn,
         ], vertical_alignment=ft.CrossAxisAlignment.CENTER)
-        pagination_row = ft.Row(controls=[self.prev_btn, self.page_label, self.next_btn])
 
         left_panel = card(
             ft.Column(
@@ -684,13 +737,15 @@ class GalleryView:
             ),
             width=300,
         )
-        right_panel = ft.Column(
+        self.right_panel = right_panel = ft.Column(
             controls=[
-                card(ft.Column([section_title("Mosaic"), controls_row, pagination_row])),
+                card(ft.Column([section_title("Mosaic"), controls_row, self.count_label])),
                 self.progress_banner,
                 self.grid_area,
+                self.footer,
             ],
             expand=True, scroll=ft.ScrollMode.AUTO, spacing=12,
+            on_scroll=self._on_scroll, on_scroll_interval=SCROLL_EVENT_INTERVAL,
         )
 
         self.root.expand = True

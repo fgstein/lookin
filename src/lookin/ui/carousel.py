@@ -1,4 +1,4 @@
-"""Shared paginated mosaic of crop images. Used by the gallery's
+"""Shared scrolling mosaic of crop images. Used by the gallery's
 click-to-inspect dialog, the confusion-matrix drill-down, the similarity
 search, the lasso selection, Cleaning, Calibration and the slice breakdown.
 
@@ -20,14 +20,20 @@ Two toggles, both in the toolbar:
 
 Images are shown at full resolution, no server-side downscaling or lossy
 re-encoding -- this is a computer-vision tool, and quietly degrading image
-quality for speed would defeat the point. The trade-off instead is a
-bounded page: zooming out packs more crops per screen, but never more than
-MAX_TILES_PER_PAGE of them, and pages are pulled lazily via page_provider
-so a match set of any size is never materialized at once.
+quality for speed would defeat the point. The trade-off instead is that
+crops are sent as the user scrolls to them: the mosaic opens with one
+screen of crops plus a row, and every time the scroll position gets within
+a screen of the bottom the next screenful is appended (see _on_scroll).
+Rows are pulled lazily via page_provider, so a match set of any size is
+never materialized at once, and only the new tiles of each batch cross the
+wire -- the ones already shown stay where they are.
+
+This replaced numbered pages, which made the user pick between a long wait
+up front and a click for every screenful.
 """
 from __future__ import annotations
 
-import math
+import threading
 from typing import Callable
 
 import flet as ft
@@ -73,7 +79,7 @@ PREDICTION_KEYS = ("predicted_label", "predicted_score", "correct")
 INFO_BAR_HEIGHT = 150   # the decision bar
 SIMILAR_BTN_HEIGHT = 38  # the "Find similar" row, when it is offered
 CARD_PADDING = 20       # a card's own padding, left + right
-TOOLBAR_HEIGHT = 56     # pager, zoom and the two toggles, above the grid
+TOOLBAR_HEIGHT = 56     # counter, zoom and the toggles, above the grid
 
 # What the hosting AlertDialog takes for its own title, actions and insets.
 # The mosaic is capped at the page minus this, so the grid never has its
@@ -87,10 +93,18 @@ MIN_GRID_HEIGHT = 320
 MIN_TILE_SIZE = 48
 
 # Crops are served full resolution (see components.file_to_full_base64), so
-# a page is a real amount of bytes to push to the browser. Zoomed all the
-# way out on a wide screen the grid would hold several hundred; this caps
-# it at what the gallery tab's own mosaic already allows (12 x 12).
-MAX_TILES_PER_PAGE = 144
+# a batch is a real amount of bytes to push to the browser. A batch is one
+# screen plus a row -- what the user is about to see and nothing more -- so
+# its size follows the zoom: a few crops zoomed in, a few hundred zoomed
+# all the way out on a wide screen.
+#
+# The next batch is asked for once the scroll position is this many
+# screens from the bottom: early enough that the crops are usually there
+# before the user reaches them, late enough that a glance at the first
+# screen does not pull the second one.
+PREFETCH_SCREENS = 1.0
+# How often, at most, a scroll in progress reports its position (ms).
+SCROLL_EVENT_INTERVAL = 120
 
 BADGE_TEXT_SIZE = 9
 # A badge is only ever a corner of a tile, so a long class name is cut
@@ -131,7 +145,7 @@ class Carousel:
         """total: total number of matching rows.
         page_provider(start, end) -> list[dict]: fetches just that slice,
         so callers backed by a DataFrame (e.g. a confusion-matrix match set)
-        never materialize more than one page's worth of rows at a time.
+        never materialize more than one batch's worth of rows at a time.
 
         ctx: the AppContext, optional. When given, clicking a crop shows it
         full size, zoomable, in a layer over the mosaic. This is the one
@@ -170,7 +184,13 @@ class Carousel:
         self.suggestions = suggestions or {}
         self.label_col = label_col
         self.chrome_height = chrome_height
-        self.page_index = 0
+        # How many crops, from the top, are in the grid so far; and the
+        # first one in view, which is what a zoom step keeps on screen.
+        self.loaded = 0
+        self.first_visible = 0
+        # Scroll events arrive on worker threads and a fast fling sends
+        # several: one batch at a time, or two handlers append the same rows.
+        self._load_lock = threading.Lock()
         self.show_labels = True
         self.show_info = False
         # Positions into the caller's order, shuffled; None while the crops
@@ -195,10 +215,17 @@ class Carousel:
         # clips whatever does not fit, and the scrollable column above it
         # then sees a child that already fits and offers no scrollbar --
         # which is how a zoomed-in page lost its last row entirely.
-        self.scroll_area = ft.Column([self.grid_box], scroll=ft.ScrollMode.AUTO)
-        self.page_label = ft.Text(size=12, color=ft.Colors.ON_SURFACE_VARIANT)
-        self.prev_btn = ft.IconButton(ft.Icons.CHEVRON_LEFT, tooltip="Previous page", on_click=self._prev)
-        self.next_btn = ft.IconButton(ft.Icons.CHEVRON_RIGHT, tooltip="Next page", on_click=self._next)
+        #
+        # The button under the grid is the fallback for the case no scroll
+        # event can reach: a batch that does not overflow the area (a
+        # window resized taller since it opened) has nothing to scroll.
+        self.more_btn = ft.TextButton("Show more", icon=ft.Icons.EXPAND_MORE, on_click=self._load_more)
+        self.footer = ft.Container(content=self.more_btn, alignment=ft.alignment.center,
+                                   padding=ft.padding.symmetric(vertical=6))
+        self.scroll_area = ft.Column([self.grid_box, self.footer], scroll=ft.ScrollMode.AUTO,
+                                     on_scroll=self._on_scroll, on_scroll_interval=SCROLL_EVENT_INTERVAL)
+        self.count_label = ft.Text(size=12, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.top_btn = ft.IconButton(ft.Icons.VERTICAL_ALIGN_TOP, tooltip="Back to the top", on_click=self._to_top)
         self.zoom_out_btn = ft.IconButton(ft.Icons.ZOOM_OUT, tooltip="Smaller images", on_click=self._zoom_out)
         self.zoom_in_btn = ft.IconButton(ft.Icons.ZOOM_IN, tooltip="Bigger images", on_click=self._zoom_in)
         self.labels_btn = ft.IconButton(on_click=self._toggle_labels)
@@ -307,12 +334,22 @@ class Carousel:
         gap = self._gap()
         return max(1, int((self._grid_height() + gap) // (cell_h + gap)))
 
-    def _tiles_per_page(self, zoom: int | None = None) -> int:
-        return max(1, min(MAX_TILES_PER_PAGE, self._columns(zoom) * self._rows(zoom)))
+    def _tiles_per_screen(self, zoom: int | None = None) -> int:
+        return max(1, self._columns(zoom) * self._rows(zoom))
+
+    def _batch_size(self) -> int:
+        """How many crops one load appends: a screen plus a row, in whole
+        rows. The extra row is what makes the first batch overflow the
+        area, so there is a scroll position to report at all."""
+        return self._columns() * (self._rows() + 1)
+
+    def _row_height(self) -> int:
+        _, cell_h = self._cell_size()
+        return cell_h + self._gap()
 
     def _initial_zoom(self) -> int:
         """How far out the mosaic opens: far enough that everything it has
-        to show is on one page, and no further.
+        to show is on one screen, and no further.
 
         The size of the match set is the whole difference between the two
         things this view is asked to do. A confusion-matrix cell holding
@@ -320,17 +357,14 @@ class Carousel:
         that could show them full size, and a cell holding nine hundred
         has no business trying -- one fixed default was wrong for both.
         Past the bottom of the ladder there is nothing left to give, so a
-        very large set opens as dense as the mosaic goes and pages.
+        very large set opens as dense as the mosaic goes and scrolls.
         """
         if self.total <= 0:
             return DEFAULT_ZOOM
         for index in reversed(range(len(ZOOM_STEPS))):
-            if self._tiles_per_page(index) >= self.total:
+            if self._tiles_per_screen(index) >= self.total:
                 return index
         return 0
-
-    def _total_pages(self) -> int:
-        return max(1, math.ceil(self.total / self._tiles_per_page()))
 
     def _view_height(self) -> int:
         """The whole view, toolbar included -- and a constant, for a given
@@ -367,33 +401,47 @@ class Carousel:
 
     # ---- rendering ---------------------------------------------------------
 
-    def _render(self):
-        per_page = self._tiles_per_page()
-        start = self.page_index * per_page
-        end = min(start + per_page, self.total)
-        records = self._fetch(start, end) if self.total else []
-
+    def _render(self, through: int = 0):
+        """Rebuild the grid from the top, with at least crops 0..`through`
+        in it and a batch beyond -- the anchor a zoom step scrolls back to
+        has to exist before it can be scrolled to."""
         self.grid.spacing = self.grid.run_spacing = self._gap()
         self.grid_box.width = self._grid_width()
         self.scroll_area.height = self._grid_height()
-        if records:
-            self.grid.controls = [self._build_tile(rec) for rec in records]
+        self.grid.controls = []
+        self.loaded = 0
+        if self.total:
+            columns = self._columns()
+            wanted = (through // columns) * columns + self._batch_size()
+            self._append(min(self.total, wanted))
         else:
             self.grid.controls = [ft.Text("No images match.", italic=True)]
+            self._sync_count()
 
-        total_pages = self._total_pages()
-        self.page_label.value = (
-            f"{start + 1}-{end} of {self.total:,}  ·  page {self.page_index + 1}/{total_pages}"
-            if self.total else "0 images"
-        )
-        self.prev_btn.disabled = self.page_index <= 0
-        self.next_btn.disabled = self.page_index >= total_pages - 1
         self.zoom_out_btn.disabled = self.zoom_index <= 0
         # Greyed out once the step above would be clamped back to this same
         # size by the window: a button that visibly does nothing reads as
         # broken, where a disabled one reads as "this is as big as it gets".
         self.zoom_in_btn.disabled = (self.zoom_index >= len(ZOOM_STEPS) - 1
                                      or self._tile_size(self.zoom_index + 1) <= self._tile_size())
+
+    def _append(self, end: int) -> None:
+        """Add crops `loaded`..`end` to the end of the grid. The tiles
+        already there are left alone, so the update that follows sends the
+        new ones only."""
+        if end > self.loaded:
+            self.grid.controls.extend(self._build_tile(rec) for rec in self._fetch(self.loaded, end))
+            self.loaded = end
+        self._sync_count()
+
+    def _sync_count(self) -> None:
+        if not self.total:
+            self.count_label.value = "0 images"
+        elif self.loaded >= self.total:
+            self.count_label.value = f"{self.total:,} image(s)"
+        else:
+            self.count_label.value = f"{self.loaded:,} of {self.total:,} shown  ·  scroll for more"
+        self.footer.visible = 0 < self.loaded < self.total
 
     def _badge(self, rec: dict) -> ft.Control | None:
         """The class label over the crop's top-right corner, in the class
@@ -562,7 +610,7 @@ class Carousel:
     def _fetch(self, start: int, end: int) -> list:
         """Rows `start`..`end` of what is shown -- the caller's slice, or
         one row at a time through the shuffle. page_provider only knows
-        contiguous slices, and a page is at most MAX_TILES_PER_PAGE rows."""
+        contiguous slices, and a batch is at most a screen and a row."""
         if self._order is None:
             return self.page_provider(start, end)
         records = []
@@ -585,19 +633,54 @@ class Carousel:
             else "Show the metadata and the review controls on every crop"
         )
 
+    # ---- scrolling ---------------------------------------------------------
+
+    def _on_scroll(self, e) -> None:
+        """Note which crop is at the top of the view, and append the next
+        batch once the bottom is less than PREFETCH_SCREENS away."""
+        row_h = self._row_height()
+        if row_h > 0 and e.pixels is not None:
+            self.first_visible = min(self.loaded, int(e.pixels // row_h) * self._columns())
+        if e.max_scroll_extent is None or e.pixels is None:
+            return
+        viewport = e.viewport_dimension or self._grid_height()
+        if e.max_scroll_extent - e.pixels <= viewport * PREFETCH_SCREENS:
+            self._load_more()
+
+    def _load_more(self, e=None) -> None:
+        if not self._load_lock.acquire(blocking=False):
+            return  # a batch is already on its way
+        try:
+            if self.loaded >= self.total:
+                return
+            self._append(min(self.total, self.loaded + self._batch_size()))
+        finally:
+            self._load_lock.release()
+        if self.grid.page:
+            self.scroll_area.update()
+            self.count_label.update()
+
+    def _to_top(self, e=None) -> None:
+        self.first_visible = 0
+        if self.scroll_area.page:
+            self.scroll_area.scroll_to(offset=0, duration=250)
+
     def _keep_position(self, change) -> None:
         """Apply a change of zoom or mode without losing the user's place.
 
-        The page holds a different number of crops afterwards, so the page
-        *index* means something different too: zooming out on page 9 of 30
-        used to land somewhere unrelated. The first crop currently on
-        screen is the anchor, and the new page is whichever one holds it.
+        A row holds a different number of crops afterwards, and is a
+        different height, so the scroll offset means something different
+        too. The first crop currently in view is the anchor: the grid is
+        rebuilt with that crop loaded, and scrolled to the row it is now on.
         """
-        anchor = self.page_index * self._tiles_per_page()
+        anchor = self.first_visible
         change()
-        self.page_index = anchor // self._tiles_per_page()
-        self._render()
+        self._render(through=anchor)
+        row = anchor // self._columns()
+        self.first_visible = row * self._columns()
         self._push_update()
+        if self.scroll_area.page:
+            self.scroll_area.scroll_to(offset=row * self._row_height(), duration=0)
 
     def _zoom_in(self, e):
         # Same guard as the button's disabled state: a step the window
@@ -612,10 +695,11 @@ class Carousel:
             self._keep_position(lambda: setattr(self, "zoom_index", self.zoom_index - 1))
 
     def _toggle_labels(self, e):
-        self.show_labels = not self.show_labels
-        self._sync_toggles()
-        self._render()
-        self._push_update()
+        def change():
+            self.show_labels = not self.show_labels
+            self._sync_toggles()
+
+        self._keep_position(change)
 
     def _toggle_info(self, e):
         def change():
@@ -626,34 +710,20 @@ class Carousel:
 
     def _toggle_shuffle(self, e):
         """Random order on, or back to the caller's. Each time it is turned
-        on is a new draw. Back to the first page either way: the crops that
-        were on screen are scattered over every page now."""
+        on is a new draw. Back to the top either way: the crops that were
+        on screen are scattered over the whole set now."""
         self._order = None if self._order is not None else np.random.default_rng().permutation(self.total)
-        self.page_index = 0
         self._sync_toggles()
         self._render()
         self._push_update()
         if self.shuffle_btn.page:
             self.shuffle_btn.update()
-
-    def _prev(self, e):
-        if self.page_index > 0:
-            self.page_index -= 1
-            self._render()
-            self._push_update()
-
-    def _next(self, e):
-        if self.page_index < self._total_pages() - 1:
-            self.page_index += 1
-            self._render()
-            self._push_update()
+        self._to_top()
 
     def _push_update(self):
         if self.grid.page:
             self.scroll_area.update()
-            self.page_label.update()
-            self.prev_btn.update()
-            self.next_btn.update()
+            self.count_label.update()
             self.zoom_out_btn.update()
             self.zoom_in_btn.update()
             self.labels_btn.update()
@@ -703,7 +773,7 @@ class Carousel:
     def build(self) -> ft.Control:
         toolbar = ft.Row(
             [
-                self.prev_btn, self.page_label, self.next_btn,
+                self.count_label, self.top_btn,
                 ft.VerticalDivider(width=12),
                 self.zoom_out_btn, self.zoom_in_btn,
                 ft.VerticalDivider(width=12),
@@ -729,8 +799,9 @@ def build_carousel_from_list(
     highlight_uuid=None, ctx=None, review_source: str = "", suggestions: dict | None = None,
     label_col: str | None = None,
 ) -> ft.Control:
-    """Convenience wrapper for callers that already have a small, fully
-    materialized list of row dicts (e.g. one gallery mosaic page)."""
+    """Convenience wrapper for callers that already have a fully
+    materialized list of row dicts (e.g. a lasso selection). The crops are
+    still encoded only as they are scrolled to."""
     carousel = Carousel(
         dataset, len(records), lambda start, end: records[start:end],
         crop_col, uuid_col, highlight_uuid, ctx, review_source, suggestions, label_col,

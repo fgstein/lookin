@@ -225,9 +225,9 @@ def file_to_full_base64(path: Path, lut: str = LUT_NONE, quarter_turns: int = 0)
     This is a computer-vision tool -- silently downscaling crops would hide
     exactly the detail users need to see, so images are always served at
     their original resolution. The scale trade-off instead lives in the
-    callers: the gallery mosaic is already paginated, and the carousel
-    (ui/carousel.py) shows only a handful of images per page rather than
-    materializing a whole match set.
+    callers: the gallery mosaic and the carousel (ui/carousel.py) both
+    encode a crop only when the user scrolls near it, a screenful at a
+    time, rather than materializing a whole match set.
 
     PNG/JPEG are already something a browser can decode, so those are
     passed through completely unmodified (same bytes, no re-encoding, no
