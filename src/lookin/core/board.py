@@ -19,14 +19,16 @@ renaming or removing a column is one write, not one per workspace.
 The board never has to agree with the library exactly. A workspace that is
 on no column (new, imported, copied in by hand) shows in the first one; an
 id whose workspace is gone is dropped the next time the board is written.
-Every mutation re-reads the file first, so two sessions editing the board
-lose at most a simultaneous move, never each other's columns.
+Every mutation re-reads the file and writes it back under the file's lock
+(core/fileio.py), so two sessions editing the board -- two tabs, or two
+people on one library -- never lose each other's changes.
 """
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
 
+from lookin.core import fileio
 from lookin.core import library as lib
 
 BOARD_FILE = "board.json"
@@ -71,8 +73,19 @@ def load(root=None) -> dict:
     raw = lib._read_json(board_path(root))
     board = _normalize(raw)
     if raw is None or not (raw.get("columns") if isinstance(raw, dict) else None):
-        save(board, root)
+        # Looked at again under the lock: two sessions starting on an empty
+        # library would otherwise each write a default column of their own,
+        # and a move aimed at the loser's column id would miss.
+        with _locked(root):
+            raw = lib._read_json(board_path(root))
+            board = _normalize(raw)
+            if raw is None or not (raw.get("columns") if isinstance(raw, dict) else None):
+                save(board, root)
     return board
+
+
+def _locked(root=None):
+    return fileio.locked(board_path(root))
 
 
 def save(board: dict, root=None) -> bool:
@@ -133,34 +146,37 @@ def _sync(board: dict, known_ids) -> None:
 def move(workspace_id: str, column_id: str, index: Optional[int] = None, root=None,
          known_ids=None) -> dict:
     """Put a workspace on a column, at `index` (end when None)."""
-    board = load(root)
-    target = _column(board, column_id)
-    if target is None:
+    with _locked(root):
+        board = load(root)
+        target = _column(board, column_id)
+        if target is None:
+            return board
+        _sync(board, known_ids)
+        for c in board["columns"]:
+            c["workspaces"] = [i for i in c["workspaces"] if i != workspace_id]
+        position = len(target["workspaces"]) if index is None else max(0, min(index, len(target["workspaces"])))
+        target["workspaces"].insert(position, workspace_id)
+        save(board, root)
         return board
-    _sync(board, known_ids)
-    for c in board["columns"]:
-        c["workspaces"] = [i for i in c["workspaces"] if i != workspace_id]
-    position = len(target["workspaces"]) if index is None else max(0, min(index, len(target["workspaces"])))
-    target["workspaces"].insert(position, workspace_id)
-    save(board, root)
-    return board
 
 
 def add_column(name: str, root=None) -> dict:
-    board = load(root)
-    board["columns"].append({"id": lib.new_id(COLUMN_PREFIX),
-                             "name": name.strip() or next_default_name(board), "workspaces": []})
-    save(board, root)
-    return board
+    with _locked(root):
+        board = load(root)
+        board["columns"].append({"id": lib.new_id(COLUMN_PREFIX),
+                                 "name": name.strip() or next_default_name(board), "workspaces": []})
+        save(board, root)
+        return board
 
 
 def rename_column(column_id: str, name: str, root=None) -> dict:
-    board = load(root)
-    column = _column(board, column_id)
-    if column is not None and name.strip():
-        column["name"] = name.strip()
-        save(board, root)
-    return board
+    with _locked(root):
+        board = load(root)
+        column = _column(board, column_id)
+        if column is not None and name.strip():
+            column["name"] = name.strip()
+            save(board, root)
+        return board
 
 
 def neighbour(board: dict, column_id: str) -> Optional[dict]:
@@ -183,17 +199,18 @@ def remove_column(column_id: str, root=None, workspaces: Optional[list] = None) 
     _sync) -- the first column holds them, and removing it has to carry
     them along.
     """
-    board = load(root)
-    target = neighbour(board, column_id)
-    if target is None:
+    with _locked(root):
+        board = load(root)
+        target = neighbour(board, column_id)
+        if target is None:
+            return board
+        if workspaces is not None:
+            _sync(board, [w.id for w in workspaces])
+        column = _column(board, column_id)
+        target["workspaces"] += [i for i in column["workspaces"] if i not in target["workspaces"]]
+        board["columns"] = [c for c in board["columns"] if c["id"] != column_id]
+        save(board, root)
         return board
-    if workspaces is not None:
-        _sync(board, [w.id for w in workspaces])
-    column = _column(board, column_id)
-    target["workspaces"] += [i for i in column["workspaces"] if i not in target["workspaces"]]
-    board["columns"] = [c for c in board["columns"] if c["id"] != column_id]
-    save(board, root)
-    return board
 
 
 def next_default_name(board: dict) -> str:

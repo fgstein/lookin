@@ -20,7 +20,6 @@ import base64
 import html
 import io
 import platform
-import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -176,11 +175,8 @@ class Report:
     def write(self, dest_path) -> Path:
         """Atomic write, same rule as every other file this app produces: a
         half-written report is worse than none."""
-        import os
+        from lookin.core import fileio
 
         dest_path = Path(dest_path)
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dest_path.with_name(f".{dest_path.name}.tmp{os.getpid()}.{threading.get_ident()}")
-        tmp.write_text(self.to_html(), encoding="utf-8")
-        os.replace(tmp, dest_path)
+        fileio.atomic_write_text(dest_path, self.to_html())
         return dest_path

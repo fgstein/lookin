@@ -123,6 +123,10 @@ def _route(session, query: dict) -> None:
         return
     if workspace_id and not snapshot_id and current is not None and current.id == workspace_id:
         return
+    # Still opening it (a reload during a long load): see open_from_link.
+    opening = getattr(session, "_opening", None)
+    if opening is not None and opening[1] == snapshot_id and (snapshot_id or opening[0] == workspace_id):
+        return
     from lookin.web.views.workspaces import open_from_link
 
     if snapshot_id:

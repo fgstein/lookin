@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from lookin.core import fileio
 from lookin.core import workspace_sources as wss
 from lookin.core.prefs import config_dir
 
@@ -78,25 +79,28 @@ def watched_folders() -> list:
 def _save_folders(folders: list) -> bool:
     path = _watch_path()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"folders": folders}, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        # Not a fixed ".tmp" name: two tabs saving at once wrote into the
+        # same temporary file, and one of the renames then failed.
+        fileio.atomic_write_text(path, json.dumps({"folders": folders}, indent=2))
         return True
     except OSError:
         return False
 
 
 def add_watched_folder(folder: str) -> bool:
-    folders = watched_folders()
-    folder = str(Path(folder).expanduser())
-    if folder in folders:
-        return False
-    return _save_folders(folders + [folder])
+    # Read-change-write under the file's lock, so a folder added from
+    # another tab at the same moment is not written back out.
+    with fileio.locked(_watch_path()):
+        folders = watched_folders()
+        folder = str(Path(folder).expanduser())
+        if folder in folders:
+            return False
+        return _save_folders(folders + [folder])
 
 
 def remove_watched_folder(folder: str) -> bool:
-    return _save_folders([f for f in watched_folders() if f != folder])
+    with fileio.locked(_watch_path()):
+        return _save_folders([f for f in watched_folders() if f != folder])
 
 
 def _scan(folder: str) -> list:

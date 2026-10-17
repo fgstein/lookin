@@ -274,6 +274,15 @@ def record_decision(ctx, uuids, status: str, new_label: str = "", reason: str = 
         return False, str(ex)
     except ValueError as ex:
         return False, str(ex)
-    store.save()
+    try:
+        store.save()
+    except OSError as ex:
+        # A read-only or full disk. The decision stays in memory and still
+        # pending (the next save that works writes it), but the user must
+        # not be told it is safe: in the Flet UI the exception used to
+        # vanish into the event loop's log.
+        ctx.notify_review()
+        where = store.decisions_path.name if store.decisions_path is not None else "the review file"
+        return False, f"Recorded here but NOT saved to {where}: {ex}"
     ctx.notify_review()
     return True, message

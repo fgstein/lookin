@@ -23,9 +23,7 @@ footnote sits under the thing it caveats.
 from __future__ import annotations
 
 import io
-import os
 import platform
-import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -115,11 +113,10 @@ class PptxReport(Report):
         self._flush_pending_label()
         self._add_footer_slide()
 
+        from lookin.core import fileio
+
         dest_path = Path(dest_path)
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dest_path.with_name(f".{dest_path.name}.tmp{os.getpid()}.{threading.get_ident()}")
-        self._prs.save(tmp)
-        os.replace(tmp, dest_path)
+        fileio.atomic_write(dest_path, lambda tmp: self._prs.save(str(tmp)))
         return dest_path
 
     # ---- slide building -----------------------------------------------------

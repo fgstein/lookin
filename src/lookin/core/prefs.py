@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import json
 import os
-import threading
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
+
+from lookin.core import fileio
+
 
 def _log(msg: str) -> None:
     print(f"[lookin] {msg}", flush=True)
@@ -114,10 +116,7 @@ def save_mlflow_pref(pref: MlflowPref) -> bool:
     payload = {k: v for k, v in asdict(pref).items() if k != "recent"}
     payload["recent"] = [asdict(pick) for pick in pref.recent[:MAX_MLFLOW_PICKS]]
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f".{path.name}.tmp{os.getpid()}.{threading.get_ident()}")
-        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        fileio.atomic_write_text(path, json.dumps(payload, indent=2))
         return True
     except OSError as ex:
         _log(f"mlflow pref: could not write {path} ({ex})")
@@ -183,6 +182,14 @@ def load_triage_cursor(dataset_path, version_id: str) -> str:
 def save_triage_cursor(dataset_path, version_id: str, uuid: str) -> bool:
     if not version_id:
         return False
+    # Read-change-write under the file's lock: two triage queues open at
+    # once (two tabs, or `lookin ui` beside `lookin web`) would otherwise
+    # each write back the other's cursor as it was before.
+    with fileio.locked(triage_path()):
+        return _save_triage_cursor(dataset_path, version_id, uuid)
+
+
+def _save_triage_cursor(dataset_path, version_id: str, uuid: str) -> bool:
     cursors = _load_triage()
     cursors[_triage_key(dataset_path, version_id)] = str(uuid)
     # Newest last; drop the oldest when there are too many, since a stale
@@ -193,10 +200,7 @@ def save_triage_cursor(dataset_path, version_id: str, uuid: str) -> bool:
             cursors.pop(key, None)
     path = triage_path()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f".{path.name}.tmp{os.getpid()}.{threading.get_ident()}")
-        tmp.write_text(json.dumps(cursors, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        fileio.atomic_write_text(path, json.dumps(cursors, indent=2))
         return True
     except OSError as ex:
         _log(f"triage cursor: could not write {path} ({ex})")
@@ -204,11 +208,14 @@ def save_triage_cursor(dataset_path, version_id: str, uuid: str) -> bool:
 
 
 def clear_triage_cursor(dataset_path, version_id: str) -> bool:
-    cursors = _load_triage()
-    if cursors.pop(_triage_key(dataset_path, version_id), None) is None:
-        return False
-    try:
-        triage_path().write_text(json.dumps(cursors, indent=2), encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    with fileio.locked(triage_path()):
+        cursors = _load_triage()
+        if cursors.pop(_triage_key(dataset_path, version_id), None) is None:
+            return False
+        try:
+            # Atomic like every other write here: a plain write_text that
+            # dies halfway leaves a file every later read throws away.
+            fileio.atomic_write_text(triage_path(), json.dumps(cursors, indent=2))
+            return True
+        except OSError:
+            return False

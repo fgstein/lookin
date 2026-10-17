@@ -579,6 +579,12 @@ class AppState:
     # of thousands of rows -- but a merge computed *through* the overlay
     # has to notice the overlay moved, and this is what tells the two apart.
     _merged_cache_stamp: Optional[tuple] = field(default=None, repr=False, compare=False)
+    # Bumped by every invalidation. merged() runs on rebuild threads while
+    # the Sources tab can reload or relabel on another; a merge that started
+    # before an invalidation was computed from the old data and must not be
+    # stored as the fresh one (it would be served, silently, to every view
+    # the user then clicks "Update now" on).
+    _merged_cache_gen: int = field(default=0, repr=False, compare=False)
 
     def load_dataset(
         self, csv_path: str, columns: ColumnConfig, progress_cb: Optional[ProgressCallback] = None,
@@ -902,6 +908,7 @@ class AppState:
         self.use_reviewed_labels = False
         self.review_version_id = None
         self.dataset_filter, self.dataset_filter_csv, self.dataset_filter_error = {}, None, ""
+        self._merged_cache_gen += 1
         self._merged_cache_name = None
         self._merged_cache_df = None
         self._merged_cache_stamp = None
@@ -923,6 +930,7 @@ class AppState:
         self._invalidate_merged_cache()
 
     def _invalidate_merged_cache(self, name: Optional[str] = None) -> None:
+        self._merged_cache_gen += 1
         if name is None or self._merged_cache_name == name:
             self._merged_cache_name = None
             self._merged_cache_df = None
@@ -977,6 +985,7 @@ class AppState:
         if not self.dataset.columns.has_ids():
             raise ValueError("The dataset has no uuid column, so it cannot be joined with an experiment.")
         stamp = self._review_stamp()
+        generation = self._merged_cache_gen
         if (self._merged_cache_name == experiment_name and self._merged_cache_df is not None
                 and self._merged_cache_stamp == stamp):
             return self._merged_cache_df
@@ -1015,9 +1024,10 @@ class AppState:
             merged["predicted_score"] = scores.max(axis=1)
             merged["correct"] = merged["predicted_label"] == merged[cols.label_col]
 
-        self._merged_cache_name = experiment_name
-        self._merged_cache_df = merged
-        self._merged_cache_stamp = stamp
+        if generation == self._merged_cache_gen:
+            self._merged_cache_name = experiment_name
+            self._merged_cache_df = merged
+            self._merged_cache_stamp = stamp
         return merged
 
     def _apply_review_overlay(self, merged: pd.DataFrame, cols: ColumnConfig) -> pd.DataFrame:

@@ -35,7 +35,6 @@ still apply when the whole CSV is read back for export.
 """
 from __future__ import annotations
 
-import os
 import re
 import threading
 import time
@@ -46,6 +45,8 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+
+from lookin.core import fileio
 
 # -- statuses -------------------------------------------------------------
 # These are *keys*, compared in code and written into files that outlive any
@@ -140,13 +141,15 @@ _SAVE_LOCK = threading.Lock()
 
 
 def _signature(*paths) -> tuple:
-    """(size, mtime) of each file, or None for one that is absent -- enough
-    to tell that another session wrote it since."""
+    """(inode, size, mtime) of each file, or None for one that is absent --
+    enough to tell that another session wrote it since. The inode because
+    every save is a replace, which moves it even when two saves of the same
+    size land within one mtime tick (a coarse one on a network mount)."""
     out = []
     for path in paths:
         try:
             stat = Path(path).stat()
-            out.append((stat.st_size, stat.st_mtime_ns))
+            out.append((stat.st_ino, stat.st_size, stat.st_mtime_ns))
         except OSError:
             out.append(None)
     return tuple(out)
@@ -157,11 +160,7 @@ def _atomic_write_csv(df: pd.DataFrame, path: Path) -> None:
     (or a full disk) mid-write leaves the previous store intact rather than
     a truncated file. Same directory matters: os.replace is only atomic
     within one filesystem."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.tmp{os.getpid()}.{threading.get_ident()}")
-    df.to_csv(tmp, index=False)
-    os.replace(tmp, path)
+    fileio.atomic_write(path, lambda tmp: df.to_csv(tmp, index=False))
 
 
 @dataclass
@@ -226,6 +225,7 @@ class ReviewStore:
     _dirty: bool = False
     _changed: set = field(default_factory=set, repr=False, compare=False)          # {(version_id, uuid)}
     _changed_versions: set = field(default_factory=set, repr=False, compare=False)  # {version_id}
+    _created_versions: set = field(default_factory=set, repr=False, compare=False)  # {version_id}
     _disk_signature: tuple = field(default=(), repr=False, compare=False)
 
     # ---- versions ----
@@ -267,6 +267,7 @@ class ReviewStore:
         if activate:
             self.active_version_id = version_id
         self._changed_versions.add(version_id)
+        self._created_versions.add(version_id)
         self._touch()
         _log(f"review: created version '{version_id}' (parent: {parent})")
         return version
@@ -517,9 +518,10 @@ class ReviewStore:
         t0 = time.monotonic()
         # Read-merge-write as one step: two tabs saving at the same instant
         # would otherwise both merge against the same file and the second
-        # write would drop the first. Tabs share this process, so a process
-        # lock is the whole fix.
-        with _SAVE_LOCK:
+        # write would drop the first. The process lock covers the tabs of
+        # one `lookin web`; the lock file covers `lookin ui` beside it, and a
+        # colleague reviewing the same dataset on a shared mount.
+        with _SAVE_LOCK, fileio.locked(decisions_path):
             if self._disk_signature and _signature(decisions_path, versions_path) != self._disk_signature:
                 self._merge_from_disk(decisions_path, versions_path)
             decisions_df, versions_df = self.to_frames()
@@ -530,6 +532,7 @@ class ReviewStore:
         self._dirty = False
         self._changed.clear()
         self._changed_versions.clear()
+        self._created_versions.clear()
         _log(f"review: saved {len(decisions_df):,} decisions / {len(versions_df)} versions "
              f"to {decisions_path.name} ({time.monotonic() - t0:.2f}s)")
         return True
@@ -550,6 +553,7 @@ class ReviewStore:
         """
         disk = ReviewStore.load(decisions_path, versions_path, author=self.author)
         refused = 0
+        renamed = self._rename_colliding_versions(disk)
         # Versions first: one this store created, froze or adopted replaces
         # the disk's copy, and one the disk has never seen comes with all
         # its decisions (an adopted version fills its decisions in bulk).
@@ -557,6 +561,10 @@ class ReviewStore:
             if version_id in self._changed_versions or version_id not in disk.versions:
                 if version_id not in disk.versions:
                     disk.decisions[version_id] = dict(self.decisions.get(version_id, {}))
+                elif disk.versions[version_id].frozen and not version.frozen:
+                    # Freezing only ever goes one way: a run was exported
+                    # from it, and no merge may reopen it.
+                    continue
                 disk.versions[version_id] = version
         for version_id, uid in self._changed:
             if disk.is_frozen(version_id) and version_id not in self._changed_versions:
@@ -575,16 +583,67 @@ class ReviewStore:
         # revision is what makes every overlay downstream recompute.
         self.revision += 1
         _log(f"review: merged with changes another session saved to {decisions_path.name}"
+             + "".join(f"; version '{old}' was created elsewhere too, so this one is now '{new}'"
+                       for old, new in renamed)
              + (f"; {refused} decision(s) dropped -- their version was frozen meanwhile" if refused else ""))
+
+    def _rename_colliding_versions(self, disk: "ReviewStore") -> list:
+        """A version this store created whose id another session created as
+        well, and has since frozen -- two tabs each making "the next
+        version" both call it v2. Merging the two would put this store's
+        decisions into a version a training run was exported from, so this
+        store's one moves to a fresh id instead, decisions and all. Returns
+        [(old id, new id)].
+
+        Only against a *frozen* namesake: two unfrozen ones are the same
+        pass worked on from two tabs, which merges decision by decision like
+        any other version."""
+        renamed = []
+        for old in [v for v in self.versions if v in self._created_versions]:
+            theirs = disk.versions.get(old)
+            if theirs is None or not theirs.frozen:
+                continue
+            n = 1
+            while f"v{n}" in self.versions or f"v{n}" in disk.versions:
+                n += 1
+            new = f"v{n}"
+            self.versions = {(new if k == old else k): (replace(v, version_id=new) if k == old else v)
+                             for k, v in self.versions.items()}
+            for vid, version in list(self.versions.items()):
+                if version.parent == old and vid in self._created_versions:
+                    self.versions[vid] = replace(version, parent=new)
+            moved = self.decisions.pop(old, {})
+            self.decisions[new] = {u: replace(d, version_id=new) for u, d in moved.items()}
+            self._changed = {((new if vid == old else vid), u) for vid, u in self._changed}
+            for tracked in (self._changed_versions, self._created_versions):
+                if old in tracked:
+                    tracked.discard(old)
+                    tracked.add(new)
+            if self.active_version_id == old:
+                self.active_version_id = new
+            renamed.append((old, new))
+        return renamed
 
     @classmethod
     def load(cls, decisions_path, versions_path, author: str = "") -> "ReviewStore":
         """Read both sidecars, tolerating either being absent (a dataset
-        that has never been reviewed) or empty."""
+        that has never been reviewed) or empty.
+
+        Under the save lock, so the two files are read as one save left
+        them -- not the new decisions with the old version manifest."""
+        with fileio.locked(decisions_path):
+            return cls._load(decisions_path, versions_path, author)
+
+    @classmethod
+    def _load(cls, decisions_path, versions_path, author: str = "") -> "ReviewStore":
         store = cls(
             decisions_path=Path(decisions_path), versions_path=Path(versions_path), author=author,
         )
         versions_path, decisions_path = Path(versions_path), Path(decisions_path)
+        # Taken before reading, not after: a save landing in between then
+        # shows as a change at the next save (and is merged), instead of
+        # being taken for what this store read.
+        signature = _signature(decisions_path, versions_path)
         if versions_path.exists():
             df = pd.read_csv(versions_path, dtype=str, keep_default_na=False)
             for _, row in df.iterrows():
@@ -623,7 +682,7 @@ class ReviewStore:
                 )
         store.active_version_id = store.resume_version_id()
         store._dirty = False
-        store._disk_signature = _signature(decisions_path, versions_path)
+        store._disk_signature = signature
         if store.versions:
             _log(f"review: loaded {sum(len(d) for d in store.decisions.values()):,} decisions across "
                  f"{len(store.versions)} version(s) from {decisions_path.name}")
@@ -960,10 +1019,7 @@ def export_enriched_dataset(
             enriched = enriched[enriched[status_column] != STATUS_EXCLUDE].reset_index(drop=True)
             notes.append(f"Dropped {before - len(enriched):,} row(s) excluded by '{version_ids[-1]}'.")
 
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest_path.with_name(f".{dest_path.name}.tmp{os.getpid()}.{threading.get_ident()}")
-    enriched.to_csv(tmp, index=False)
-    os.replace(tmp, dest_path)
+    fileio.atomic_write(dest_path, lambda tmp: enriched.to_csv(tmp, index=False))
     _log(f"export: wrote {len(enriched):,} rows to {dest_path}")
 
     if freeze:
@@ -994,9 +1050,6 @@ def export_excluded_uuids(store: ReviewStore, version_id: str, dest_path) -> Exp
                 f"Refusing to write the export to {dest_path.name}: that is {what}."
             )
     uuids = sorted(store.uuids_by_status(STATUS_EXCLUDE, version_id))
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest_path.with_name(f".{dest_path.name}.tmp{os.getpid()}.{threading.get_ident()}")
-    tmp.write_text("\n".join(uuids) + ("\n" if uuids else ""), encoding="utf-8")
-    os.replace(tmp, dest_path)
+    fileio.atomic_write_text(dest_path, "\n".join(uuids) + ("\n" if uuids else ""))
     _log(f"export: wrote {len(uuids):,} excluded uuids to {dest_path}")
     return ExportResult(path=dest_path, rows=len(uuids), columns=[], excluded=len(uuids), relabelled=0, notes=[])

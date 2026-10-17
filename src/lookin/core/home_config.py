@@ -40,11 +40,11 @@ from __future__ import annotations
 
 import functools
 import json
-import os
 import threading
 from pathlib import Path
 from typing import Optional
 
+from lookin.core import fileio
 from lookin.core.prefs import config_dir
 from lookin.core.workspace_sources import DEFAULT_DATASET_PARAM, normalize_uri
 
@@ -163,7 +163,9 @@ def _mutator(method):
     """
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):
-        with _FILE_LOCK:
+        # The lock file as well: `lookin ui` and `lookin web` run by one
+        # person share this file from two processes.
+        with _FILE_LOCK, fileio.locked(self.path):
             if self.changed_on_disk():
                 self.reload()
             return method(self, *args, **kwargs)
@@ -193,10 +195,15 @@ class HomeConfig:
     # ---- file -----------------------------------------------------------
 
     def _disk_mtime(self):
+        """What identifies one write of the file: (inode, mtime). The inode
+        because every save is a replace, which moves it even when two
+        saves land within one mtime tick -- and then a tab that compared
+        mtimes alone saved its stale copy over the other's change."""
         try:
-            return self.path.stat().st_mtime_ns
+            stat = self.path.stat()
         except OSError:
             return None
+        return (stat.st_ino, stat.st_mtime_ns)
 
     def changed_on_disk(self) -> bool:
         return self._disk_mtime() != self._mtime
@@ -226,10 +233,7 @@ class HomeConfig:
             # Never overwrite a file the user is halfway through editing.
             return False
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_name(f".{self.path.name}.tmp{os.getpid()}.{threading.get_ident()}")
-            tmp.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
-            os.replace(tmp, self.path)
+            fileio.atomic_write_text(self.path, json.dumps(self.data, indent=2))
         except OSError as ex:
             _log(f"home view: could not write {self.path} ({ex})")
             return False

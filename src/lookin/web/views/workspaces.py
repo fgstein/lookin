@@ -492,6 +492,15 @@ def open_from_link(session, workspace, snapshot=None) -> None:
 
     missing = [e.name for e in workspace.mount.experiments if not wss.is_downloaded(e)]
     mount = wss.downloaded_only(workspace.mount) if missing else None
+    # What this tab is opening, until it is open: render._route compares a
+    # reloaded page's address against it. current_snapshot is only set once
+    # the load is done, so without this an F5 during a long load started a
+    # second restore into the same AppState, racing the first.
+    target = (workspace.id, snapshot.id if snapshot is not None else "")
+    session._opening = target
+    # And one open at a time per tab: two restores interleaving their
+    # dataset and experiment loads leave a state that is neither workspace.
+    open_lock = session.__dict__.setdefault("_open_lock", threading.Lock())
     session.mode = "analysis"
     session.tab = "sources"
     session.title = f"{workspace.label()} — Lookin"
@@ -500,6 +509,14 @@ def open_from_link(session, workspace, snapshot=None) -> None:
     session.mark("page")
 
     def work():
+        with open_lock:
+            try:
+                load()
+            finally:
+                if getattr(session, "_opening", None) == target:
+                    session._opening = None
+
+    def load():
         try:
             session.upload_view.restore_mount(mount if mount is not None else workspace.mount)
             _adopt_loaded_mount(session, workspace)

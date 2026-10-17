@@ -65,6 +65,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from lookin.core import fileio
 from lookin.core.prefs import config_dir
 
 WORKSPACE_SUFFIX = ".lookin"
@@ -421,10 +422,7 @@ def _atomic_write_json(payload: dict, path: Path) -> bool:
     one. Same directory matters: os.replace is only atomic within one
     filesystem."""
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f".{path.name}.tmp{os.getpid()}.{threading.get_ident()}")
-        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        fileio.atomic_write_text(path, json.dumps(payload, indent=2))
         return True
     except OSError as ex:
         _log(f"library: could not write {path} ({ex})")
@@ -572,7 +570,8 @@ def save_workspace(workspace: Workspace) -> bool:
 # Guards update_workspace's read-change-write. Every browser tab is a session
 # in this process, so a process lock is what keeps two of them from both
 # reading a manifest, each changing it, and the second write erasing the
-# first.
+# first. The lock file (fileio.locked) does the same for `lookin ui` beside
+# `lookin web`, or a colleague on the same shared library.
 _UPDATE_LOCK = threading.Lock()
 
 
@@ -586,7 +585,7 @@ def update_workspace(path, change) -> Optional[Workspace]:
     another tab -- or another person on a shared library -- may have added
     an experiment since. Saving the old copy would silently remove it.
     """
-    with _UPDATE_LOCK:
+    with _UPDATE_LOCK, fileio.locked(Path(path) / MANIFEST_NAME):
         workspace = load_workspace(path)
         if workspace is None:
             return None
@@ -820,20 +819,25 @@ def set_favorite(object_id: str, favorite: bool) -> bool:
     by prefix, so one list holds both."""
     if not object_id:
         return False
-    personal = load_personal()
-    favorites = [f for f in personal["favorites"] if f != object_id]
-    if favorite:
-        favorites.append(object_id)
-    personal["favorites"] = favorites
-    return save_personal(personal)
+    # Read-change-write under the file's lock: every tab opening a workspace
+    # writes this file (mark_opened), and without it a star clicked in
+    # another tab at that moment was silently undone.
+    with fileio.locked(personal_path()):
+        personal = load_personal()
+        favorites = [f for f in personal["favorites"] if f != object_id]
+        if favorite:
+            favorites.append(object_id)
+        personal["favorites"] = favorites
+        return save_personal(personal)
 
 
 def mark_opened(object_id: str) -> bool:
     if not object_id:
         return False
-    personal = load_personal()
-    personal["opened"][object_id] = _now()
-    return save_personal(personal)
+    with fileio.locked(personal_path()):
+        personal = load_personal()
+        personal["opened"][object_id] = _now()
+        return save_personal(personal)
 
 
 def last_opened(object_id: str) -> str:
@@ -934,9 +938,7 @@ def export_workspace(workspace: Workspace, dest_path, include_embeddings: bool =
     payload["review_files"] = review_files
     payload["exported_at"] = _now()
 
-    try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dest.with_name(f".{dest.name}.tmp{os.getpid()}.{threading.get_ident()}")
+    def write(tmp: Path) -> None:
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.writestr(MANIFEST_NAME, json.dumps(payload, indent=2))
             for arcname, source in staged.items():
@@ -946,7 +948,11 @@ def export_workspace(workspace: Workspace, dest_path, include_embeddings: bool =
                     f"{SNAPSHOTS_DIRNAME}/{snapshot.id}.json",
                     json.dumps(snapshot_to_dict(snapshot), indent=2),
                 )
-        os.replace(tmp, dest)
+
+    try:
+        # Through fileio so that a full disk halfway through a gigabyte of
+        # CSVs does not leave the partial zip behind in the user's folder.
+        fileio.atomic_write(dest, write)
     except (OSError, ValueError) as ex:
         _log(f"library: could not export to {dest} ({ex})")
         return False, f"Could not write {dest.name}: {ex}"
@@ -1047,5 +1053,17 @@ def rebase_image_root(workspace: Workspace, image_root) -> bool:
     on the machine the workspace came from; this is the one field that has to
     be answered by the person opening it.
     """
-    workspace.mount.image_root = str(image_root or "")
-    return save_workspace(workspace)
+    image_root = str(image_root or "")
+
+    def change(fresh: Workspace) -> bool:
+        fresh.mount.image_root = image_root
+        return True
+
+    # Through update_workspace, not a save of the copy held in memory: the
+    # question stays open while the user looks for the folder, and Home or
+    # another tab may add an experiment to this workspace meanwhile.
+    fresh = update_workspace(workspace.path, change) if workspace.path is not None else None
+    if fresh is None:
+        return False
+    workspace.mount, workspace.updated_at = fresh.mount, fresh.updated_at
+    return True

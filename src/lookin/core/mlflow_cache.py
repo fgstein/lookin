@@ -22,6 +22,7 @@ import os
 import threading
 from pathlib import Path
 
+from lookin.core import fileio
 from lookin.core import mlflow_client as mlf
 
 
@@ -88,9 +89,19 @@ def download_cached(uri: str, run_id: str, artifact_path: str, expected_size=Non
     # otherwise write into one .part file. Each gets its own, and the two
     # renames into place are atomic and carry the same bytes.
     tmp = dest.with_name(f"{dest.name}.part{os.getpid()}.{threading.get_ident()}")
-    mlf.download_artifact(uri, run_id, artifact_path, tmp,
-                          progress=progress, total_hint=expected_size)
-    tmp.replace(dest)
+    try:
+        mlf.download_artifact(uri, run_id, artifact_path, tmp,
+                              progress=progress, total_hint=expected_size)
+        tmp.replace(dest)
+    except BaseException:
+        # An interrupted or refused transfer: its partial file is never a
+        # cache hit (wrong name), but it would sit in the cache forever --
+        # and an embeddings sidecar is hundreds of MB.
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
     return dest
 
 
@@ -108,10 +119,7 @@ def save_listing(uri: str, payload: dict) -> None:
     that succeeded."""
     path = _listing_path(uri)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f".{path.name}.tmp{os.getpid()}.{threading.get_ident()}")
-        tmp.write_text(json.dumps(payload), encoding="utf-8")
-        os.replace(tmp, path)
+        fileio.atomic_write_text(path, json.dumps(payload))
     except (OSError, TypeError, ValueError) as ex:
         _log(f"mlflow cache: could not write {path} ({ex})")
 
@@ -126,10 +134,7 @@ def save_artifacts(uri: str, payload: dict) -> None:
     busy server -- far too much to rewrite on every expand."""
     path = _artifacts_path(uri)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f".{path.name}.tmp{os.getpid()}.{threading.get_ident()}")
-        tmp.write_text(json.dumps(payload), encoding="utf-8")
-        os.replace(tmp, path)
+        fileio.atomic_write_text(path, json.dumps(payload))
     except (OSError, TypeError, ValueError) as ex:
         _log(f"mlflow cache: could not write {path} ({ex})")
 
