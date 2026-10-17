@@ -49,6 +49,22 @@ def test_a_row_with_a_missing_score_is_not_a_distribution():
     assert diagnostics.n_rows_not_normalized == 1
 
 
+def test_one_missing_score_does_not_resoftmax_a_softmax_export():
+    """A row with a missing score is not a distribution, but the complete
+    rows still are: their entropy must not go through a second softmax."""
+    from lookin.core.confidence import NORMALIZED_ENTROPY_COL, compute_confidence
+
+    merged = pd.DataFrame({"a": [1.0, 0.5, np.nan], "b": [0.0, 0.5, 0.2], "label": ["a", "a", "b"],
+                           "predicted_label": ["a", "a", "b"], "correct": [True, True, True]})
+    data = compute_confidence(merged, ["a", "b"], ["a", "b"])
+    assert not data.softmax_applied
+    entropy = data.df[NORMALIZED_ENTROPY_COL].tolist()
+    assert entropy[0] == pytest.approx(0.0, abs=1e-6)
+    assert entropy[1] == pytest.approx(1.0)
+    assert np.isnan(entropy[2])
+    assert data.score_diagnostics.n_rows_missing == 1
+
+
 def test_a_metadata_column_named_like_a_class_keeps_the_scores(tmp_path):
     """A dataset column "b" next to the score column "b": the merge kept
     the dataset's column under that name, and every metric read the

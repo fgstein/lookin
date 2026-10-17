@@ -69,6 +69,7 @@ def compute_confidence(merged: pd.DataFrame, score_cols: list, class_labels: lis
     else:
         margin = np.full(n, np.nan)
         entropy = np.empty(n)
+        distribution = diagnostics.n_rows_not_normalized == diagnostics.n_rows_missing
         for start in range(0, n, ROW_BLOCK):
             # Row-major: a matrix read off a loaded frame is column-major
             # (the loader builds it a column at a time), which makes every
@@ -78,7 +79,11 @@ def compute_confidence(merged: pd.DataFrame, score_cols: list, class_labels: lis
             if n_classes >= 2:
                 top2 = np.partition(block, -2, axis=1)[:, -2:]  # [:, 0]=2nd largest, [:, 1]=largest
                 margin[start:stop] = top2[:, 1] - top2[:, 0]
-            probs = block if diagnostics.normalized else _softmax(block)
+            # A row with a missing score makes the matrix "not normalized"
+            # (see diagnose_scores), but its entropy is NaN either way: it
+            # must not push every complete row of a genuine softmax export
+            # through a second softmax.
+            probs = block if distribution else _softmax(block)
             probs = np.clip(probs, _PROB_FLOOR, 1.0)
             entropy[start:stop] = -(probs * np.log(probs)).sum(axis=1)
         max_entropy = np.log(n_classes) if n_classes > 1 else 0.0
@@ -91,7 +96,8 @@ def compute_confidence(merged: pd.DataFrame, score_cols: list, class_labels: lis
     out[MARGIN_COL] = margin
     out[ENTROPY_COL] = entropy
     out[NORMALIZED_ENTROPY_COL] = normalized_entropy
-    return ConfidenceData(df=out, score_diagnostics=diagnostics, softmax_applied=not diagnostics.normalized)
+    softmax_applied = diagnostics.n_rows_not_normalized != diagnostics.n_rows_missing
+    return ConfidenceData(df=out, score_diagnostics=diagnostics, softmax_applied=softmax_applied)
 
 
 def confident_and_wrong(data: ConfidenceData, label_col: str, metric: str, top_percentile: float) -> pd.DataFrame:

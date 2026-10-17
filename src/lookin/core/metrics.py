@@ -97,6 +97,8 @@ class ScoreDiagnostics:
     n_rows: int
     constant_labels: list = field(default_factory=list)
     constant_values: dict = field(default_factory=dict)  # label -> its single value
+    # Rows with a missing (NaN) score, counted among n_rows_not_normalized.
+    n_rows_missing: int = 0
 
 
 def diagnose_scores(scores: np.ndarray, labels_for_cols: list) -> ScoreDiagnostics:
@@ -122,7 +124,8 @@ def diagnose_scores(scores: np.ndarray, labels_for_cols: list) -> ScoreDiagnosti
     # A row with a missing (NaN) score is not a distribution either: as
     # NaN it compared False to the tolerance and passed as one, and then
     # turned log loss, Brier and ECE into NaN with no banner saying why.
-    deviation[np.isnan(deviation)] = np.inf
+    missing = np.isnan(deviation)
+    deviation[missing] = np.inf
     n_off = int((deviation > ROW_SUM_TOLERANCE).sum())
 
     constant_labels = []
@@ -140,6 +143,7 @@ def diagnose_scores(scores: np.ndarray, labels_for_cols: list) -> ScoreDiagnosti
         n_rows=n,
         constant_labels=constant_labels,
         constant_values=constant_values,
+        n_rows_missing=int(missing.sum()),
     )
 
 

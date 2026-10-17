@@ -643,7 +643,9 @@ def score_diagnostics_banner(diagnostics, experiment_label: str = "experiment") 
     if not diagnostics.normalized:
         lines.append(
             f"score columns do not sum to 1 ({diagnostics.n_rows_not_normalized:,} of "
-            f"{diagnostics.n_rows:,} rows, worst off by {diagnostics.max_row_sum_deviation:.3f})"
+            f"{diagnostics.n_rows:,} rows, worst off by {diagnostics.max_row_sum_deviation:.3f}"
+            + (f"; {diagnostics.n_rows_missing:,} with a missing score" if diagnostics.n_rows_missing else "")
+            + ")"
         )
         lines.append(
             "  -> disabled: log loss, Brier score and its decomposition, ECE / MCE, reliability diagram"
