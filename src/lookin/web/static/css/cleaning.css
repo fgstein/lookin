@@ -1,0 +1,60 @@
+/* Cleaning tab (views/cleaning.py, review_panel.py, triage.py). */
+
+.cl .cl-tight { gap: 7px; }
+.cl tr.clk { cursor: pointer; }
+.cl tr.clk:hover td { background: var(--acc-soft-2); }
+.cl tr.cl-decided td { background: rgba(37, 80, 200, .06); }
+.cl .cl-head .card-b:empty { display: none; }
+.cl .cl-head .card-b { padding-top: 8px; padding-bottom: 8px; }
+.cl-sub { font-size: 12px; font-weight: 700; color: var(--ink-2); margin-top: 2px; }
+.cl-hr { border: 0; border-top: 1px solid var(--line-2); margin: 4px 0; width: 100%; }
+.cl-header { font-weight: 600; color: var(--ink-2); }
+.cl-params { align-items: center; }
+.cl-scroll { max-height: 460px; overflow: auto; border: 1px solid var(--line-2); border-radius: var(--r-s); }
+.cl-narrow { width: auto; min-width: 320px; }
+.cl-sel { user-select: text; }
+
+/* review panel: the version card on the left, diff + export on the right */
+.cl-review { display: grid; grid-template-columns: minmax(420px, 1fr) minmax(420px, 1fr); gap: 10px; align-items: start; }
+.cl-review-side { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.cl-review-side > .card + .card { margin-top: 0; }
+@media (max-width: 1100px) { .cl-review { grid-template-columns: minmax(0, 1fr); } }
+.cl-pill { display: inline-flex; align-items: baseline; gap: 5px; padding: 2px 8px; border-radius: var(--r-s);
+  background: var(--surface-3); font-size: 11px; }
+.cl-pill b { font-size: 13px; font-family: var(--mono); }
+.t-ok { color: var(--ok); }
+.t-acc { color: var(--acc); }
+.t-err { color: var(--err); }
+.t-warn { color: #A15C07; }
+.cl-batches { width: auto; }
+.cl-batches td { padding-top: 0; padding-bottom: 0; }
+.cl-examples { line-height: 1.5; overflow-x: auto; white-space: nowrap; }
+.cl-checks { gap: 3px; }
+.cl-dir .fld { flex: 1 1 auto; min-width: 0; }
+.cl-dir .fld .inp { flex: 1 1 auto; min-width: 0; width: 100%; }
+
+/* reports */
+.cl-delta { display: inline-block; min-width: 76px; padding: 1px 6px; border-radius: 4px; color: #fff; text-align: left; }
+.cl-hints { gap: 5px; }
+.cl-hint { display: flex; align-items: baseline; gap: 10px; font-size: 12px; }
+.cl-kind { font-size: 10px; font-weight: 700; color: var(--acc); background: var(--acc-soft); padding: 1px 7px; border-radius: 6px; }
+.cl-thumb { border-radius: 6px; }
+
+/* triage panel */
+.triage { display: flex; gap: 18px; align-items: flex-start; min-height: 440px; }
+.tri-left { flex: 0 0 auto; display: flex; flex-direction: column; gap: 10px; }
+.tri-right { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 10px;
+  border-left: 1px solid var(--line-2); padding-left: 18px; }
+.tri-img { display: flex; align-items: center; justify-content: center; background: #000; border-radius: 10px; overflow: hidden; }
+.tri-img .crop { border-radius: 10px; }
+.tri-done { font-size: 14px; font-weight: 700; }
+.tri-prefetch { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.tri-labels { gap: 8px; }
+.tri-chip { font-size: 13px; font-weight: 700; padding: 3px 10px; border-radius: 8px; background: var(--surface-3); }
+.tri-chip.tri-sugg { color: var(--acc); background: var(--acc-soft); }
+.tri-detail { gap: 4px 14px; }
+.tri-refs { display: flex; gap: 6px; overflow-x: auto; }
+.tri-refs .crop { border-radius: 6px; flex: 0 0 auto; }
+.tri-bar { flex: 0 0 auto; width: 100%; height: 4px; }
+.tri-pos { white-space: nowrap; font-weight: 400; }
+.tri-pick { width: 200px; }
