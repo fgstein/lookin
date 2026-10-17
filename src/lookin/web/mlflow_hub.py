@@ -127,6 +127,8 @@ class MlflowHub:
             self.last_full_refresh = time.monotonic()
         for server in list(self.servers.values()):
             if uri is None or server.uri == uri:
+                if not runs_only:
+                    server.mark_artifacts_stale()
                 server.status = "loading"
                 threading.Thread(target=self._fetch_worker, args=(server, runs_only, only), daemon=True).start()
         self.changed()
@@ -159,7 +161,11 @@ class MlflowHub:
                         continue
                     runs, truncated = result
                     with self.lock:
-                        if experiment_id not in self.wanted_ids(server):
+                        # A filter changed meanwhile has a refresh of its
+                        # own on the way; these runs answer the old one and,
+                        # landing last, would replace the right ones.
+                        if (experiment_id not in self.wanted_ids(server)
+                                or filter_string != self.config.runs.get("filter", "")):
                             continue
                         server.runs_by_exp[experiment_id] = runs
                         server.truncated_exps.discard(experiment_id)
@@ -196,7 +202,7 @@ class MlflowHub:
 
     def fetch_artifacts(self, server: ServerState, run_id: str, then=None) -> None:
         entry = server.artifacts.get(run_id)
-        if entry is not None and "csvs" in entry:
+        if entry is not None and "csvs" in entry and not server.needs_listing(run_id):
             if then:
                 then()
             return

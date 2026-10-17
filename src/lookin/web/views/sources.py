@@ -1180,7 +1180,13 @@ class SourcesView(View):
 
     def _restore_loads(self, mount) -> None:
         if mount.dataset_path:
-            self.load_dataset_now()
+            if not self.load_dataset_now() and self.state.dataset is not None:
+                # A failed load leaves the *previous* dataset in place, and
+                # this workspace's experiments would then be scored against
+                # it: plausible numbers from the wrong pool. Its error stays
+                # on screen; its experiments wait for a dataset below.
+                self.state.clear_all()
+                self.s.notify_change()
         else:
             self.state.clear_all()
             self.ds_status = ("This workspace has no dataset yet -- pick its CSV above and click Load dataset", "neutral")

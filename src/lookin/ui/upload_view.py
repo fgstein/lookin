@@ -1181,7 +1181,17 @@ class UploadView:
     def _restore_loads(self, mount) -> None:
         """The loading half of restore_mount, once the fields are filled."""
         if mount.dataset_path:
+            previous = self.ctx.state.dataset
             self.load_dataset_now()
+            if previous is not None and self.ctx.state.dataset is previous:
+                # The load failed (a success always builds a new Dataset)
+                # and left the previous workspace's dataset in place: this
+                # workspace's experiments would be scored against it, with
+                # plausible numbers from the wrong pool. The error stays on
+                # screen; the experiments wait for a dataset below.
+                self.ctx.state.clear_all()
+                self.dataset_extra_column.controls.clear()
+                self.ctx.notify_change()
         else:
             # Nothing to load yet: the dataset is set up here, in the Data
             # tab. Whatever this session showed before must not pass for

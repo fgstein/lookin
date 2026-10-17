@@ -322,6 +322,20 @@ def mount_from_dict(raw: dict) -> Mount:
     kwargs = {k: v for k, v in raw.items() if k in known}
     if not isinstance(kwargs.get("dataset_filter", {}), dict):
         kwargs.pop("dataset_filter")
+    # Typed the way the rest of the app uses them. A hand-edited manifest
+    # with "dataset_size": "big" or "dataset_path": 5 otherwise loads fine
+    # and raises later, from Mount.exists()/changed_on_disk() -- which the
+    # Home page and the library list call for every workspace they show.
+    for name, value in list(kwargs.items()):
+        if name == "dataset_size":
+            kwargs[name] = _optional_int(value) or 0
+        elif name == "dataset_mtime":
+            try:
+                kwargs[name] = float(value or 0.0)
+            except (TypeError, ValueError):
+                kwargs[name] = 0.0
+        elif name != "dataset_filter":
+            kwargs[name] = "" if value is None else str(value)
     return Mount(experiments=experiments, **kwargs)
 
 

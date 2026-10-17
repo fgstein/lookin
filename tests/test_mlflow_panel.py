@@ -302,3 +302,41 @@ def test_the_details_heading_follows_what_the_details_panel_shows(panel):
     panel.selected_experiment = None
     panel._render_details()
     assert panel.details_title.value == "Run details"
+
+
+def test_sidecars_are_those_of_the_run_being_loaded_not_the_one_now_selected(panel, monkeypatch):
+    """Loading runs on a worker, and the run list stays clickable meanwhile.
+    The sidecars used to be looked up in the panel's *current* artifact
+    listing once the CSV was in: selecting another run during a long
+    download emptied it, and the loaded run's embeddings were silently not
+    attached."""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    run_a = mlf.Run(run_id="a", run_name="a", status="FINISHED", start_time=1)
+    embed = mlf.ArtifactFile("eval/test_embeddings.npz", 20)
+    panel.selected_run = run_a
+    panel.selected_artifact = mlf.ArtifactFile("eval/test_results.csv", 10)
+    panel.npz_artifacts = {embed.path: embed}
+    attached = []
+    panel.ctx.state = SimpleNamespace(
+        dataset=object(), experiments={"mine": SimpleNamespace(embeddings_path="", model_prototypes_path="")})
+    panel.ctx.load_experiment_from_file = lambda path, name: (True, "loaded")
+    panel.ctx.prototype_source = SimpleNamespace(
+        load_embeddings_for=lambda name, path: (attached.append(path) or True, "20 embeddings"))
+    started = []
+    monkeypatch.setattr(threading, "Thread", lambda target, args, daemon: SimpleNamespace(
+        start=lambda: started.append((target, args))))
+    panel.load_name_field.value = "mine"
+    panel._on_load_click(None)
+    [(target, args)] = started
+
+    def download(uri, run_id, path, size, progress=None):
+        if path.endswith(".csv"):
+            # The user clicks another run while the CSV comes down.
+            panel._on_select_run(mlf.Run(run_id="b", run_name="b", status="FINISHED", start_time=2))
+        return Path("/cache") / run_id / path
+
+    monkeypatch.setattr(panel, "_download_cached", download)
+    target(*args)
+    assert attached == [str(Path("/cache/a/eval/test_embeddings.npz"))]

@@ -702,8 +702,7 @@ class HomeView(View):
             server = hub.servers.get(uri)
             if server is None:
                 continue
-            entry = server.artifacts.get(run_id)
-            if entry is None or entry.get("loading"):
+            if server.needs_listing(run_id):
                 pending.append((server, run_id))
         if pending:
             self.s.toast(f"Listing the artifacts of {len(pending)} run(s)...", "neutral")

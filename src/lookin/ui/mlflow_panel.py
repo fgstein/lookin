@@ -1344,12 +1344,16 @@ class MlflowPanel:
         # a chance to repaint since.
         threading.Thread(
             target=self._load_worker,
+            # The sidecar listing too, as of now: the run list stays
+            # clickable during the download, and selecting another run
+            # replaces self.npz_artifacts with that run's.
             args=(self.uri_field.value.strip(), self.selected_run, self.selected_artifact,
-                  self.load_name_field.value.strip()),
+                  self.load_name_field.value.strip(), dict(self.npz_artifacts)),
             daemon=True,
         ).start()
 
-    def _load_worker(self, uri: str, run: mlf.Run, art: mlf.ArtifactFile, typed_name: str):
+    def _load_worker(self, uri: str, run: mlf.Run, art: mlf.ArtifactFile, typed_name: str,
+                     npz_artifacts: dict | None = None):
         try:
             dest = self._download_cached(uri, run.run_id, art.path, art.size,
                                          progress=self._download_progress(Path(art.path).name))
@@ -1362,7 +1366,7 @@ class MlflowPanel:
             self._safe_update(self.panel_status)
             success, message = self.ctx.load_experiment_from_file(str(dest), name)
             if success:
-                message += " " + self._auto_load_embedding_sidecars(uri, run, art, name)
+                message += " " + self._auto_load_embedding_sidecars(uri, run, art, name, npz_artifacts)
             kind = "success" if success else "error"
             self.panel_status.content = status_row(_short(message), kind)
             if success:
@@ -1420,7 +1424,8 @@ class MlflowPanel:
                          progress=None) -> Path:
         return mlflow_cache.download_cached(uri, run_id, artifact_path, expected_size, progress=progress)
 
-    def _auto_load_embedding_sidecars(self, uri: str, run: mlf.Run, csv_art: mlf.ArtifactFile, experiment_name: str) -> str:
+    def _auto_load_embedding_sidecars(self, uri: str, run: mlf.Run, csv_art: mlf.ArtifactFile, experiment_name: str,
+                                      npz_artifacts: dict | None = None) -> str:
         """By-convention sidecar discovery, same rule as a locally-loaded
         CSV (see UploadView._auto_attach_sidecars): next to the CSV
         artifact just loaded (same directory in the run's artifact tree),
@@ -1441,7 +1446,7 @@ class MlflowPanel:
         # "+ embeddings + prototypes" badge on the CSV row -- so re-walking
         # it here would be a second full traversal of the run's tree, over
         # the network, to learn what the panel already knows.
-        by_path = self.npz_artifacts
+        by_path = self.npz_artifacts if npz_artifacts is None else npz_artifacts
         notes = []
 
         embed_art = by_path.get(embed_rel.as_posix())

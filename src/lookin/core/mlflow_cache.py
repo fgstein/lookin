@@ -44,7 +44,16 @@ def artifacts_dir() -> Path:
 
 
 def cached_path(run_id: str, artifact_path: str) -> Path:
-    """Where `artifact_path` of `run_id` is, or will be once downloaded."""
+    """Where `artifact_path` of `run_id` is, or will be once downloaded.
+
+    Raises MlflowError for a run id or path that would point outside the
+    cache (``..``, an absolute path): both come from a server listing or a
+    workspace manifest, and neither may choose where a download is written.
+    """
+    if not (mlf.is_safe_relative_path(run_id) and "/" not in run_id and "\\" not in run_id
+            and mlf.is_safe_relative_path(artifact_path)):
+        raise mlf.MlflowError(f"Refusing artifact {artifact_path!r} of run {run_id!r}: "
+                              "it would be stored outside the download cache")
     return artifacts_dir() / run_id / Path(artifact_path)
 
 
@@ -60,12 +69,12 @@ def is_cached(run_id: str, artifact_path: str, expected_size=None) -> bool:
     """True when the artifact is on disk -- and, when the listing gave a
     size, is that size. A size mismatch is a stale or truncated copy, which
     is not "downloaded" however much it looks like it."""
-    path = cached_path(run_id, artifact_path)
     try:
+        path = cached_path(run_id, artifact_path)
         if not path.is_file():
             return False
         return expected_size is None or path.stat().st_size == int(expected_size)
-    except (OSError, ValueError):
+    except (OSError, ValueError, mlf.MlflowError):
         return False
 
 
@@ -92,16 +101,21 @@ def download_cached(uri: str, run_id: str, artifact_path: str, expected_size=Non
     try:
         mlf.download_artifact(uri, run_id, artifact_path, tmp,
                               progress=progress, total_hint=expected_size)
+        # The size is what is_cached and the workspace cards check a copy
+        # against later. A file that does not have it -- re-logged on the
+        # server since it was listed, or cut short by a server that sent no
+        # length -- would sit in the cache never counting as downloaded, and
+        # be fetched again on every try; better said now, once.
+        got = tmp.stat().st_size
+        if expected_size is not None and got != int(expected_size):
+            raise mlf.MlflowError(
+                f"{artifact_path} changed on the server since it was listed "
+                f"({int(expected_size)} bytes then, {got} now): list the run again, "
+                "or in a workspace remove the experiment and add it back")
         tmp.replace(dest)
-    except BaseException:
-        # An interrupted or refused transfer: its partial file is never a
-        # cache hit (wrong name), but it would sit in the cache forever --
-        # and an embeddings sidecar is hundreds of MB.
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        raise
+    finally:
+        # A failed or refused transfer leaves nothing behind.
+        tmp.unlink(missing_ok=True)
     return dest
 
 

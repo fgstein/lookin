@@ -409,3 +409,23 @@ def test_reloading_the_page_while_a_snapshot_opens_does_not_load_it_twice(exampl
         session.close()
     finally:
         lib.set_library_root(None)
+
+
+def test_a_sidecar_broken_elsewhere_is_reported_not_overwritten(tmp_path):
+    from lookin.ui.review_widgets import record_decision
+
+    paths = _review_paths(tmp_path)
+    store = ReviewStore.load(*paths)
+    Path(paths[0]).write_bytes(b'version_id,uuid\n"v1,u0\n\xff\xfe')   # broken by someone else
+
+    class Ctx:
+        class state:
+            review = store
+
+        def notify_review(self):
+            pass
+
+    broken = Path(paths[0]).read_bytes()
+    ok, message = record_decision(Ctx(), ["u1"], STATUS_OK)
+    assert not ok and "not saved" in message.lower()
+    assert Path(paths[0]).read_bytes() == broken

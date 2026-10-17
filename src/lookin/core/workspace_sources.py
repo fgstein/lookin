@@ -334,9 +334,12 @@ def point_at_cache(workspace: lib.Workspace) -> bool:
     changed = False
     for e in workspace.mount.experiments:
         for f in _files_of(e):
+            # is_cached first: it is False for a path that cached_path
+            # refuses (one that would point outside the cache).
+            if not mlflow_cache.is_cached(e.mlflow_run_id, f.artifact_path, f.size):
+                continue
             cached = mlflow_cache.cached_path(e.mlflow_run_id, f.artifact_path)
-            if _local_path(f) == str(cached) or not mlflow_cache.is_cached(
-                    e.mlflow_run_id, f.artifact_path, f.size):
+            if _local_path(f) == str(cached):
                 continue
             if Path(_local_path(f)).is_file():
                 continue    # a copy elsewhere (an imported workspace's data/) stays in use

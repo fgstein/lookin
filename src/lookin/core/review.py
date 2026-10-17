@@ -155,6 +155,28 @@ def _signature(*paths) -> tuple:
     return tuple(out)
 
 
+def _read_sidecar(path: Path) -> Optional[pd.DataFrame]:
+    """One sidecar as text cells, or None when there is nothing in it.
+
+    An empty file reads as absent: it holds no work to lose. One that is
+    there and cannot be parsed is refused with its name, never treated as
+    empty -- the next save would write this store over it, and a sidecar
+    a hand edit broke usually still holds every decision, one stray quote
+    away from readable."""
+    path = Path(path)
+    if not path.exists():
+        return None
+    try:
+        return pd.read_csv(path, dtype=str, keep_default_na=False)
+    except pd.errors.EmptyDataError:
+        return None
+    except (UnicodeDecodeError, pd.errors.ParserError) as ex:
+        raise ValueError(
+            f"The review file {path} could not be read ({ex}). Fix it, or move it away to start "
+            f"without its decisions, then load the dataset again."
+        ) from ex
+
+
 def _atomic_write_csv(df: pd.DataFrame, path: Path) -> None:
     """Write via a temp file in the same directory + os.replace, so a crash
     (or a full disk) mid-write leaves the previous store intact rather than
@@ -644,8 +666,8 @@ class ReviewStore:
         # shows as a change at the next save (and is merged), instead of
         # being taken for what this store read.
         signature = _signature(decisions_path, versions_path)
-        if versions_path.exists():
-            df = pd.read_csv(versions_path, dtype=str, keep_default_na=False)
+        df = _read_sidecar(versions_path)
+        if df is not None:
             for _, row in df.iterrows():
                 version_id = str(row.get("version_id", "")).strip()
                 if not version_id:
@@ -661,8 +683,8 @@ class ReviewStore:
                     exported_to=str(row.get("exported_to", "")),
                 )
                 store.decisions[version_id] = {}
-        if decisions_path.exists():
-            df = pd.read_csv(decisions_path, dtype=str, keep_default_na=False)
+        df = _read_sidecar(decisions_path)
+        if df is not None:
             for _, row in df.iterrows():
                 version_id = str(row.get("version_id", "")).strip()
                 uid = str(row.get("uuid", "")).strip()
@@ -674,7 +696,10 @@ class ReviewStore:
                     store.versions[version_id] = ReviewVersion(version_id=version_id, created_at=_now())
                     store.decisions[version_id] = {}
                 store.decisions.setdefault(version_id, {})[uid] = Decision(
-                    uuid=uid, status=str(row.get("status", STATUS_OK)), version_id=version_id,
+                    # Spelled as a hand edit or a spreadsheet may have left it:
+                    # "Exclude " must still exclude, not count as some
+                    # unknown status the overlay lets through.
+                    uuid=uid, status=str(row.get("status", STATUS_OK)).strip().lower(), version_id=version_id,
                     new_label=str(row.get("new_label", "")), reason=str(row.get("reason", "")),
                     note=str(row.get("note", "")), source=str(row.get("source", "")),
                     batch_id=str(row.get("batch_id", "")), author=str(row.get("author", "")),
@@ -773,9 +798,13 @@ class ReviewStore:
         Returns (enriched_df, notes) -- notes describes any column that had
         to be renamed to avoid overwriting something already in `df`.
         """
+        from lookin.core.data_manager import _uuids_as_str
+
         out = df.copy()
         notes = []
-        uuids = out[uuid_col].astype(str)
+        # Looked up the way the loaded dataset spelled them, which is how
+        # every decision is keyed (see data_manager._uuids_as_str).
+        uuids = _uuids_as_str(out[uuid_col]).astype(str)
         originals = out[label_col]
 
         for version_id in version_ids:
@@ -994,7 +1023,11 @@ def export_enriched_dataset(
     # silent and total, so it must happen before anything else can.
     dest_path = check_export_destination(dest_path, dataset_csv_path)
     t0 = time.monotonic()
-    df = pd.read_csv(dataset_csv_path)
+    # Every cell as the text it is in the file: "the user's own CSV back
+    # out, unchanged" means an id '0012' stays '0012', a '1.50' stays
+    # '1.50' and an empty cell stays empty, rather than whatever pandas'
+    # type guessing turns them into on the way through.
+    df = pd.read_csv(dataset_csv_path, dtype=str, keep_default_na=False)
     _log(f"export: re-read {len(df):,} rows from {dataset_csv_path} ({time.monotonic() - t0:.1f}s)")
 
     for required in (uuid_col, label_col):
