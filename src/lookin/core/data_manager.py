@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import time
 import warnings
+import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -77,8 +79,75 @@ def _count_data_rows(path: str) -> int:
     return max(0, count - 1)  # minus header row
 
 
+@contextmanager
+def _readable_csv(path):
+    """Turn pandas' parse failures into messages naming the file and the
+    fix. "'utf-8' codec can't decode byte 0xe9 in position 28" is what a
+    CSV saved by a spreadsheet in its local encoding produces, and nothing
+    in it says which file or what to do about it."""
+    try:
+        yield
+    except UnicodeDecodeError as ex:
+        raise ValueError(
+            f"{path} is not UTF-8 text ({ex.reason} at byte {ex.start}). Save it as UTF-8 "
+            f"(in a spreadsheet: 'CSV UTF-8') and load it again."
+        ) from ex
+    except pd.errors.EmptyDataError as ex:
+        raise ValueError(f"{path} is empty: there is not even a header row.") from ex
+    except pd.errors.ParserError as ex:
+        raise ValueError(f"{path} could not be read as a CSV: {ex}") from ex
+
+
+def _uuids_as_str(series: pd.Series) -> pd.Series:
+    """An id column read as text (see the dtype the readers pass), with one
+    repair: a column whose every id is a whole number written as a float
+    ('12.0') is read as those whole numbers.
+
+    Text, because ids are compared as strings everywhere else -- the
+    embeddings sidecar, the review store, the export -- and parsing them
+    as numbers loses what makes them ids: '0012' became 12 and then matched
+    no embedding, and the export wrote 12 back into the user's training
+    file. A large file is read in chunks, too, and a number-looking chunk
+    next to one holding a single non-numeric id gave int ids in one part
+    of the frame and str in the other, which the join then silently split.
+
+    The float repair is what any int column that once held a gap looks
+    like after a pandas round-trip, and was matched against plain '12' by
+    the numeric join before; it is done only when the *whole* column has
+    that shape, so a real id that happens to end in '.0' is left alone.
+    """
+    present = series.dropna().astype(str)
+    present = present[present != ""]
+    if len(present) and present.str.fullmatch(r"-?\d+\.0+").all():
+        series = series.astype(str).str.replace(r"\.0+$", "", regex=True).where(series.notna(), np.nan)
+    return series
+
+
+def _check_score_columns(score_cols: list, columns: "ColumnConfig") -> None:
+    """Refuse a class named like the dataset's id, crop or label column.
+
+    Those three cannot step aside in the join the way a metadata column
+    does (every view reads them by name), so the class's scores would be
+    read from the crop paths or the labels instead -- a crash at best. A
+    class called "crop" next to a crop column called "crop" is not even
+    far-fetched."""
+    roles = {columns.uuid_col: "id", columns.crop_col: "crop", columns.label_col: "label"}
+    for col in score_cols:
+        if col and col in roles:
+            raise ValueError(
+                f"The results CSV has a class score column named '{col}', which is also the dataset's "
+                f"{roles[col]} column, so the two cannot be told apart. Rename one of them in its CSV."
+            )
+
+
 def _read_csv_with_progress(path: str, progress_cb: Optional[ProgressCallback] = None,
                             dtype: Optional[dict] = None) -> pd.DataFrame:
+    with _readable_csv(path):
+        return _read_csv_chunks(path, progress_cb, dtype)
+
+
+def _read_csv_chunks(path: str, progress_cb: Optional[ProgressCallback] = None,
+                     dtype: Optional[dict] = None) -> pd.DataFrame:
     _log(f"reading {path} ...")
     t0 = time.monotonic()
     if progress_cb is None:
@@ -162,8 +231,18 @@ def _load_npz_no_pickle(path: str) -> dict:
     """
     try:
         with np.load(path, allow_pickle=False) as data:
+            if not hasattr(data, "files"):
+                # A bare .npy saved under an .npz name: one array, no names.
+                raise ValueError(f"{path} holds a single array, not the named arrays of an .npz file.")
             return {name: data[name] for name in data.files}
+    except (zipfile.BadZipFile, EOFError) as ex:
+        raise ValueError(f"{path} is not a valid .npz file (truncated or corrupt: {ex}).") from ex
     except ValueError as ex:
+        if "contains pickled (object) data" in str(ex):
+            # What np.load says about *any* file that is neither a zip nor
+            # an .npy -- a text file, a half-copied download -- and its
+            # advice to load it unsafely is the last thing to follow here.
+            raise ValueError(f"{path} is not a valid .npz file.") from ex
         if "Object arrays cannot be loaded" in str(ex):
             raise ValueError(
                 f"Could not read {path}: it contains a pickled object array, which is refused for "
@@ -323,10 +402,24 @@ def read_embeddings_npz(path: str) -> tuple:
     data = _load_npz_no_pickle(path)
     if "uuid" not in data or "embeddings" not in data:
         raise ValueError(f"Embeddings file must contain 'uuid' and 'embeddings' arrays, found: {list(data)}")
-    uuids = data["uuid"].astype(str)
-    embeddings = data["embeddings"].astype(np.float32)
+    uuids = _uuids_as_str(pd.Series(data["uuid"].astype(str))).to_numpy(dtype=str)
+    try:
+        embeddings = data["embeddings"].astype(np.float32)
+    except (TypeError, ValueError) as ex:
+        raise ValueError(f"'embeddings' must be numbers, found {data['embeddings'].dtype} ({ex})") from ex
+    if embeddings.ndim != 2:
+        # A (N,) array would be normalized as one long vector, load without
+        # complaint, and fail later on its missing second dimension.
+        raise ValueError(f"'embeddings' must be a 2-D (N, D) array, found shape {embeddings.shape}")
     if len(uuids) != len(embeddings):
         raise ValueError(f"'uuid' ({len(uuids)}) and 'embeddings' ({len(embeddings)}) length mismatch")
+    finite = np.isfinite(embeddings).all(axis=1)
+    if not finite.all():
+        # One NaN vector turns every projection of the pool into NaN, or an
+        # error from deep inside sklearn. Dropped like a crop the sidecar
+        # never had: partial coverage is already handled everywhere.
+        _log(f"{path}: dropping {int((~finite).sum()):,} embedding(s) holding NaN or infinite values")
+        uuids, embeddings = uuids[finite], embeddings[finite]
     return uuids, l2_normalize(embeddings)
 
 
@@ -487,11 +580,15 @@ class Experiment:
             raise ValueError(f"Prototypes file must contain 'labels' and 'prototypes' arrays, found: {list(data)}")
         labels = data["labels"].astype(str).tolist()
         vectors = data["prototypes"].astype(np.float32)
+        if vectors.ndim not in (2, 3):
+            raise ValueError(f"'prototypes' must be a (C, D) or (C, K, D) array, found shape {vectors.shape}")
         if vectors.ndim == 2:
             vectors = vectors[:, None, :]
         if len(labels) != vectors.shape[0]:
             raise ValueError(f"'labels' ({len(labels)}) and 'prototypes' first dim ({vectors.shape[0]}) mismatch")
-        nan_mask = np.isnan(vectors).any(axis=-1, keepdims=True)
+        # Infinite counts as missing too: nan_to_num would turn it into the
+        # largest float32, and the normalized prototype into an axis vector.
+        nan_mask = ~np.isfinite(vectors).all(axis=-1, keepdims=True)
         vectors = np.where(nan_mask, np.nan, l2_normalize(np.nan_to_num(vectors)))
         proto_set = PrototypeSet(vectors=vectors.astype(np.float32), class_labels=labels, source=MODEL_SOURCE, k=vectors.shape[1])
         self.model_prototypes = proto_set
@@ -584,13 +681,16 @@ class AppState:
         self, csv_path: str, columns: ColumnConfig, progress_cb: Optional[ProgressCallback] = None,
         row_filter: Optional[tuple] = None, image_root: Optional[str] = None,
     ) -> Dataset:
-        df = _read_csv_with_progress(csv_path, progress_cb)
+        df = _read_csv_with_progress(csv_path, progress_cb,
+                                     dtype={columns.uuid_col: str} if columns.has_ids() else None)
         required_cols = [columns.crop_col, columns.label_col]
         if columns.has_ids():
             required_cols.insert(0, columns.uuid_col)
         for required in required_cols:
             if required not in df.columns:
                 raise ValueError(f"Column '{required}' not found in dataset CSV. Available: {list(df.columns)}")
+        if columns.has_ids():
+            df[columns.uuid_col] = _uuids_as_str(df[columns.uuid_col])
 
         if row_filter is not None:
             filter_col, filter_value = row_filter
@@ -718,17 +818,21 @@ class AppState:
         # downcast to anyway: parsed as float64 first, a results file of two
         # thousand classes held twice its final size in memory while loading
         # (and once more while its chunks were concatenated).
-        header = pd.read_csv(csv_path, nrows=0).columns
-        try:
-            df = _read_csv_with_progress(csv_path, progress_cb, dtype={
-                c: np.float32 for c in header if c not in (uuid_col, "label")})
-        except ValueError as ex:
-            raise ValueError(
-                f"Every column of a results CSV other than '{uuid_col}' (and an optional 'label') "
-                f"is read as one class's score, so it must be numeric -- {ex}"
-            ) from ex
+        with _readable_csv(csv_path):
+            header = pd.read_csv(csv_path, nrows=0).columns
+            try:
+                df = _read_csv_chunks(csv_path, progress_cb, dtype={
+                    c: (str if c == uuid_col else np.float32) for c in header if c != "label"})
+            except (UnicodeDecodeError, pd.errors.EmptyDataError, pd.errors.ParserError):
+                raise
+            except ValueError as ex:
+                raise ValueError(
+                    f"Every column of a results CSV other than '{uuid_col}' (and an optional 'label') "
+                    f"is read as one class's score, so it must be numeric -- {ex}"
+                ) from ex
         if uuid_col not in df.columns:
             raise ValueError(f"Column '{uuid_col}' not found in results CSV. Available: {list(df.columns)}")
+        df[uuid_col] = _uuids_as_str(df[uuid_col])
         # Score columns are every column except uuid and an optional
         # pre-computed 'label' column (the already-argmax'd prediction, not
         # a class score, so it's not usable as one and must be excluded).
@@ -741,6 +845,8 @@ class AppState:
         score_cols = [c for c in df.columns if c not in non_score]
         if not score_cols:
             raise ValueError("No class score columns found in results CSV.")
+        if self.dataset is not None:
+            _check_score_columns(score_cols, self.dataset.columns)
         _downcast_numeric(df, exclude={uuid_col})
         experiment = Experiment(
             name=name, df=df, uuid_col=uuid_col, score_cols=score_cols,
@@ -787,12 +893,13 @@ class AppState:
                 f"'{DATASET_SOURCE_GROUP}' is reserved: it is the name the dataset's own points take "
                 f"when the projection is colored by source, and two sources cannot share one name."
             )
-        df = _read_csv_with_progress(csv_path, progress_cb)
+        df = _read_csv_with_progress(csv_path, progress_cb, dtype={uuid_col: str})
         for required, role in ((uuid_col, "id"), (crop_col, "crop path")):
             if required not in df.columns:
                 raise ValueError(
                     f"Column '{required}' ({role}) not found in '{name}'. Available: {list(df.columns)}"
                 )
+        df[uuid_col] = _uuids_as_str(df[uuid_col])
         csv_rows = len(df)
 
         uuids, embeddings = read_embeddings_npz(embeddings_path)
@@ -995,8 +1102,20 @@ class AppState:
             _log(f"warning: duplicate uuids found (dataset: {overlap.dataset_dupes:,}, "
                  f"experiment: {overlap.experiment_dupes:,}) -- the join below may produce more "
                  f"rows than either input if the same uuid repeats on both sides")
+        _check_score_columns(experiment.score_cols, cols)
+        left = self.dataset.df
+        # A metadata column sharing a class's name would keep that name in
+        # the join (the dataset's side takes no suffix), and merged[score_cols]
+        # would then read the metadata as that class's score -- a wrong
+        # prediction for every row, with nothing to show for it. The score
+        # keeps the name; the dataset's column steps aside.
+        clash = [c for c in experiment.score_cols if c in left.columns]
+        if clash:
+            _log(f"dataset column(s) {clash} share a class name with experiment '{experiment_name}': "
+                 f"renamed with a '_dataset' suffix in its merged view")
+            left = left.rename(columns={c: f"{c}_dataset" for c in clash})
         t0 = time.monotonic()
-        merged = self.dataset.df.merge(
+        merged = left.merge(
             experiment.df, left_on=cols.uuid_col, right_on=experiment.uuid_col, how="inner",
             suffixes=("", "_result"),
         )

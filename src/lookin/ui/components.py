@@ -291,14 +291,31 @@ def _load_and_encode_png(path: Path, lut: str = LUT_NONE, quarter_turns: int = 0
     is a plain min/max stretch, which is the only way to show the data at
     all. This is the one place pixel *values* change, and only ever for
     display: nothing here writes back to the file."""
-    img = Image.open(path)
+    try:
+        img = Image.open(path)
+    except Image.DecompressionBombError as ex:
+        # Not an OSError, so it used to escape every caller's "show the
+        # placeholder" handler and fail the whole request or panel.
+        raise ValueError(str(ex)) from ex
+    if img.mode == "CMYK" or img.mode in ("P", "PA"):
+        # Palette indices and ink channels are not intensities: stretched
+        # by a LUT they draw a different picture (CMYK's K read as alpha,
+        # a palette as greys), and PNG cannot hold CMYK at all.
+        has_alpha = img.mode == "PA" or "transparency" in img.info
+        img = img.convert("RGBA" if has_alpha else "RGB")
     arr = np.array(img)
 
     if lut != LUT_NONE:
         arr = _apply_lut(arr, lut)
         img = Image.fromarray(arr)
-    elif arr.dtype == np.uint16:
-        arr = _stretch(arr, float(arr.min()), float(arr.max()))
+    elif arr.dtype.kind in "uif" and arr.dtype != np.uint8:
+        # 16-bit, and also 32-bit int or float (a mode "I"/"F" TIFF), which
+        # PNG cannot store either: without this they rendered as the
+        # placeholder, as if the file were broken. NaN pixels are left out
+        # of the range, or they would make all of it NaN.
+        finite = arr[np.isfinite(arr)] if arr.dtype.kind == "f" else arr
+        lo, hi = (float(finite.min()), float(finite.max())) if finite.size else (0.0, 0.0)
+        arr = _stretch(np.nan_to_num(arr, nan=lo) if arr.dtype.kind == "f" else arr, lo, hi)
         img = Image.fromarray(arr)
 
     if quarter_turns % 4:
