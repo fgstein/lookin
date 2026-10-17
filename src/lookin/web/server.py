@@ -236,6 +236,20 @@ def create_app(webapp: WebApp) -> FastAPI:
         data, mime = crop_bytes(path, l, int(t) % 4)
         return Response(data, media_type=mime, headers={"Cache-Control": "private, max-age=3600"})
 
+    @app.get("/pimg/{sid}/{mkey}/{i}")
+    def point_image(sid: str, mkey: str, i: int):
+        """The crop behind point `i` of an interactive map (see
+        Session.put_point_map): the map knows thousands of points, and only
+        the ones the pointer lands on are ever read."""
+        session = store.get(sid, create=False)
+        resolve = session.point_map(mkey) if session is not None else None
+        found = resolve(int(i)) if resolve is not None else None
+        if not found:
+            return Response(status_code=404)
+        path, lut, turns = found
+        data, mime = crop_bytes(str(path), lut, int(turns) % 4)
+        return Response(data, media_type=mime, headers={"Cache-Control": "private, max-age=600"})
+
     @app.get("/chart/{sid}/{key}.png")
     def chart(sid: str, key: str):
         session = store.get(sid, create=False)

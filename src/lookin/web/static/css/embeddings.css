@@ -1,0 +1,26 @@
+/* Embeddings tab: settings on the left, the square map on the right */
+.emb { display: flex; gap: 16px; align-items: flex-start; }
+.emb-left { flex: 1 1 0; min-width: 360px; }
+.emb-right { flex: 0 0 auto; width: min(50vw - 40px, 1100px); position: sticky; top: 0; }
+.emb-full .emb-left { display: none; }
+.emb-full .emb-right { width: 100%; }
+.emb-proto { border-top: 1px solid var(--line-2); padding-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+.pmap { display: flex; flex-direction: column; gap: 6px; }
+.pm-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.pm-tools { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.pmap-box { position: relative; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fff; }
+.pmap-c, .pmap-o { position: absolute; left: 0; top: 0; }
+.pmap-o { cursor: crosshair; touch-action: none; }
+.pmap-card { position: absolute; display: none; flex-direction: column; gap: 3px; padding: 6px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); pointer-events: none; max-width: 180px; }
+.pmap-card img { width: 120px; height: 120px; object-fit: contain; image-rendering: pixelated; background: #000; border-radius: 4px; }
+.pmap-card b { font-size: 11px; white-space: nowrap; }
+.pmap-card span { font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pm-stat { display: none; }
+.pmap.pm-static .pm-stat { display: block; }
+.pmap.pm-static .pm-inter, .pmap.pm-static .pm-tools { display: none; }
+.pm-lg-list { max-height: 360px; overflow: auto; margin-top: 4px; }
+.pm-lg { gap: 4px; }
+.pm-lg button.on { color: var(--acc); background: var(--acc-soft); }
+.ov-c { display: flex; align-items: center; justify-content: center; font-size: 9px; border-radius: 4px; }
+.ov-na { background: var(--surface-2); }
+.seg-b.on { background: var(--acc-soft); color: var(--acc-ink); }

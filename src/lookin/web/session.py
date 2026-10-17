@@ -163,6 +163,7 @@ class Session:
         self._images: dict = {}              # key -> Path (only paths a view registered)
         self._charts: "OrderedDict[str, bytes]" = OrderedDict()
         self._downloads: "OrderedDict[str, tuple]" = OrderedDict()
+        self._point_maps: "OrderedDict[str, Callable]" = OrderedDict()
         self._blob_lock = threading.Lock()
 
         # ---- push channel ----
@@ -350,6 +351,21 @@ class Session:
     def image_path(self, key: str) -> Optional[str]:
         with self._blob_lock:
             return self._images.get(key)
+
+    def put_point_map(self, resolve: Callable[[int], Optional[tuple]]) -> str:
+        """Register an interactive map's point -> (path, lut, turns)
+        resolver; /pimg/<sid>/<key>/<i> serves through it. Only the last
+        few maps are kept."""
+        key = secrets.token_hex(6)
+        with self._blob_lock:
+            self._point_maps[key] = resolve
+            while len(self._point_maps) > 4:
+                self._point_maps.popitem(last=False)
+        return key
+
+    def point_map(self, key: str):
+        with self._blob_lock:
+            return self._point_maps.get(key)
 
     def put_chart(self, png: bytes, key: Optional[str] = None) -> str:
         key = key or secrets.token_hex(8)

@@ -431,3 +431,4 @@ button.chip:hover { border-color: var(--acc); }
 .st-uncertain { color: #A15C07; background: rgba(161,92,7,.12); }
 .car-head { margin-bottom: 6px; }
 .grid2 > .card { margin: 0; align-self: start; }
+[hidden] { display: none !important; }
