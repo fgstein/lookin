@@ -53,6 +53,24 @@ def _args(args: dict) -> str:
     return f" data-args='{e(json.dumps(args, separators=(',', ':')))}'" if args else ""
 
 
+def data_args(**args) -> str:
+    """The data-args attribute alone, for an element that is not itself a
+    data-act (a drop target): JSON built by hand breaks on a quote."""
+    return _args(args)
+
+
+def safe_href(url) -> str:
+    """`url` if a link may point there: http(s), or a path on this server.
+    A URL read from a file (an MLflow server in a workspace someone shared,
+    the Home settings) could otherwise be `javascript:...`, which a click
+    runs inside Lookin's page."""
+    text = str(url or "").strip()
+    scheme = text.split(":", 1)[0].lower() if ":" in text.split("/", 1)[0] else ""
+    if scheme in ("http", "https") or (not scheme and text.startswith("/") and not text.startswith("//")):
+        return text
+    return ""
+
+
 def act(target: str, action: str, **args) -> str:
     """Attributes for a click that runs `target.on_<action>(**args)`."""
     return f' data-act="{e(target)}:{e(action)}"{_args(args)}'
@@ -162,6 +180,9 @@ def button(label: str = "", *, act_attr: str = "", kind: str = "", icon_name: st
 
 def link_button(label: str, href: str, *, kind: str = "", icon_name: str = "", title: str = "",
                 new_tab: bool = True, small: bool = False) -> str:
+    href = safe_href(href)
+    if not href:
+        return ""
     classes = " ".join(c for c in ("btn", f"btn-{kind}" if kind else "", "btn-sm" if small else "",
                                    "btn-icon" if (icon_name and not label) else "") if c)
     inner = (icon(icon_name, 14) if icon_name else "") + (f"<span>{e(label)}</span>" if label else "")

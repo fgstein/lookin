@@ -26,7 +26,7 @@ import traceback
 from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -37,6 +37,10 @@ from lookin.web.session import RequestScope, SessionStore
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 SSE_KEEPALIVE_S = 15.0
+# The browser window the page reports, clamped: it sizes pages of crops and
+# the Embeddings map, and a request claiming a window a million pixels wide
+# must not turn into a million-pixel figure.
+VIEWPORT_MIN, VIEWPORT_MAX = 320, 16384
 
 
 class WebApp:
@@ -91,6 +95,16 @@ def crop_bytes(path: str, lut: str, turns: int) -> tuple:
         while len(_CROP_CACHE) > _CROP_CACHE_MAX:
             _CROP_CACHE.popitem(last=False)
     return out
+
+
+def content_disposition(disposition: str, filename: str) -> str:
+    """The header for a download named after something the user named (a
+    workspace, a class): headers are latin-1, so a name in another script
+    -- or with a quote or a line break in it -- would fail the response.
+    An ASCII stand-in for old clients, the real name in RFC 5987 form."""
+    name = str(filename)
+    fallback = "".join(c if 32 <= ord(c) < 127 and c not in '"\\' else "_" for c in name) or "download"
+    return f"{disposition}; filename=\"{fallback}\"; filename*=UTF-8''{quote(name, safe='')}"
 
 
 # ---- the page ----------------------------------------------------------------
@@ -165,13 +179,49 @@ def create_app(webapp: WebApp, enable_mcp: bool = False) -> FastAPI:
     def no_session():
         return JSONResponse({"error": "no session", "reload": True}, status_code=410)
 
+    @app.middleware("http")
+    async def refuse_cross_site_posts(request: Request, call_next):
+        # Lookin listens with no login, so any web page the user visits
+        # could otherwise POST to /api/act and drive it -- open a session,
+        # browse the disk, delete workspaces. The answers are never readable
+        # cross-site, but the side effects would happen. Two checks that
+        # need no token and do not depend on the address the page was opened
+        # under (a port forward or a gateway under another name are normal
+        # here, see mcp_server.py):
+        #  * the page's own requests are JSON, and a page on another site
+        #    cannot send a JSON content type without a CORS preflight, which
+        #    this server never grants -- a <form> or a no-cors fetch can only
+        #    send text/plain, urlencoded or multipart;
+        #  * browsers that send Fetch Metadata say where a request comes from.
+        # The MCP endpoint keeps its own transport rules (it is read-only).
+        if request.method == "POST" and request.url.path.startswith("/api/"):
+            site = request.headers.get("sec-fetch-site", "")
+            ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
+            if (site and site not in ("same-origin", "none")) or ctype != "application/json":
+                return JSONResponse({"error": "cross-site request refused"}, status_code=403)
+        return await call_next(request)
+
+    async def json_body(request: Request) -> Optional[dict]:
+        """The request's JSON object, or None for anything else (malformed
+        JSON, a list, a string) -- answered with a 400, not a traceback."""
+        try:
+            body = await request.json()
+        except ValueError:
+            return None
+        return body if isinstance(body, dict) else None
+
+    def bad_request():
+        return JSONResponse({"error": "expected a JSON object"}, status_code=400)
+
     @app.get("/", response_class=HTMLResponse)
     def index():
         return HTMLResponse(page_html(), headers={"Cache-Control": "no-store"})
 
     @app.post("/api/boot")
     async def boot(request: Request):
-        body = await request.json()
+        body = await json_body(request)
+        if body is None:
+            return bad_request()
         session = store.get(str(body.get("sid", "")))
         if session is None:
             return no_session()
@@ -181,9 +231,12 @@ def create_app(webapp: WebApp, enable_mcp: bool = False) -> FastAPI:
     def _viewport(session, body):
         # The browser window, for the views that size a page of crops to
         # what fits on screen (the carousel); sent with every request.
+        def clamp(value) -> int:
+            return min(VIEWPORT_MAX, max(VIEWPORT_MIN, int(value or 0)))
+
         try:
-            session.viewport = (max(320, int(body.get("vw") or 0)), max(320, int(body.get("vh") or 0)))
-        except (TypeError, ValueError):
+            session.viewport = (clamp(body.get("vw")), clamp(body.get("vh")))
+        except (TypeError, ValueError, OverflowError):   # Infinity is valid JSON to Python
             pass
 
     def _boot(session, query, body=None):
@@ -199,7 +252,9 @@ def create_app(webapp: WebApp, enable_mcp: bool = False) -> FastAPI:
 
     @app.post("/api/act")
     async def act(request: Request):
-        body = await request.json()
+        body = await json_body(request)
+        if body is None or not isinstance(body.get("args") or {}, dict):
+            return bad_request()
         session = store.get(str(body.get("sid", "")), create=False)
         if session is None:
             return no_session()
@@ -295,7 +350,7 @@ def create_app(webapp: WebApp, enable_mcp: bool = False) -> FastAPI:
         data, filename, mime = item
         disposition = "inline" if inline else "attachment"
         return Response(data, media_type=mime,
-                        headers={"Content-Disposition": f'{disposition}; filename="{filename}"',
+                        headers={"Content-Disposition": content_disposition(disposition, filename),
                                  "Cache-Control": "private, no-store"})
 
     return app

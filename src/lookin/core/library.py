@@ -710,7 +710,7 @@ def fork_snapshot(workspace: Workspace, snapshot: Snapshot, view_state: dict) ->
 def save_snapshot(workspace: Workspace, snapshot: Snapshot) -> bool:
     """Write a snapshot in place. Metadata edits go through here and keep
     the id; a state change must go through fork_snapshot instead."""
-    if workspace.path is None or not snapshot.id:
+    if workspace.path is None or not _is_plain_id(snapshot.id):
         return False
     snapshot.updated_at = _now()
     snapshot.workspace_id = snapshot.workspace_id or workspace.id
@@ -719,8 +719,17 @@ def save_snapshot(workspace: Workspace, snapshot: Snapshot) -> bool:
     )
 
 
+def _is_plain_id(snapshot_id: str) -> bool:
+    """A snapshot id names a file in the snapshots folder, and it arrives in
+    a URL (?snapshot=) or inside a snapshot file: one with a path separator
+    or a leading dot would reach another .json on the disk -- read as a
+    snapshot, or deleted with one."""
+    text = str(snapshot_id or "")
+    return bool(text) and not text.startswith(".") and not any(c in text for c in "/\\:\x00")
+
+
 def load_snapshot(workspace: Workspace, snapshot_id: str) -> Optional[Snapshot]:
-    if workspace.path is None or not snapshot_id:
+    if workspace.path is None or not _is_plain_id(snapshot_id):
         return None
     raw = _read_json(workspace.snapshots_dir() / f"{snapshot_id}.json")
     return snapshot_from_dict(raw) if raw is not None else None
@@ -750,7 +759,7 @@ def list_snapshots(workspace: Workspace) -> list:
 
 
 def delete_snapshot(workspace: Workspace, snapshot_id: str) -> bool:
-    if workspace.path is None or not snapshot_id:
+    if workspace.path is None or not _is_plain_id(snapshot_id):
         return False
     try:
         (workspace.snapshots_dir() / f"{snapshot_id}.json").unlink()
