@@ -398,10 +398,20 @@ back at any time):
 - **On the right, your workspaces.** A workspace is one dataset and the
   experiments scored on it, plus the snapshots (saved views) made from it.
   Drag a run or a CSV -- or a whole selection -- onto a workspace to add
-  it. A run with several CSVs asks which ones. The workspace's dataset is
-  taken from the first run added (its
-  `datamodule/configs/database/csv_path` parameter, configurable), and a
+  it. A run with several CSVs asks which ones. The workspaces sit in
+  groups you name (a project, a stage...); each group's **+** creates one
+  in it. The dataset is optional at creation: set it on the card, in the
+  Data tab once the workspace is open, or let the first run added bring it
+  (its `datamodule/configs/database/csv_path` parameter, configurable). A
   run evaluated on another dataset is refused.
+- **An open workspace follows its card.** A dataset or a run added on Home
+  -- in this tab or another -- shows up in the tab where the workspace is
+  open within a few seconds.
+- **Saving is explicit.** What you load or change in the Data tab is not
+  written into the workspace until you click **Save** in the app bar, which
+  appears as soon as the two differ (or **Save as workspace** when no
+  workspace is open). Snapshots of the view are saved separately, from the
+  Workspaces window.
 - **Adding is not downloading.** A workspace records which run and artifact
   each experiment is; its download button fetches them into
   `~/.cache/lookin/`, and a green dot says everything is here. Opening a
@@ -428,6 +438,43 @@ loads a single CSV from a run into the session on screen.
 
 A bundled CIFAR-10-based example dataset loads by default so the tool is
 usable immediately.
+
+## AI agents: the MCP endpoint
+
+`lookin ui` also serves an [MCP](https://modelcontextprotocol.io) endpoint
+at `/mcp`, on the same host and port as the web interface. An agent pointed
+at it can read your workspaces and their results on its own: "check my
+results", "which experiment has the best macro F1, and what does it still
+confuse?". It works with any MCP client that can reach the server, such as
+OpenCode with a local LLM:
+
+```json
+{ "mcp": { "lookin": { "type": "remote", "url": "http://lookin-server:8550/mcp" } } }
+```
+
+The model needs to support tool calling. The tools are read-only and
+answer in compact JSON:
+
+| tool | what it answers |
+| --- | --- |
+| `list_workspaces` | every workspace: id, name, dataset, experiments, download state |
+| `get_workspace` | one workspace's dataset, experiments (and their MLflow runs), snapshots |
+| `get_metrics` | the summary metrics of each experiment of a workspace |
+| `get_per_class` | per-class precision, recall, F1, AUC... worst classes first |
+| `get_confusions` | the most frequent (true -> predicted) mistakes |
+| `compare_experiments` | crops fixed and broken by a candidate, per-class changes |
+| `get_examples` | individual crops, most confident errors first |
+| `search_mlflow_runs` | runs on the MLflow servers configured on Home, with MLflow's filter syntax |
+
+Metrics are computed on the server, where the data is, on the workspace's
+original labels. An experiment whose MLflow files are not downloaded is
+reported as not loaded, not silently left out. Every answer carries the
+same warnings the UI would show (dataset changed since the workspace was
+saved, experiment barely overlapping the dataset). The last two
+workspaces loaded stay in memory, so follow-up questions are fast.
+
+Whoever can reach the UI can reach the endpoint. The endpoint writes
+nothing, and exposes nothing the UI does not. `--no-mcp` turns it off.
 
 ## Development
 

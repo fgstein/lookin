@@ -31,6 +31,10 @@ def main(argv: list[str] | None = None) -> None:
              "$LOOKIN_LIBRARY). Point it at a shared mount to open a colleague's workspace by id.",
     )
     ui_parser.add_argument(
+        "--no-mcp", action="store_false", dest="mcp",
+        help="Do not serve the MCP endpoint for AI agents (served at /mcp on the same port by default).",
+    )
+    ui_parser.add_argument(
         "--experiment", action="append", default=[], metavar="NAME=PATH", dest="experiments",
         help="Results CSV to load automatically on startup, as NAME=PATH. Repeatable for multiple "
              "experiments. Requires --dataset.",
@@ -66,7 +70,7 @@ def main(argv: list[str] | None = None) -> None:
             return
         from lookin.app import run_ui  # deferred: keep `lookin --help` fast and dependency-light
         run_ui(host=args.host, port=args.port, dataset=args.dataset, experiments=experiments,
-               library_dir=args.library)
+               library_dir=args.library, enable_mcp=args.mcp)
     else:
         parser.print_help()
 

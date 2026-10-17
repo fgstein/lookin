@@ -252,7 +252,8 @@ def main(page: ft.Page, dataset: str | None = None, experiments: list[tuple[str,
     # "Is what I am looking at saved?" -- answered in the app bar, because
     # the moment it matters is the moment the user is about to open
     # something else (see ui/save_status.py).
-    save_status = SaveStatusIndicator(ctx, on_click=workspace_panel.open_panel)
+    save_status = SaveStatusIndicator(ctx, on_click=workspace_panel.open_panel,
+                                      on_save=workspace_panel.save_current)
     ctx.save_status = save_status
     ctx.subscribe(save_status.refresh)
     display_settings = DisplaySettings(ctx)
@@ -306,9 +307,13 @@ def main(page: ft.Page, dataset: str | None = None, experiments: list[tuple[str,
     def on_close(e):
         home_view.stop()
         mlflow_panel.stop_polling()
+        workspace_panel.stop_watching()
 
     page.on_disconnect = None
     page.on_close = on_close
+    # A dataset set on the workspace's Home card -- here or in another tab
+    # -- reaches its Data tab (see WorkspacePanel.follow_workspace).
+    workspace_panel.start_watching()
 
     # --dataset / --experiment (see cli.py): load after the tab content is
     # already on the page, so the browser shows the UI immediately and the
@@ -438,7 +443,7 @@ def _open_from_url(page: ft.Page, workspace_panel) -> None:
 def run_ui(
     host: str = "127.0.0.1", port: int = 8550,
     dataset: str | None = None, experiments: list[tuple[str, str]] | None = None,
-    library_dir: str | None = None,
+    library_dir: str | None = None, enable_mcp: bool = True,
 ) -> None:
     """Launch the Flet web app -- called by `lookin ui` (see cli.py).
 
@@ -456,12 +461,27 @@ def run_ui(
     if library_dir:
         library.set_library_root(library_dir)
     target = partial(main, dataset=dataset, experiments=experiments)
+    # Served here rather than through ft.app() so the same server can carry
+    # the MCP endpoint next to the UI (see lookin/mcp_server.py).
+    import uvicorn
+    from flet.utils import is_linux_server, open_in_browser
+
+    from lookin.mcp_server import MCP_PATH, build_asgi_app
+
     # assets_dir is what lets a chart be opened as a real PNG in a browser
     # tab (see ui/image_export.py). It has to exist before this call and be
     # absolute, on both counts because flet_web checks once and silently
     # ignores a directory that fails either test.
-    ft.app(target=target, view=ft.AppView.WEB_BROWSER, host=host, port=port,
-           web_renderer=ft.WebRenderer.CANVAS_KIT, assets_dir=str(assets_root()))
+    app = build_asgi_app(target, assets_dir=str(assets_root()), enable_mcp=enable_mcp)
+    url = f"http://{'127.0.0.1' if host in ('', '0.0.0.0', '*') else host}:{port}"
+    print(f"[lookin] web interface: {url}", flush=True)
+    if enable_mcp:
+        print(f"[lookin] MCP endpoint for AI agents: {url}{MCP_PATH}", flush=True)
+    # What ft.app() did for a web view: open a tab, except on a headless
+    # Linux server where there is no browser to open.
+    if not is_linux_server():
+        open_in_browser(url)
+    uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
 if __name__ == "__main__":
