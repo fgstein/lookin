@@ -95,6 +95,17 @@ def crop_bytes(path: str, lut: str, turns: int) -> tuple:
 
 # ---- the page ----------------------------------------------------------------
 
+def _extra_assets() -> str:
+    """One stylesheet per view under static/css/ and one script per view
+    under static/js/ (the canvas of the Embeddings map), all local."""
+    out = []
+    for path in sorted((STATIC_DIR / "css").glob("*.css")):
+        out.append(f'<link rel="stylesheet" href="/static/css/{path.name}?v={__version__}">')
+    for path in sorted((STATIC_DIR / "js").glob("*.js")):
+        out.append(f'<script src="/static/js/{path.name}?v={__version__}" defer></script>')
+    return "\n".join(out)
+
+
 def page_html() -> str:
     return f"""<!doctype html>
 <html lang="en">
@@ -105,6 +116,7 @@ def page_html() -> str:
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/app.css?v={__version__}">
 <script src="/static/app.js?v={__version__}" defer></script>
+{_extra_assets()}
 </head>
 <body>
 <div id="app"><div class="boot">Loading…</div></div>

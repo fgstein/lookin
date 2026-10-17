@@ -174,6 +174,14 @@
     if (c.replace_url) history.replaceState(null, "", c.replace_url);
     if (c.focus) { const el = document.querySelector(c.focus); if (el) el.focus(); }
     if (c.scroll) { const el = document.querySelector(c.scroll); if (el) el.scrollIntoView({ block: "nearest" }); }
+    if (c.zoom) {
+      // An image drawn on demand (too slow to draw with the page), shown
+      // in the zoom layer as if it had been clicked.
+      const img = document.createElement("img");
+      img.src = c.zoom; img.setAttribute("data-title", c.title || "image");
+      if (c.pixelated) img.setAttribute("data-pixelated", "1");
+      openZoom(img);
+    }
     if (c.event) document.dispatchEvent(new CustomEvent("lookin:" + c.event, { detail: c.detail }));
   }
 

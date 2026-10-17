@@ -195,6 +195,12 @@ class Session:
         "upload_view", after the original UI's Data tab."""
         return self.view("sources")
 
+    def goto(self, tab: str) -> None:
+        """Switch to another analysis tab, as clicking it would (a
+        confusion-matrix cell's "Open in Gallery", for instance)."""
+        from lookin.web.render import AppActions
+        AppActions(self).on_tab(tab=tab)
+
     def job(self, name: str) -> Job:
         j = self._jobs.get(name)
         if j is None:
