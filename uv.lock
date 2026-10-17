@@ -444,6 +444,7 @@ wheels = [
 name = "lookin"
 source = { editable = "." }
 dependencies = [
+    { name = "fastapi" },
     { name = "flet" },
     { name = "flet-web" },
     { name = "httpx" },
@@ -455,6 +456,7 @@ dependencies = [
     { name = "python-pptx" },
     { name = "scikit-learn" },
     { name = "umap-learn" },
+    { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
@@ -464,6 +466,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "fastapi", specifier = ">=0.140.7" },
     { name = "flet", specifier = "==0.28.3" },
     { name = "flet-web", specifier = "==0.28.3" },
     { name = "httpx", specifier = ">=0.28.1" },
@@ -475,6 +478,7 @@ requires-dist = [
     { name = "python-pptx", specifier = ">=1.0.2" },
     { name = "scikit-learn", specifier = ">=1.9.0" },
     { name = "umap-learn", specifier = ">=0.5.6" },
+    { name = "uvicorn", specifier = ">=0.51.0" },
 ]
 
 [package.metadata.requires-dev]

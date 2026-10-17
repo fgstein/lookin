@@ -36,9 +36,20 @@ def main(argv: list[str] | None = None) -> None:
              "experiments. Requires --dataset.",
     )
 
+    web_parser = subparsers.add_parser(
+        "web", help="Launch the browser interface (HTML/CSS; runs next to `lookin ui`).")
+    web_parser.add_argument("--host", default="127.0.0.1", help="Host to bind to (default: 127.0.0.1).")
+    web_parser.add_argument("--port", type=int, default=8560, help="Port to bind to (default: 8560).")
+    web_parser.add_argument("--dataset", default=None, metavar="PATH",
+                            help="Dataset CSV to load automatically in every new tab.")
+    web_parser.add_argument("--library", default=None, metavar="PATH",
+                            help="Directory holding saved workspaces (same as `lookin ui --library`).")
+    web_parser.add_argument("--experiment", action="append", default=[], metavar="NAME=PATH",
+                            dest="experiments", help="Results CSV to load on startup, as NAME=PATH. Requires --dataset.")
+
     args = parser.parse_args(argv)
 
-    if args.command == "ui":
+    if args.command in ("ui", "web"):
         if args.experiments and not args.dataset:
             parser.error("--experiment requires --dataset to also be set.")
         experiments = []
@@ -48,6 +59,11 @@ def main(argv: list[str] | None = None) -> None:
             name, path = spec.split("=", 1)
             experiments.append((name, path))
 
+        if args.command == "web":
+            from lookin.web.server import run_web
+            run_web(host=args.host, port=args.port, dataset=args.dataset, experiments=experiments,
+                    library_dir=args.library)
+            return
         from lookin.app import run_ui  # deferred: keep `lookin --help` fast and dependency-light
         run_ui(host=args.host, port=args.port, dataset=args.dataset, experiments=experiments,
                library_dir=args.library)
