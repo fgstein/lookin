@@ -93,8 +93,11 @@ class RebuildView(View):
         self.progress_text = text
         self.s.mark(self.name)
 
-    def rebuild(self, work=None) -> None:
-        """Run `work` (default: self.compute) on this view's job queue."""
+    def rebuild(self, work=None, clear_stale: bool = True) -> None:
+        """Run `work` (default: self.compute) on this view's job queue.
+        `clear_stale=False` for a redraw from what is already computed (a
+        dropdown change): it must not hide the stale banner, since the data
+        behind it was not refreshed."""
         work = work or self.compute
         self.progress_text = self.progress_text or "Updating..."
         self.error = ""
@@ -102,7 +105,8 @@ class RebuildView(View):
         def run():
             try:
                 work()
-                self.dirty = False
+                if clear_stale:
+                    self.dirty = False
             finally:
                 self.progress_text = ""
                 self.s.mark(self.name, "chrome")

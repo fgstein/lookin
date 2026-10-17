@@ -213,6 +213,8 @@ def text_input(value="", *, name: str = "", placeholder: str = "", input_: str =
                change: str = "", label: str = "", cls: str = "", type_: str = "text", width: str = "",
                title: str = "", autofocus: bool = False, mono: bool = False, id_: str = "",
                disabled: bool = False, extra: str = "") -> str:
+    if isinstance(width, (int, float)) and not isinstance(width, bool):
+        width = f"{int(width)}px"       # a number is pixels
     style = f' style="width:{e(width)}"' if width else ""
     classes = "inp" + (" mono" if mono else "") + (f" {cls}" if cls else "")
     field = (f'<input type="{type_}" class="{classes}"{input_}{enter}{change}{style}{extra}'

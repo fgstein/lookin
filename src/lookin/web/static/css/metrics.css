@@ -1,0 +1,22 @@
+/* Metrics tab */
+.sec-t { display: flex; align-items: center; gap: 6px; margin: 4px 0 -2px; }
+.sec-t h2 { font-size: 13px; font-weight: 700; margin: 0; }
+.mx-list { display: flex; flex-direction: column; max-height: calc(7 * 30px); overflow: auto; margin-top: 6px; border-top: 1px solid var(--line-2); }
+.mx-row { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 4px; border-bottom: 1px solid var(--line-3); }
+.mx-row .handle { cursor: grab; color: var(--ghost); display: inline-flex; }
+.mx-row.drop-on { background: var(--acc-soft); }
+.cm-area { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+.cm-card { max-width: 100%; }
+.cm-scroll { overflow: auto; max-width: 100%; }
+.cm-grid { display: grid; gap: 2px; align-items: end; width: max-content; }
+.cm-h { text-align: center; line-height: 1.15; overflow: hidden; word-break: break-all; max-height: 2.4em; color: var(--muted); align-self: end; }
+.cm-r { font-weight: 700; text-align: right; padding-right: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; align-self: center; }
+.cm-c { border: 0; border-radius: 4px; padding: 0; cursor: pointer; font: inherit; display: flex; align-items: center; justify-content: center; }
+.cm-c:hover { outline: 2px solid var(--acc); outline-offset: -1px; }
+.cm-o { background: var(--surface); border: 1px solid var(--line); }
+.cm-o[disabled] { cursor: default; outline: none; }
+.cm-pairs { width: 480px; max-width: 100%; }
+.ov-btn { border: 0; padding: 0; background: none; cursor: zoom-in; border-radius: 8px; overflow: hidden; }
+tr.clk { cursor: pointer; }
+tr.clk:hover td { background: var(--acc-soft-2); }
+.cm-area > .card { margin: 0; }
