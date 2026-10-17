@@ -149,6 +149,7 @@ class Session:
         self.current_snapshot = None
         self.view_state_baseline = None
         self.busy = Busy(self)
+        self.viewport = (1440, 900)          # the browser window, (width, height)
 
         # ---- what the page shows ----
         self.mode = "home"                   # "home" | "analysis"

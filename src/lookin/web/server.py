@@ -136,9 +136,19 @@ def create_app(webapp: WebApp) -> FastAPI:
         if session is None:
             return no_session()
         query = parse_qs(str(body.get("search", "")).lstrip("?"))
-        return await asyncio.to_thread(_boot, session, query)
+        return await asyncio.to_thread(_boot, session, query, body)
 
-    def _boot(session, query):
+    def _viewport(session, body):
+        # The browser window, for the views that size a page of crops to
+        # what fits on screen (the carousel); sent with every request.
+        try:
+            session.viewport = (max(320, int(body.get("vw") or 0)), max(320, int(body.get("vh") or 0)))
+        except (TypeError, ValueError):
+            pass
+
+    def _boot(session, query, body=None):
+        if body:
+            _viewport(session, body)
         with RequestScope(session):
             try:
                 render.boot(session, query)
@@ -159,6 +169,7 @@ def create_app(webapp: WebApp) -> FastAPI:
         target = str(body.get("target", ""))
         action = str(body.get("action", ""))
         args = body.get("args") or {}
+        _viewport(session, body)
         with RequestScope(session):
             try:
                 render.dispatch(session, target, action, args)

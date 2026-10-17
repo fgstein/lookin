@@ -140,12 +140,16 @@ def dispatch(session, target: str, action: str, args: dict) -> None:
             session.mark("dialogs")
             return
         dialog.handle(action, args)
+        session.mark("dialogs", "chrome")
         return
     from lookin.web.views import VIEW_CLASSES
 
     if target not in VIEW_CLASSES:
         raise KeyError(f"unknown target {target}")
     session.view(target).handle(action, args)
+    # Whatever a view's action changed is in its own region -- and in the
+    # save chips, which compare the view's state with the saved one.
+    session.mark(target, "chrome")
 
 
 # ---- what goes back --------------------------------------------------------

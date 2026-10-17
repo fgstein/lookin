@@ -79,7 +79,7 @@
     try {
       const r = await fetch(url, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify(Object.assign({ vw: window.innerWidth, vh: window.innerHeight }, body)),
       });
       if (r.status === 410) { await reboot(); return null; }
       if (!r.ok) { toast("The server answered " + r.status, "error"); return null; }
@@ -379,6 +379,18 @@
 
   const inputTimers = new WeakMap();
   document.addEventListener("input", (ev) => {
+    // A dual range slider shows "[start, end]" while it is dragged; the
+    // server only hears about it on release (data-change).
+    const rng = ev.target.closest("input[type=range][data-out]");
+    if (rng) {
+      const pair = rng.parentElement.querySelectorAll("input[type=range]");
+      const out = document.getElementById(rng.getAttribute("data-out"));
+      if (pair.length === 2) {
+        let a = parseFloat(pair[0].value), b = parseFloat(pair[1].value);
+        if (a > b) { if (rng === pair[0]) { pair[0].value = b; a = b; } else { pair[1].value = a; b = a; } }
+        if (out) out.textContent = "[" + a.toFixed(2) + ", " + b.toFixed(2) + "]";
+      } else if (out) out.textContent = parseFloat(rng.value).toFixed(2);
+    }
     const el = ev.target.closest("[data-input]");
     if (!el) return;
     clearTimeout(inputTimers.get(el));

@@ -57,6 +57,71 @@ class View(Handler):
         self.s.mark(self.name)
 
 
+class RebuildView(View):
+    """A view whose content is expensive to rebuild (charts over the whole
+    dataset): a data change only marks it stale and shows the red "Data has
+    changed -- this view is out of date" banner; the rebuild runs when the
+    user asks, on the session's job queue for this view, with its progress
+    shown in the view and in the top bar (see components.StaleBanner and
+    BackgroundRebuild in the original UI)."""
+
+    stale_message = "Data has changed -- this view is out of date."
+
+    def __init__(self, session):
+        super().__init__(session)
+        self.dirty = False
+        self.progress_text = ""
+        self.error = ""
+
+    def on_data_change(self) -> None:
+        self.dirty = True
+
+    def stale_html(self) -> str:
+        if not self.dirty:
+            return ""
+        return h.banner(self.stale_message, "stale",
+                        actions=h.button("Update now", act_attr=self.a("update"), icon_name="refresh", small=True))
+
+    def progress_html(self) -> str:
+        if self.progress_text:
+            return h.spinner(self.progress_text)
+        if self.error:
+            return h.banner(self.error, "error")
+        return ""
+
+    def set_progress(self, text: str) -> None:
+        self.progress_text = text
+        self.s.mark(self.name)
+
+    def rebuild(self, work=None) -> None:
+        """Run `work` (default: self.compute) on this view's job queue."""
+        work = work or self.compute
+        self.progress_text = self.progress_text or "Updating..."
+        self.error = ""
+
+        def run():
+            try:
+                work()
+                self.dirty = False
+            finally:
+                self.progress_text = ""
+                self.s.mark(self.name, "chrome")
+
+        def failed(ex):
+            self.error = f"Error: {ex}"
+            self.progress_text = ""
+            self.s.mark(self.name)
+
+        self.s.job(self.title or self.name).run(run, on_error=failed)
+        self.s.mark(self.name)
+
+    def compute(self) -> None:
+        pass
+
+    def on_update(self, **_):
+        self.rebuild()
+
+
 class Dialog(Handler):
     """A modal. Subclasses implement body() and footer(); actions they
     declare with self.a(...) come back to their on_* methods."""
