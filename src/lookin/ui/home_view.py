@@ -210,12 +210,33 @@ class ServerState:
         self.rebuild_runs()
         # Listings written before the run-CSV lists moved to a file of their
         # own still carry them under "artifacts".
+        # Stale: good to draw, not to add from -- see needs_listing.
         for run_id, v in {**(payload.get("artifacts") or {}), **(artifacts or {})}.items():
             if isinstance(v, dict) and run_id not in self.artifacts:
                 self.artifacts[run_id] = {
                     "csvs": [_dc_from_dict(mlf.ArtifactFile, a) for a in v.get("csvs", [])],
                     "npzs": [_dc_from_dict(mlf.ArtifactFile, a) for a in v.get("npzs", [])],
+                    "stale": True,
                 }
+
+    def mark_artifacts_stale(self) -> None:
+        """What a refresh does to the run -> CSV lists: they stay drawn, and
+        are listed again before anything is added from them."""
+        for entry in self.artifacts.values():
+            if "csvs" in entry:
+                entry["stale"] = True
+
+    def needs_listing(self, run_id: str) -> bool:
+        """Whether `run_id`'s CSVs must be listed before a run is added or
+        loaded from them. A list read from disk, or from before a refresh,
+        is not enough while the server answers: the run may have logged its
+        CSV since (it was still running), or re-logged it with another size
+        -- and a workspace that recorded the old size never counts it as
+        downloaded. With the server down, the old list is all there is."""
+        entry = self.artifacts.get(run_id)
+        if entry is None or entry.get("loading"):
+            return True
+        return bool(entry.get("stale")) and self.status != "down"
 
 
 class HomeView:
@@ -436,6 +457,8 @@ class HomeView:
             self._last_full_refresh = time.monotonic()
         for server in list(self.servers.values()):
             if uri is None or server.uri == uri:
+                if not runs_only:
+                    server.mark_artifacts_stale()
                 server.status = "loading"
                 threading.Thread(target=self._fetch_worker, args=(server, runs_only, only), daemon=True).start()
         self._render_servers()
@@ -481,7 +504,11 @@ class HomeView:
                         # Checked against what is shown *now*: a refresh of
                         # a hundred experiments takes seconds, and one the
                         # user has unticked meanwhile must not come back.
-                        if experiment_id not in self._wanted_ids(server):
+                        # Same for a filter changed meanwhile: its refresh
+                        # is on the way, and these runs, landing last, would
+                        # replace its runs with the old filter's.
+                        if (experiment_id not in self._wanted_ids(server)
+                                or filter_string != self.config.runs.get("filter", "")):
                             continue
                         server.runs_by_exp[experiment_id] = runs
                         server.truncated_exps.discard(experiment_id)
@@ -521,7 +548,7 @@ class HomeView:
 
     def _fetch_artifacts(self, server: ServerState, run_id: str, then=None) -> None:
         entry = server.artifacts.get(run_id)
-        if entry is not None and "csvs" in entry:
+        if entry is not None and "csvs" in entry and not server.needs_listing(run_id):
             if then:
                 then()
             return
@@ -1569,8 +1596,7 @@ class HomeView:
             server = self.servers.get(uri)
             if server is None:
                 continue
-            entry = server.artifacts.get(run_id)
-            if entry is None or entry.get("loading"):
+            if server.needs_listing(run_id):
                 pending.append((server, run_id))
         if pending:
             self._status(f"Listing the artifacts of {len(pending)} run(s)...", "busy")

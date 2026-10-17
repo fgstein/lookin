@@ -99,9 +99,15 @@ def _request(client: httpx.Client, method: str, path: str, **kwargs) -> dict:
     if resp.status_code != 200:
         raise MlflowError(f"MLflow server returned {resp.status_code} for {path}: {resp.text[:200]}")
     try:
-        return resp.json()
+        data = resp.json()
     except ValueError as ex:
         raise MlflowError(f"Unexpected response from MLflow server at {path}") from ex
+    # Every MLflow endpoint answers an object. Anything else (a proxy's JSON
+    # list or string) would surface as an AttributeError further down, past
+    # callers that only catch MlflowError.
+    if not isinstance(data, dict):
+        raise MlflowError(f"Unexpected response from MLflow server at {path}")
+    return data
 
 
 def test_connection(tracking_uri: str) -> None:
@@ -165,16 +171,6 @@ def _parse_run(r: dict) -> Run:
     )
 
 
-def list_runs(tracking_uri: str, experiment_id: str, max_results: int = 200) -> list[Run]:
-    with _client(tracking_uri) as client:
-        data = _request(client, "POST", "/api/2.0/mlflow/runs/search", json={
-            "experiment_ids": [experiment_id],
-            "max_results": max_results,
-            "order_by": ["attribute.start_time DESC"],
-        })
-    return [_parse_run(r) for r in data.get("runs", [])]
-
-
 # runs/search refuses more than 1000 per page. The page cap bounds the whole
 # listing: a Home page showing 10k runs is one nobody reads -- they filter.
 SEARCH_PAGE_SIZE = 1000
@@ -217,6 +213,14 @@ def search_runs(tracking_uri: str, experiment_ids: list, filter_string: str = ""
     return runs, truncated
 
 
+def list_runs(tracking_uri: str, experiment_id: str) -> list[Run]:
+    """Every run of one experiment, most recent first -- paged like
+    search_runs. Reading only the first page dropped the older runs of a
+    busy experiment without a word, and searching for one by name then
+    answered "No matches"."""
+    return search_runs(tracking_uri, [experiment_id])[0]
+
+
 # ---------------------------------------------------------------------------
 # links into the MLflow web UI
 #
@@ -234,6 +238,19 @@ def run_ui_url(tracking_uri: str, experiment_id: str, run_id: str, artifact_path
     if artifact_path:
         url += f"/artifacts/{artifact_path.lstrip('/')}"
     return url
+
+
+def is_safe_relative_path(path) -> bool:
+    """True for a relative path with no empty, ``.`` or ``..`` part, under
+    either separator -- the only kind MLflow hands out, and the only kind
+    that stays inside the download cache once joined to it (see
+    mlflow_cache.cached_path). Paths also come from workspace manifests
+    someone else wrote, so this is not only about the server."""
+    if not isinstance(path, str) or not path or "\0" in path:
+        return False
+    if path.startswith(("/", "\\")) or (len(path) > 1 and path[1] == ":"):
+        return False
+    return all(part not in ("", ".", "..") for part in path.replace("\\", "/").split("/"))
 
 
 def _walk_artifacts(tracking_uri: str, run_id: str, suffixes: tuple, max_files: int) -> dict:
@@ -262,6 +279,10 @@ def _walk_artifacts(tracking_uri: str, run_id: str, suffixes: tuple, max_files: 
                 params["path"] = path
             data = _request(client, "GET", "/api/2.0/mlflow/artifacts/list", params=params)
             for f in data.get("files", []):
+                # The path decides where a download lands in the cache: one
+                # that would land outside it is not offered at all.
+                if not is_safe_relative_path(f.get("path")):
+                    continue
                 if f.get("is_dir"):
                     queue.append(f["path"])
                     continue
