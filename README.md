@@ -45,7 +45,8 @@ lookin web --dataset /path/to/dataset.csv --experiment baseline=/path/to/results
 
 The same tool, redesigned as a plain HTML page served by the Python process
 (no Flet, nothing fetched from the network). It takes the same options as
-`lookin ui` and reads the same library, so workspaces, snapshots and review
+`lookin ui` (including `--no-mcp`: it serves the same MCP endpoint at
+`/mcp`) and reads the same library, so workspaces, snapshots and review
 decisions are shared between the two -- both can run at the same time.
 Every browser tab is its own session: open several workspaces side by side
 and nothing in one affects the others. See `src/lookin/web/README.md` for how
