@@ -4,13 +4,16 @@ decision bar and the "Find similar" search.
 Same behaviour as lookin.ui.carousel / review_widgets / similarity:
 
 * a tight grid of crops, two pixels apart, at a zoom step from ZOOM_STEPS,
-  never more than MAX_TILES_PER_PAGE per page, pages fetched lazily through
-  `page_provider(start, end)`;
-* opens zoomed out just far enough for the whole set to fit on one page;
+  that loads as it is scrolled: it opens with a screen of crops plus a row
+  and appends the next screenful whenever the bottom comes within a screen
+  (an infinite list, see app.js). Rows come lazily through
+  `page_provider(start, end)`, so a set of any size is never materialized,
+  and only the new tiles of each batch cross the wire;
+* opens zoomed out just far enough for the whole set to fit on one screen;
 * three toggles: class badges ("truth -> prediction" where the row has a
   prediction), details (metadata, Find similar, decision bar on every
   crop), shuffle;
-* changing zoom or mode keeps the first crop on screen on screen;
+* changing zoom or mode keeps the crop at the top of the view in view;
 * a click shows the crop full size (the page's own zoom layer, with Open
   and Save on the user's machine).
 
@@ -20,6 +23,7 @@ every request (Session.viewport), the way the original read page.width.
 from __future__ import annotations
 
 import math
+import secrets
 import traceback
 from typing import Callable, Optional
 
@@ -30,7 +34,7 @@ from lookin.core.point_coloring import categorical_colors
 from lookin.core.review import FrozenVersionError, REVIEW_STATUSES, STATUS_RELABEL
 from lookin.ui.carousel import (
     BADGE_CHAR_PX, BADGE_MAX_CHARS, BADGE_MIN_CHARS, DEFAULT_ZOOM, INFO_GAP, INFO_MAX_WIDTH,
-    INFO_MIN_WIDTH, MAX_TILES_PER_PAGE, META_MAX_ROWS, MIN_TILE_SIZE, PREDICTION_KEYS, TILE_GAP,
+    INFO_MIN_WIDTH, META_MAX_ROWS, MIN_TILE_SIZE, PREDICTION_KEYS, TILE_GAP,
     ZOOM_STEPS, _short,
 )
 from lookin.ui.embedding_context import build_analysis_context
@@ -40,7 +44,7 @@ from lookin.ui.review_widgets import (
 from lookin.core.review import REVIEW_REASONS
 from lookin.ui.similarity import DEFAULT_K, K_CHOICES
 from lookin.web import html as h
-from lookin.web.views.base import Dialog
+from lookin.web.views.base import NO_RENDER, Dialog
 from lookin.web.views.media import crop_url
 from lookin.web.views.widgets import class_select
 
@@ -182,7 +186,9 @@ class Carousel:
         self.label_col = label_col
         self.extra_chrome = chrome_height
         self.action = action
-        self.page_index = 0
+        self.loaded = 0                 # crops in the grid so far
+        self.gen = 0                    # bumped whenever the grid starts over
+        self.list_id = f"car-{secrets.token_hex(4)}"
         self.show_labels = True
         self.show_info = False
         self._order: Optional[np.ndarray] = None
@@ -249,19 +255,21 @@ class Carousel:
         gap = self._gap()
         return max(1, int((self._grid_height() + gap) // (cell_h + gap)))
 
-    def _tiles_per_page(self, zoom: Optional[int] = None) -> int:
-        return max(1, min(MAX_TILES_PER_PAGE, self._columns(zoom) * self._rows(zoom)))
+    def _tiles_per_screen(self, zoom: Optional[int] = None) -> int:
+        return max(1, self._columns(zoom) * self._rows(zoom))
+
+    def _batch_size(self) -> int:
+        """A screen plus a row, in whole rows: the extra row makes the first
+        batch overflow the area, so there is something to scroll."""
+        return self._columns() * (self._rows() + 1)
 
     def _initial_zoom(self) -> int:
         if self.total <= 0:
             return DEFAULT_ZOOM
         for index in reversed(range(len(ZOOM_STEPS))):
-            if self._tiles_per_page(index) >= self.total:
+            if self._tiles_per_screen(index) >= self.total:
                 return index
         return 0
-
-    def _total_pages(self) -> int:
-        return max(1, math.ceil(self.total / self._tiles_per_page()))
 
     # ---- class colors ----
 
@@ -317,7 +325,7 @@ class Carousel:
         parts.append("click to view full size")
         return "  -  ".join(parts)
 
-    def _tile(self, rec: dict) -> str:
+    def _tile(self, rec: dict, i: int) -> str:
         img_path = self.dataset.resolve_crop_path(rec[self.crop_col])
         url = crop_url(self.s, img_path, rec)
         tile = self._tile_size()
@@ -332,10 +340,11 @@ class Carousel:
                f'data-title="{h.e(title)}" title="{h.e(self._tooltip(rec))}" '
                f'style="width:{img_w}px;height:{tile}px">{self._badge(rec)}</span>')
         if not self.show_info:
-            return f'<div class="ctile{" hl" if highlighted else ""}" style="width:{tile}px;height:{tile}px">{img}</div>'
-        return self._card(rec, img, cell_w, highlighted)
+            return (f'<div class="ctile{" hl" if highlighted else ""}" data-i="{i}" '
+                    f'style="width:{tile}px;height:{tile}px">{img}</div>')
+        return self._card(rec, img, cell_w, highlighted, i)
 
-    def _card(self, rec: dict, img: str, cell_w: int, highlighted: bool) -> str:
+    def _card(self, rec: dict, img: str, cell_w: int, highlighted: bool, i: int) -> str:
         items = [(k, v) for k, v in rec.items() if k != self.crop_col]
         items.sort(key=lambda kv: kv[0] not in PREDICTION_KEYS)
         meta = "".join(
@@ -351,81 +360,113 @@ class Carousel:
                                   title="The crops nearest to this one in the model's embedding space"))
         if self._reviewable():
             parts.append(self.bar.render(uid, str(self.suggestions.get(str(uid), ""))))
-        return (f'<div class="ccard{" hl" if highlighted else ""}" style="width:{cell_w}px">'
+        return (f'<div class="ccard{" hl" if highlighted else ""}" data-i="{i}" style="width:{cell_w}px">'
                 f'{"".join(parts)}</div>')
 
-    def render(self) -> str:
-        per_page = self._tiles_per_page()
-        total_pages = self._total_pages()
-        self.page_index = min(self.page_index, total_pages - 1)
-        start = self.page_index * per_page
-        end = min(start + per_page, self.total)
+    def _tiles_html(self, start: int, end: int) -> str:
         try:
-            records = self._fetch(start, end) if self.total else []
+            records = self._fetch(start, end)
         except Exception as ex:  # noqa: BLE001
             traceback.print_exc()
-            records = []
-            self.messages["__page__"] = f"Could not read this page: {ex}"
+            self.messages["__page__"] = f"Could not read these crops: {ex}"
+            return ""
+        return "".join(self._tile(rec, start + k) for k, rec in enumerate(records))
+
+    def _count_text(self) -> str:
+        if not self.total:
+            return "0 images"
+        if self.loaded >= self.total:
+            return f"{self.total:,} image(s)"
+        return f"{self.loaded:,} of {self.total:,} shown  -  scroll for more"
+
+    def render(self) -> str:
+        if not self.loaded and self.total:
+            self.loaded = min(self.total, self._batch_size())
         a = lambda op, **kw: h.act(self.owner.target, self.action, op=op, **kw)  # noqa: E731
-        label = (f"{start + 1}-{end} of {self.total:,}  -  page {self.page_index + 1}/{total_pages}"
-                 if self.total else "0 images")
+        anchor = f' data-anchor="{self.list_id}"'
         zoom_in_off = (self.zoom_index >= len(ZOOM_STEPS) - 1
                        or self._tile_size(self.zoom_index + 1) <= self._tile_size())
         shuffled = self._order is not None
-        tog = lambda on, name, tip, op: h.button(icon_name=name, act_attr=a(op), small=True,  # noqa: E731
+        tog = lambda on, name, tip, op: h.button(icon_name=name, act_attr=a(op) + anchor, small=True,  # noqa: E731
                                                  kind="ghost", title=tip, cls="on" if on else "")
         toolbar = (f'<div class="car-tb">'
-                   f'{h.button(icon_name="chev-left", act_attr=a("prev"), small=True, title="Previous page", disabled=self.page_index <= 0)}'
-                   f'<span class="muted small">{h.e(label)}</span>'
-                   f'{h.button(icon_name="chev-right", act_attr=a("next"), small=True, title="Next page", disabled=self.page_index >= total_pages - 1)}'
+                   f'<span class="muted small" id="{self.list_id}-count">{h.e(self._count_text())}</span>'
+                   f'{h.button(icon_name="chev-up", act_attr=a("top"), small=True, kind="ghost", title="Back to the top")}'
                    f'<span class="vsep"></span>'
-                   f'{h.button("-", act_attr=a("zoom_out"), small=True, title="Smaller images", disabled=self.zoom_index <= 0)}'
-                   f'{h.button("+", act_attr=a("zoom_in"), small=True, title="Bigger images", disabled=zoom_in_off)}'
+                   f'{h.button("-", act_attr=a("zoom_out") + anchor, small=True, title="Smaller images", disabled=self.zoom_index <= 0)}'
+                   f'{h.button("+", act_attr=a("zoom_in") + anchor, small=True, title="Bigger images", disabled=zoom_in_off)}'
                    f'<span class="vsep"></span>'
                    f'{tog(self.show_labels, "bookmark", "Hide the class labels" if self.show_labels else "Show the class labels", "labels")}'
                    f'{tog(self.show_info, "info", "Back to the plain mosaic" if self.show_info else "Show the metadata and the review controls on every crop", "info")}'
                    f'{tog(shuffled, "shuffle", "Back to the original order" if shuffled else "Show the crops in a random order", "shuffle")}'
                    f'</div>')
+        tiles = self._tiles_html(0, self.loaded) if self.total else ""
         err = self.messages.pop("__page__", "")
-        if records:
-            tiles = "".join(self._tile(rec) for rec in records)
+        if not tiles:
+            body = f'<div class="empty"><i>{h.e(err or "No images match.")}</i></div>'
         else:
-            tiles = f'<div class="empty"><i>{h.e(err or "No images match.")}</i></div>'
-        gap = self._gap()
-        grid = (f'<div class="car-grid" style="gap:{gap}px;height:{self._grid_height()}px;width:{self._grid_width()}px">'
-                f'{tiles}</div>')
+            more = self.loaded < self.total
+            body = (f'<div class="car-list" id="{self.list_id}" data-gen="{self.gen}" style="gap:{self._gap()}px">{tiles}</div>'
+                    f'<div class="more" data-more="{h.e(self.owner.target)}:{self.action}" data-op="more" '
+                    f'data-args=\'{{"op": "more"}}\' data-list="{self.list_id}"{"" if more else " hidden"}>'
+                    f'{h.button("Show more", act_attr=a("more", gen=self.gen, loaded=self.loaded), small=True, kind="ghost", icon_name="chev-down")}</div>')
+        grid = (f'<div class="car-grid" style="height:{self._grid_height()}px;width:{self._grid_width()}px">'
+                f'{body}</div>')
         return f'<div class="car">{toolbar}{grid}</div>'
 
     # ---- actions ----
 
-    def _keep_position(self, change) -> None:
-        anchor = self.page_index * self._tiles_per_page()
-        change()
-        self.page_index = anchor // self._tiles_per_page()
+    def _restart_at(self, anchor: int) -> None:
+        """Start the grid over with crop `anchor` loaded and scrolled to the
+        top of the view -- what a zoom step or a mode toggle does, since a
+        row then holds a different number of crops and the old scroll
+        offset means nothing."""
+        columns = self._columns()
+        anchor = max(0, min(int(anchor or 0), max(0, self.total - 1)))
+        row_start = (anchor // columns) * columns
+        self.loaded = min(self.total, row_start + self._batch_size())
+        self.gen += 1
+        self.s.cmd(scroll_item={"list": self.list_id, "index": row_start})
 
-    def handle(self, op: str, args: dict) -> None:
-        if op == "prev" and self.page_index > 0:
-            self.page_index -= 1
-        elif op == "next" and self.page_index < self._total_pages() - 1:
-            self.page_index += 1
-        elif op == "zoom_in":
+    def handle(self, op: str, args: dict):
+        anchor = args.get("anchor", 0)
+        if op == "more":
+            if str(args.get("gen")) != str(self.gen):
+                return NO_RENDER
+            if int(args.get("loaded", -1)) != self.loaded:
+                return None
+            start, end = self.loaded, min(self.total, self.loaded + self._batch_size())
+            html = self._tiles_html(start, end)
+            self.loaded = end
+            self.s.cmd(append={"to": self.list_id, "gen": str(self.gen), "start": start, "html": html,
+                               "count": self._count_text(), "done": self.loaded >= self.total})
+            return NO_RENDER
+        if op == "top":
+            self.s.cmd(scroll_item={"list": self.list_id, "index": 0})
+            return NO_RENDER
+        if op == "zoom_in":
             if (self.zoom_index < len(ZOOM_STEPS) - 1
                     and self._tile_size(self.zoom_index + 1) > self._tile_size()):
-                self._keep_position(lambda: setattr(self, "zoom_index", self.zoom_index + 1))
+                self.zoom_index += 1
+                self._restart_at(anchor)
         elif op == "zoom_out":
             if self.zoom_index > 0:
-                self._keep_position(lambda: setattr(self, "zoom_index", self.zoom_index - 1))
+                self.zoom_index -= 1
+                self._restart_at(anchor)
         elif op == "labels":
             self.show_labels = not self.show_labels
+            self._restart_at(anchor)
         elif op == "info":
-            self._keep_position(lambda: setattr(self, "show_info", not self.show_info))
+            self.show_info = not self.show_info
+            self._restart_at(anchor)
         elif op == "shuffle":
             self._order = None if self._order is not None else np.random.default_rng().permutation(self.total)
-            self.page_index = 0
+            self._restart_at(0)
         elif op == "similar":
             open_similarity(self.s, str(args.get("uid", "")))
         elif op in ("decide", "reset", "class", "reason"):
             self.bar.handle(op, args, self.review_source)
+        return None
 
 
 class CarouselDialog(Dialog):
@@ -446,7 +487,8 @@ class CarouselDialog(Dialog):
         return head + self.carousel.render()
 
     def on_car(self, op: str = "", **args):
-        self.carousel.handle(op, args)
+        if self.carousel.handle(op, args) is NO_RENDER:
+            return NO_RENDER
         self.refresh()
 
     def on_review_change(self) -> None:
@@ -587,8 +629,8 @@ class SimilarityDialog(Dialog):
         self.refresh()
 
     def on_car(self, op: str = "", **args):
-        if self.carousel is not None:
-            self.carousel.handle(op, args)
+        if self.carousel is not None and self.carousel.handle(op, args) is NO_RENDER:
+            return NO_RENDER
         self.refresh()
 
     def on_review_change(self) -> None:

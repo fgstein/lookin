@@ -184,6 +184,11 @@
     }
     if (c.append) appendItems(c.append);
     if (c.scroll_item) scrollToItem(c.scroll_item);
+    if (c.scroll_top) {
+      const el = document.querySelector(c.scroll_top);
+      const sp = el ? scrollParent(el) : null;
+      if (sp) sp.scrollTop = 0; else window.scrollTo(0, 0);
+    }
     if (c.event) document.dispatchEvent(new CustomEvent("lookin:" + c.event, { detail: c.detail }));
   }
 

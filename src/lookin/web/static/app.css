@@ -407,7 +407,8 @@ button.chip:hover { border-color: var(--acc); }
 /* ---- carousel ---- */
 .car { display: flex; flex-direction: column; gap: 4px; }
 .car-tb { display: flex; align-items: center; justify-content: center; gap: 4px; height: 34px; }
-.car-grid { display: flex; flex-wrap: wrap; align-content: flex-start; overflow: auto; max-width: 100%; }
+.car-grid { overflow: auto; max-width: 100%; }
+.car-list { display: flex; flex-wrap: wrap; align-content: flex-start; }
 .ctile { position: relative; background: var(--surface-2); border-radius: 2px; flex: 0 0 auto; }
 .ctile.hl { outline: 2px solid var(--acc); outline-offset: -2px; }
 .ctile-i { position: relative; display: block; }
@@ -432,3 +433,6 @@ button.chip:hover { border-color: var(--acc); }
 .car-head { margin-bottom: 6px; }
 .grid2 > .card { margin: 0; align-self: start; }
 [hidden] { display: none !important; }
+/* infinite lists: the "Show more" fallback under a list */
+.more { display: flex; justify-content: center; padding: 8px 0 14px; }
+.gal-mosaic { position: sticky; top: 0; z-index: 3; box-shadow: 0 2px 6px rgba(21,24,30,.06); }

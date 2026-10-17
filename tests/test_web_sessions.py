@@ -73,7 +73,7 @@ def test_snapshot_views_round_trip(example):
                        ("resnet", str(example / "finetuned_resnet_results.csv"))])
     gallery = s.view("gallery")
     gallery._refresh_now()
-    gallery.rows_value, gallery.cols_value = "3", "5"
+    gallery.cols_value = "5"
     s.view("metrics").metric = "recall"
     captured = s.view_state.capture()
     views = captured[vs.VIEWS]
@@ -114,3 +114,32 @@ def test_an_open_workspace_follows_its_manifest(example, tmp_path):
         assert list(s.state.experiments) == ["baseline"]
     finally:
         lib.set_library_root(None)
+
+
+def test_gallery_loads_as_it_is_scrolled(example):
+    """No pages: a first batch, then appends asked for by the page -- each
+    only the new crops, and a request from a grid that has since started
+    over is ignored."""
+    from lookin.web.views.base import NO_RENDER
+
+    s = _session(WebApp(), "h" * 24)
+    _load(s, example, [])
+    gallery = s.view("gallery")
+    gallery._refresh_now()
+    first = len(gallery._records)
+    assert 0 < first < 800
+    with RequestScope(s):
+        assert gallery.on_more(gen=gallery.gen, loaded=first) is NO_RENDER
+        cmd = s._pending_cmds[-1]["append"]
+    assert cmd["start"] == first and len(gallery._records) > first
+    assert cmd["html"].count('class="gcell') == len(gallery._records) - first
+    stale = gallery.gen
+    gallery._set_shuffle(7)
+    with RequestScope(s):
+        before = len(gallery._records)
+        assert gallery.on_more(gen=stale, loaded=before) is NO_RENDER
+    assert len(gallery._records) == before
+    state = gallery.view_state()
+    assert "page" not in state and "rows" not in state
+    # A snapshot written before the mosaic scrolled still restores.
+    assert gallery.restore_view_state({**state, "rows": "4", "page": 3}) == []
