@@ -1,0 +1,7 @@
+/* Confidence tab (views/confidence.py) */
+.conf .conf-charts { display: flex; flex-direction: column; gap: 6px; }
+.conf .conf-pair { grid-template-columns: repeat(auto-fit, minmax(560px, 1fr)); }
+.conf .conf-wrong { max-height: 460px; overflow: auto; margin-top: 6px; }
+.conf .conf-wrong thead th { position: sticky; top: 0; z-index: 1; }
+.conf .conf-summary { width: auto; }
+.conf .card-b > .row { margin-bottom: 6px; align-items: flex-end; }

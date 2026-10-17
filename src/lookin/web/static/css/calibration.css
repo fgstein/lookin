@@ -1,0 +1,16 @@
+/* Calibration tab (views/calibration.py) */
+.cal-exp { display: inline-flex; align-items: center; gap: 4px; margin-right: 8px; }
+.cal-charts { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+.cal-charts + .cal-charts { margin-top: 10px; }
+.cal-tile { border: 1px solid var(--line-2); border-radius: 6px; padding: 6px; background: var(--surface); }
+.cal-tile .chart { display: block; height: auto; }
+.cal-off { width: 360px; display: flex; flex-direction: column; gap: 6px; }
+.cal-sub + .cal-sub { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-3); }
+.cal-sub h3 { font-size: 13px; font-weight: 700; margin: 0 0 6px; }
+.cal-sub > .row, .cal-sub > form { margin-bottom: 6px; }
+.cal-slider { gap: 12px; }
+.cal-thr { white-space: nowrap; min-width: 180px; }
+.cal-rng { flex: 1; max-width: 640px; accent-color: var(--acc); }
+.cal-th { margin: 8px 0 4px; gap: 6px; }
+.cal-acts { gap: 2px; flex-wrap: nowrap; }
+.cal .tbl td .dot { vertical-align: middle; margin-right: 4px; }
