@@ -75,7 +75,12 @@ class StatsView(RebuildView):
         fig, ax = subplots(figsize=(9.5, 3.2))
         notes = []
         if is_numeric:
-            ax.hist(series, bins=40, color=BAR_COLOR, edgecolor="white")
+            # An inf has no bin: numpy refuses the whole histogram, and the
+            # tab's every chart with it. Drawn without, and said so.
+            finite = series[np.isfinite(series.to_numpy(dtype=float))]
+            if len(finite) < len(series):
+                notes.append(f"{len(series) - len(finite):,} infinite value(s) not drawn.")
+            ax.hist(finite, bins=40, color=BAR_COLOR, edgecolor="white")
             ax.set_title(f"{col}", fontsize=12)
             ax.set_ylabel("count", fontsize=10)
             style_axes(ax)

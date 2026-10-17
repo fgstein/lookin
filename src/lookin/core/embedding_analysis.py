@@ -713,20 +713,45 @@ def fit_projection(
     combined = np.concatenate([embeddings, proto_vectors], axis=0) if has_protos else embeddings
 
     model = None
-    if method == "pca":
+    # A handful of points is legitimate (the Filter tab can leave three
+    # crops), but each method has a floor below which it raises instead of
+    # drawing: PCA wants as many points and dimensions as components, t-SNE
+    # a perplexity below the number of points, UMAP's spectral start more
+    # points than it has eigenvectors to find, and UMAP nothing at all
+    # below three points. Under those floors the points are still drawn.
+    n_total, dim = combined.shape
+    if n_total < 3 and method != "pca":
+        method_used = "pca"
+    else:
+        method_used = method
+    if method_used == "pca":
         from sklearn.decomposition import PCA
 
-        model = PCA(n_components=2, random_state=seed)
-        proj = model.fit_transform(combined)
-    elif method == "umap":
+        components = min(2, n_total, dim)
+        if components < 1:
+            proj = np.zeros((n_total, 2))
+        else:
+            if method == "pca":
+                model = PCA(n_components=components, random_state=seed)
+                proj = model.fit_transform(combined)
+            else:
+                proj = PCA(n_components=components, random_state=seed).fit_transform(combined)
+            if components < 2:
+                # A line (one point, or one dimension): drawn on the x axis.
+                # A PCA kept with fewer components cannot place overlays on
+                # a 2D map, so none is kept.
+                proj = np.column_stack([proj, np.zeros((n_total, 2 - components))])
+                model = None
+    elif method_used == "umap":
         import umap
 
-        model = umap.UMAP(n_components=2, random_state=seed)
+        model = umap.UMAP(n_components=2, random_state=seed, init="random" if n_total <= 3 else "spectral")
         proj = model.fit_transform(combined)
-    elif method == "umap_circle":
+    elif method_used == "umap_circle":
         import umap
 
-        model = umap.UMAP(n_components=2, output_metric="haversine", random_state=seed)
+        model = umap.UMAP(n_components=2, output_metric="haversine", random_state=seed,
+                          init="random" if n_total <= 3 else "spectral")
         # raw columns are (colatitude, longitude) in radians; the disk
         # mapping is applied here and, identically, to anything placed onto
         # this fit later -- see ProjectionFit.transform.
@@ -734,9 +759,10 @@ def fit_projection(
     else:
         from sklearn.manifold import TSNE
 
-        perplexity = min(30, max(5, (len(combined) - 1) // 3))
+        perplexity = min(30, max(5, (n_total - 1) // 3), n_total - 1)
+        init = "pca" if min(n_total, dim) >= 2 else "random"
         # No model kept: TSNE has no transform() to keep one for.
-        proj = TSNE(n_components=2, random_state=seed, init="pca", perplexity=perplexity).fit_transform(combined)
+        proj = TSNE(n_components=2, random_state=seed, init=init, perplexity=perplexity).fit_transform(combined)
 
     proj = np.asarray(proj, dtype=float)
     return ProjectionFit(

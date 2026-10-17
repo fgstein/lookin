@@ -97,6 +97,8 @@ class ScoreDiagnostics:
     n_rows: int
     constant_labels: list = field(default_factory=list)
     constant_values: dict = field(default_factory=dict)  # label -> its single value
+    # Rows with a missing (NaN) score, counted among n_rows_not_normalized.
+    n_rows_missing: int = 0
 
 
 def diagnose_scores(scores: np.ndarray, labels_for_cols: list) -> ScoreDiagnostics:
@@ -119,6 +121,11 @@ def diagnose_scores(scores: np.ndarray, labels_for_cols: list) -> ScoreDiagnosti
         finite = np.isfinite(block)
         col_min = np.minimum(col_min, np.where(finite, block, np.inf).min(axis=0))
         col_max = np.maximum(col_max, np.where(finite, block, -np.inf).max(axis=0))
+    # A row with a missing (NaN) score is not a distribution either: as
+    # NaN it compared False to the tolerance and passed as one, and then
+    # turned log loss, Brier and ECE into NaN with no banner saying why.
+    missing = np.isnan(deviation)
+    deviation[missing] = np.inf
     n_off = int((deviation > ROW_SUM_TOLERANCE).sum())
 
     constant_labels = []
@@ -136,6 +143,7 @@ def diagnose_scores(scores: np.ndarray, labels_for_cols: list) -> ScoreDiagnosti
         n_rows=n,
         constant_labels=constant_labels,
         constant_values=constant_values,
+        n_rows_missing=int(missing.sum()),
     )
 
 
@@ -754,6 +762,16 @@ def compute_curves(merged: pd.DataFrame, label_col: str, score_cols: list, class
     if y_bin.sum() == 0 or y_bin.sum() == len(y_bin):
         zeros = np.array([0.0, 1.0])
         return CurveData(zeros, zeros, float("nan"), zeros, zeros, float("nan"))
+
+    if not np.isfinite(scores[:, col_idx]).all():
+        # sklearn refuses NaN and inf (the error replaced the whole Metrics
+        # tab), and the per-class table already leaves such a column's
+        # ROC-AUC undefined -- see _each_sorted_column.
+        zeros = np.array([0.0, 1.0])
+        return CurveData(
+            zeros, zeros, float("nan"), zeros, zeros, float("nan"),
+            disabled_reason=f"the '{target}' score column has missing or infinite values, so it cannot be ranked",
+        )
 
     fpr, tpr, _ = roc_curve(y_bin, scores[:, col_idx])
     roc_auc_val = float(auc(fpr, tpr))
