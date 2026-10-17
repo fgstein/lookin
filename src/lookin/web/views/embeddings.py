@@ -1477,6 +1477,9 @@ class EmbeddingsView(View):
             filters[column] = {"kind": f.kind, "hidden": [str(v) for v in f.hidden],
                                "window": [float(f.window[0]), float(f.window[1])],
                                "include_missing": bool(f.include_missing)}
+        if not self.experiment:
+            # The original's dropdown is filled on every data change, shown or not.
+            self._refresh_experiment_dropdown()
         return {
             "experiment": self.experiment or "",
             "method": self.method or "pca",
