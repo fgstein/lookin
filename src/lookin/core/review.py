@@ -935,7 +935,11 @@ def export_enriched_dataset(
     # silent and total, so it must happen before anything else can.
     dest_path = check_export_destination(dest_path, dataset_csv_path)
     t0 = time.monotonic()
-    df = pd.read_csv(dataset_csv_path)
+    from lookin.core.data_manager import _label_na_options
+
+    # Read as the load reads it: a "None" or "NA" class is a label, not a
+    # missing value -- read with pandas' defaults, it was written back empty.
+    df = pd.read_csv(dataset_csv_path, **_label_na_options(dataset_csv_path, label_col))
     _log(f"export: re-read {len(df):,} rows from {dataset_csv_path} ({time.monotonic() - t0:.1f}s)")
 
     for required in (uuid_col, label_col):

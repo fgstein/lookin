@@ -119,6 +119,10 @@ def diagnose_scores(scores: np.ndarray, labels_for_cols: list) -> ScoreDiagnosti
         finite = np.isfinite(block)
         col_min = np.minimum(col_min, np.where(finite, block, np.inf).min(axis=0))
         col_max = np.maximum(col_max, np.where(finite, block, -np.inf).max(axis=0))
+    # A row with a missing (NaN) score is not a distribution either: as
+    # NaN it compared False to the tolerance and passed as one, and then
+    # turned log loss, Brier and ECE into NaN with no banner saying why.
+    deviation[np.isnan(deviation)] = np.inf
     n_off = int((deviation > ROW_SUM_TOLERANCE).sum())
 
     constant_labels = []

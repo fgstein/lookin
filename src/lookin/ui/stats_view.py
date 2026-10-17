@@ -49,7 +49,8 @@ class StatsView:
     def _make_chart(self, col: str, series, is_numeric: bool) -> ft.Control:
         fig, ax = subplots(figsize=(9.5, 3.2))
         if is_numeric:
-            ax.hist(series, bins=40, color="#6C5CE7", edgecolor="white")
+            # An inf has no bin: numpy refuses the whole histogram.
+            ax.hist(series[np.isfinite(series.to_numpy(dtype=float))], bins=40, color="#6C5CE7", edgecolor="white")
             ax.set_title(f"{col}", fontsize=12)
             ax.set_ylabel("count", fontsize=10)
             # Both axes are scales here -- the column's own units and a

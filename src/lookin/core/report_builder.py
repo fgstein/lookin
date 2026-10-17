@@ -207,6 +207,11 @@ def _add_confusion(report: Report, metrics_by_name: dict, focus: list | None) ->
     section = report.section("Confusion matrices")
     for name, metrics in metrics_by_name.items():
         confusion = metrics.confusion
+        if confusion.empty:
+            # No row of this run matched the dataset (or the Filter tab left
+            # none): there is no matrix to draw, and drawing one raised.
+            section.blocks.append(report.paragraph(f"{name}: no rows, so no confusion matrix.", note=True))
+            continue
         if focus is not None:
             _add_focus_confusion(report, section, name, metrics, focus)
             continue

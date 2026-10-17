@@ -78,17 +78,17 @@ def _count_data_rows(path: str) -> int:
 
 
 def _read_csv_with_progress(path: str, progress_cb: Optional[ProgressCallback] = None,
-                            dtype: Optional[dict] = None) -> pd.DataFrame:
+                            dtype: Optional[dict] = None, **read_kwargs) -> pd.DataFrame:
     _log(f"reading {path} ...")
     t0 = time.monotonic()
     if progress_cb is None:
-        df = pd.read_csv(path, dtype=dtype)
+        df = pd.read_csv(path, dtype=dtype, **read_kwargs)
         _log(f"read {len(df):,} rows from {path} in {time.monotonic() - t0:.1f}s")
         return df
 
     total = _count_data_rows(path)
     if total <= CHUNK_ROWS:
-        df = pd.read_csv(path, dtype=dtype)
+        df = pd.read_csv(path, dtype=dtype, **read_kwargs)
         progress_cb(len(df), max(total, len(df), 1))
         _log(f"read {len(df):,} rows from {path} in {time.monotonic() - t0:.1f}s")
         return df
@@ -96,7 +96,7 @@ def _read_csv_with_progress(path: str, progress_cb: Optional[ProgressCallback] =
     chunks = []
     rows_read = 0
     n_chunks = -(-total // CHUNK_ROWS)  # ceil
-    for i, chunk in enumerate(pd.read_csv(path, chunksize=CHUNK_ROWS, dtype=dtype), start=1):
+    for i, chunk in enumerate(pd.read_csv(path, chunksize=CHUNK_ROWS, dtype=dtype, **read_kwargs), start=1):
         chunks.append(chunk)
         rows_read += len(chunk)
         progress_cb(min(rows_read, total), total)
@@ -123,6 +123,23 @@ def _downcast_numeric(df: pd.DataFrame, exclude: set) -> None:
     _log(f"downcast {len(df.columns)} columns in {time.monotonic() - t0:.1f}s")
 
 
+def _label_na_options(csv_path: str, label_col: str) -> dict:
+    """read_csv options under which only an empty cell is a missing label.
+
+    pandas reads "None", "NA", "null", "nan", "N/A"... as missing in every
+    column, and those are class names too (a "None" background class, "NA"
+    for North America): read that way, every crop of the class lost its
+    label, and the experiment's "None" score column matched nothing. Every
+    other column keeps pandas' defaults."""
+    from pandas._libs.parsers import STR_NA_VALUES
+
+    header = pd.read_csv(csv_path, nrows=0).columns
+    defaults = sorted(STR_NA_VALUES)
+    na_values = {c: defaults for c in header if c != label_col}
+    na_values[label_col] = [""]
+    return {"keep_default_na": False, "na_values": na_values}
+
+
 def _labels_as_str(series: pd.Series) -> pd.Series:
     """A label column as strings, missing values left missing.
 
@@ -138,6 +155,32 @@ def _labels_as_str(series: pd.Series) -> pd.Series:
         if (present == present.round()).all():
             values = values.astype("Int64")
     return values.astype(str).astype(object).where(values.notna(), np.nan)
+
+
+def argmax_ignoring_nan(scores: np.ndarray, block: int = 8192) -> tuple:
+    """(index, value) of each row's highest score, a missing (NaN) score
+    never being the highest -- np.argmax returns the first NaN, so a row
+    missing one class's score was predicted as that very class. A row with
+    no score at all gets index -1 and value NaN. Read in row blocks: the
+    matrix can be a hundred thousand rows by two thousand classes."""
+    n = len(scores)
+    index = np.full(n, -1, dtype=np.int64)
+    value = np.full(n, np.nan, dtype=np.float64)
+    if not scores.size:
+        return index, value
+    if not np.issubdtype(scores.dtype, np.floating):
+        scores = scores.astype(np.float64)
+    for start in range(0, n, block):
+        part = scores[start:start + block]
+        missing = np.isnan(part)
+        if missing.any():
+            part = np.where(missing, -np.inf, part)
+        idx = part.argmax(axis=1)
+        best = part[np.arange(len(part)), idx].astype(np.float64)
+        some = ~missing.all(axis=1)
+        index[start:start + len(part)] = np.where(some, idx, -1)
+        value[start:start + len(part)] = np.where(some, best, np.nan)
+    return index, value
 
 
 def _load_npz_no_pickle(path: str) -> dict:
@@ -584,7 +627,7 @@ class AppState:
         self, csv_path: str, columns: ColumnConfig, progress_cb: Optional[ProgressCallback] = None,
         row_filter: Optional[tuple] = None, image_root: Optional[str] = None,
     ) -> Dataset:
-        df = _read_csv_with_progress(csv_path, progress_cb)
+        df = _read_csv_with_progress(csv_path, progress_cb, **_label_na_options(csv_path, columns.label_col))
         required_cols = [columns.crop_col, columns.label_col]
         if columns.has_ids():
             required_cols.insert(0, columns.uuid_col)
@@ -996,23 +1039,44 @@ class AppState:
                  f"experiment: {overlap.experiment_dupes:,}) -- the join below may produce more "
                  f"rows than either input if the same uuid repeats on both sides")
         t0 = time.monotonic()
-        merged = self.dataset.df.merge(
+        left = self.dataset.df
+        # A metadata column named like one of the classes (a "cat" flag next
+        # to a "cat" score column): the merge would keep the dataset's
+        # column under that name and rename the score to "cat_result", and
+        # every score read through `score_cols` would silently be the
+        # metadata instead. The scores are what this frame is for, so the
+        # dataset's copy is the one left out.
+        reserved = {cols.uuid_col, cols.crop_col, cols.label_col}
+        shadowed = [c for c in experiment.score_cols if c in left.columns and c not in reserved]
+        if shadowed:
+            _log(f"warning: dataset column(s) {shadowed[:10]} have the name of a class score column of "
+                 f"'{experiment_name}' -- the scores are used and those dataset columns are left out")
+            left = left.drop(columns=shadowed)
+        merged = left.merge(
             experiment.df, left_on=cols.uuid_col, right_on=experiment.uuid_col, how="inner",
             suffixes=("", "_result"),
         )
         _log(f"merge produced {len(merged):,} rows in {time.monotonic() - t0:.1f}s")
         merged = self._apply_review_overlay(merged, cols)
+        # A row with no label has no class to be right or wrong about: kept,
+        # it counted as an error in every accuracy and precision, and its
+        # NaN broke everything that sorts the classes it sees. Dropped here,
+        # after the overlay (a review decision may have given it a label).
+        unlabelled = merged[cols.label_col].isna().to_numpy()
+        if unlabelled.any():
+            _log(f"{int(unlabelled.sum()):,} row(s) with no label left out of '{experiment_name}'")
+            merged = merged[~unlabelled].reset_index(drop=True)
         score_cols = experiment.score_cols
         labels_for_cols = experiment.class_labels[: len(score_cols)]
-        scores = merged[score_cols].to_numpy()
-        pred_idx = scores.argmax(axis=1)
+        pred_idx, pred_score = argmax_ignoring_nan(merged[score_cols].to_numpy())
         # pandas warns that inserting into a frame of thousands of column
         # blocks is slow, and suggests concatenating instead -- which would
         # copy every score column to add three. Three inserts are cheap.
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", pd.errors.PerformanceWarning)
-            merged["predicted_label"] = [labels_for_cols[i] if i < len(labels_for_cols) else None for i in pred_idx]
-            merged["predicted_score"] = scores.max(axis=1)
+            merged["predicted_label"] = [labels_for_cols[i] if 0 <= i < len(labels_for_cols) else None
+                                         for i in pred_idx]
+            merged["predicted_score"] = pred_score
             merged["correct"] = merged["predicted_label"] == merged[cols.label_col]
 
         self._merged_cache_name = experiment_name

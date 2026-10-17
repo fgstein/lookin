@@ -188,7 +188,9 @@ def read_facts(path: str) -> Facts:
         facts.rows = _count_data_rows(path)
         if facts.label_col:
             import pandas as pd
-            labels = pd.read_csv(path, usecols=[facts.label_col])[facts.label_col]
+            # Only an empty cell is a missing label ("None" can be a class).
+            labels = pd.read_csv(path, usecols=[facts.label_col], keep_default_na=False,
+                                 na_values={facts.label_col: [""]})[facts.label_col]
             facts.classes = int(labels.nunique(dropna=True))
     except Exception as ex:  # noqa: BLE001
         facts.error = str(ex)

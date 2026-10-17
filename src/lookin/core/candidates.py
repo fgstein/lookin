@@ -122,14 +122,17 @@ def _predictions(experiment, uuid_col: str) -> tuple:
     it would evict and re-merge hundreds of thousands of rows per
     experiment. Everything here only needs the scores keyed by uuid.
     """
+    from lookin.core.data_manager import argmax_ignoring_nan
+
     scores = experiment.df[experiment.score_cols].to_numpy()
     labels = experiment.class_labels[: len(experiment.score_cols)]
-    idx = scores.argmax(axis=1)
-    predicted = np.array([labels[i] if i < len(labels) else "" for i in idx], dtype=object)
+    # A missing (NaN) score is never the prediction -- see merged().
+    idx, best = argmax_ignoring_nan(scores)
+    predicted = np.array([labels[i] if 0 <= i < len(labels) else "" for i in idx], dtype=object)
     return (
         experiment.df[experiment.uuid_col].astype(str).to_numpy(),
         predicted,
-        scores.max(axis=1),
+        best,
         scores,
     )
 
@@ -165,7 +168,11 @@ def by_margin(
             # flag every crop of that class.
             continue
         own = float(scores[i, col])
-        row = scores[i].copy()
+        if np.isnan(own):
+            # No score for the labeled class: no margin to measure (as NaN
+            # it passed the `margin < min_margin` test and was listed).
+            continue
+        row = np.where(np.isnan(scores[i]), -np.inf, scores[i])
         row[col] = -np.inf
         best_other = int(row.argmax())
         margin = float(row[best_other]) - own
@@ -213,7 +220,8 @@ def all_errors(
     candidates = []
     for i, uid in enumerate(uuids):
         true_label = true_by_uuid.get(uid)
-        if true_label is None or predicted[i] == true_label:
+        if true_label is None or predicted[i] == true_label or np.isnan(predicted_score[i]):
+            # (No score at all: no prediction to have got wrong.)
             continue
         col = class_index.get(true_label)
         if col is None:
@@ -262,12 +270,16 @@ def by_consensus(
     for experiment in experiments:
         uuids, predicted, predicted_score, _ = _predictions(experiment, uuid_col)
         for uid, pred, conf in zip(uuids, predicted, predicted_score):
+            if pred == "":
+                continue  # no score at all: no vote
             votes.setdefault(uid, []).append((experiment.name, str(pred), float(conf)))
 
     candidates = []
     for uid, entries in votes.items():
         true_label = true_by_uuid.get(uid)
-        if true_label is None or len(entries) < min_agreeing:
+        # A crop with no label (NaN) disagreed with every model and was
+        # listed as a consensus error with "nan" for its label.
+        if true_label is None or pd.isna(true_label) or len(entries) < min_agreeing:
             continue
         wrong = [e for e in entries if e[1] != true_label]
         if len(wrong) < min_agreeing:
@@ -574,7 +586,8 @@ def version_impact(
     before_hits = before_total = after_hits = after_total = 0
     for uid, true_label in zip(dataset_df[uuid_col].astype(str), dataset_df[label_col]):
         prediction = predicted_by_uuid.get(uid)
-        if prediction is None:
+        # No label, or no score: neither right nor wrong (as merged() has it).
+        if prediction is None or prediction == "" or pd.isna(true_label):
             continue
         before_total += 1
         before_hits += int(prediction == true_label)

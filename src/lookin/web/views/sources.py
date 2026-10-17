@@ -363,8 +363,12 @@ class SourcesView(View):
             ids_html = f'<span class="small" style="color:{"var(--err)" if kind == "error" else "var(--warn)" if kind == "warning" else "var(--faint)"}">{h.e(text)}</span>'
         classes_html = "—"
         if exp is not None:
+            # The dataset's labels once, not once per class: at two thousand
+            # classes that was two thousand passes over every row, on every
+            # render of this tab (four seconds each).
+            known = set(state.dataset.labels()) if state.dataset is not None else set()
             mapped = sum(1 for i in range(exp.n_classes()) if i < len(exp.class_labels)
-                         and state.dataset is not None and exp.class_labels[i] in set(state.dataset.labels()))
+                         and exp.class_labels[i] in known)
             renamed = sum(1 for i, c in enumerate(exp.score_cols) if i < len(exp.class_labels) and exp.class_labels[i] != c)
             classes_html = f"{mapped} / {exp.n_classes()}" + (f" · {renamed} renamed" if renamed else " by name")
         emb_html = "—"
