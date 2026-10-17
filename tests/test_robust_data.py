@@ -93,6 +93,30 @@ def test_rows_with_no_label_are_left_out_of_the_metrics(tmp_path):
     assert sorted(set(context["labels"].tolist())) == ["a", "b"]
 
 
+def test_slices_and_curves_with_a_crop_that_has_no_score(tmp_path):
+    """A crop with no score has no prediction (NaN): the slice table sorted
+    it among the class names and raised, and the ROC/PR curves of a class
+    whose column holds a NaN raised in sklearn -- both in place of the
+    whole section."""
+    from lookin.core import slices as sl
+    from lookin.core.metrics import compute_curves
+
+    results = pd.DataFrame({"uuid": ["u0", "u1", "u2", "u3"], "a": [np.nan, 0.8, 0.3, 0.6],
+                            "b": [np.nan, 0.2, 0.7, 0.4]})
+    state = _state(tmp_path, _dataset(["a", "a", "b", "b"]), results)
+    merged = state.merged("run")
+    report = sl.slice_report("run", merged, "label", sl.build_spec(merged["site"]))
+    assert report.overall.n == 4
+    assert report.overall.accuracy == pytest.approx(0.5)
+    # Per class: a -> tp 1, fn 1 (the crop with no prediction); b -> tp 1, fp 1, fn 1.
+    assert report.overall.macro_f1 == pytest.approx((2 / 3 + 1 / 2) / 2)
+    assert report.class_labels == ["a", "b"]
+
+    curves = compute_curves(merged, "label", ["a", "b"], ["a", "b"], "a")
+    assert curves.disabled_reason
+    assert np.isnan(curves.roc_auc)
+
+
 def test_report_of_a_run_that_matches_no_row(tmp_path):
     """Drawing the confusion matrix of an empty run raised, and the whole
     report export failed."""

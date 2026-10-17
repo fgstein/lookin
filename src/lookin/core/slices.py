@@ -82,7 +82,6 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import f1_score
 
 from lookin.core.data_manager import HIGH_CARDINALITY_MAX_UNIQUE
 from lookin.core.point_coloring import group_name, natural_sort_key
@@ -453,9 +452,16 @@ def _row(value: str, correct: np.ndarray, confidence: np.ndarray,
     lo, hi = wilson_interval(n_correct, n)
 
     if n:
-        present = sorted(set(y_true.tolist()) | set(y_pred.tolist()))
-        macro_f1 = float(f1_score(y_true, y_pred, labels=present, average="macro", zero_division=0))
-        n_classes = int(len(set(y_true.tolist())))
+        # A crop with no score has no prediction (NaN): it is not a class,
+        # and sorting it among the class names raised. It still counts
+        # against its true class, as f1_score counts a prediction outside
+        # `labels` -- the counts below are f1_score(labels=present,
+        # average="macro", zero_division=0) without its refusal of the mix.
+        present = sorted(_present(y_true) | _present(y_pred))
+        counts = _class_counts(y_true, y_pred, present)
+        macro_f1 = float(np.mean([2 * c.tp / (2 * c.tp + c.fp + c.fn) if c.tp + c.fp + c.fn else 0.0
+                                  for c in counts.values()])) if counts else float("nan")
+        n_classes = int(len(_present(y_true)))
         mean_confidence = float(np.nanmean(confidence)) if confidence.size else float("nan")
     else:
         macro_f1 = float("nan")
@@ -468,6 +474,11 @@ def _row(value: str, correct: np.ndarray, confidence: np.ndarray,
         mean_confidence=mean_confidence, n_classes=n_classes,
         per_class=_class_counts(y_true, y_pred, class_labels),
     )
+
+
+def _present(values: np.ndarray) -> set:
+    """The distinct labels among `values`, a missing one left out."""
+    return {v for v in pd.unique(pd.Series(values, dtype=object)) if not pd.isna(v)}
 
 
 def _class_counts(y_true: np.ndarray, y_pred: np.ndarray, class_labels: list) -> dict:
@@ -519,8 +530,7 @@ def slice_report(experiment: str, merged: pd.DataFrame, label_col: str, spec: Sl
     y_true_all = merged[label_col].to_numpy()
     y_pred_all = merged["predicted_label"].to_numpy()
     if class_labels is None:
-        class_labels = sorted(set(y_true_all.tolist()) | set(y_pred_all.tolist()),
-                              key=natural_sort_key)
+        class_labels = sorted(_present(y_true_all) | _present(y_pred_all), key=natural_sort_key)
 
     report = SliceReport(
         experiment=experiment, column=spec.column, class_labels=list(class_labels),

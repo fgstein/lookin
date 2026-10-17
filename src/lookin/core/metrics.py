@@ -759,6 +759,16 @@ def compute_curves(merged: pd.DataFrame, label_col: str, score_cols: list, class
         zeros = np.array([0.0, 1.0])
         return CurveData(zeros, zeros, float("nan"), zeros, zeros, float("nan"))
 
+    if not np.isfinite(scores[:, col_idx]).all():
+        # sklearn refuses NaN and inf (the error replaced the whole Metrics
+        # tab), and the per-class table already leaves such a column's
+        # ROC-AUC undefined -- see _each_sorted_column.
+        zeros = np.array([0.0, 1.0])
+        return CurveData(
+            zeros, zeros, float("nan"), zeros, zeros, float("nan"),
+            disabled_reason=f"the '{target}' score column has missing or infinite values, so it cannot be ranked",
+        )
+
     fpr, tpr, _ = roc_curve(y_bin, scores[:, col_idx])
     roc_auc_val = float(auc(fpr, tpr))
     precision, recall, _ = precision_recall_curve(y_bin, scores[:, col_idx])
