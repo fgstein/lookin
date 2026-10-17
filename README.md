@@ -36,6 +36,21 @@ Without installing, you can also run it directly from the project directory:
 uv run lookin ui
 ```
 
+### The new browser interface: `lookin web`
+
+```bash
+lookin web                      # http://127.0.0.1:8560
+lookin web --dataset /path/to/dataset.csv --experiment baseline=/path/to/results.csv
+```
+
+The same tool, redesigned as a plain HTML page served by the Python process
+(no Flet, nothing fetched from the network). It takes the same options as
+`lookin ui` and reads the same library, so workspaces, snapshots and review
+decisions are shared between the two -- both can run at the same time.
+Every browser tab is its own session: open several workspaces side by side
+and nothing in one affects the others. See `src/lookin/web/README.md` for how
+it is built.
+
 ## What it does
 
 1. **Data tab** -- load a dataset CSV (one row per cropped image: an id,
@@ -464,6 +479,7 @@ src/lookin/
   core/             data model, metrics, MLflow REST client -- no UI deps
   core/manual/      the reference manual's text, one module per chapter
   ui/               one module per tab, plus shared components/carousel
+  web/              `lookin web`: FastAPI server, per-tab sessions, HTML views
   data/example/     bundled CIFAR-10-based example dataset
 scripts/            one-off data-generation scripts (not shipped in the package)
 ```
