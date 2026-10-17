@@ -16,6 +16,7 @@ Same behaviour as lookin.ui.workspace_panel:
 from __future__ import annotations
 
 import threading
+import time
 import traceback
 from pathlib import Path
 
@@ -497,6 +498,7 @@ def open_from_link(session, workspace, snapshot=None) -> None:
         try:
             session.upload_view.restore_mount(mount if mount is not None else workspace.mount)
             _adopt_loaded_mount(session, workspace)
+            _remember_loadable(session, workspace)
             lib.mark_opened(workspace.id)
             with session.lock:
                 if snapshot is None:
@@ -590,3 +592,105 @@ def adopt_dataset(session) -> None:
     save_status.mark_baseline(session)
     session.title = f"{workspace.label()} — Lookin"
     session.mark("chrome")
+
+
+# ---- following the open workspace's manifest -------------------------------
+
+# How often a tab looks at the manifest of the workspace it has open, to
+# follow a change made from Home or from another tab (see follow_workspace).
+WATCH_S = 3.0
+
+
+def _content(workspace) -> dict:
+    """A workspace as saved, less the stamp every write moves."""
+    payload = lib.workspace_to_dict(workspace)
+    payload.pop("updated_at", None)
+    return payload
+
+
+def _remember_loadable(session, workspace) -> None:
+    """What of `workspace` this tab could have loaded, as (name, path):
+    anything outside this set that turns up loadable later is new."""
+    from lookin.core import workspace_sources as wss
+    session._loadable_seen = {(e.name, e.path) for e in workspace.mount.experiments if wss.is_downloaded(e)}
+
+
+def follow_workspace(session, fresh) -> bool:
+    """The open workspace's manifest changed outside this tab's Sources tab
+    -- on its Home card, in this tab or another one. Bring what is loaded
+    along, as far as that is safe (see WorkspacePanel.follow_workspace):
+
+    - nothing loaded and the workspace now names a dataset it did not
+      before: load the whole workspace;
+    - the same dataset loaded: load the experiments that have become
+      loadable since this tab last looked (added from Home, or just
+      downloaded) -- not one the user removed here and has not saved;
+    - anything else is left alone, and the app bar's Save says they differ.
+
+    Returns False when it could not look yet (a load is running)."""
+    from lookin.core import workspace_sources as wss
+
+    upload = session.upload_view
+    previous = session.current_workspace
+    if previous is None or previous.id != fresh.id:
+        return True
+    lock = session.__dict__.setdefault("_follow_lock", threading.Lock())
+    if upload.is_loading() or not lock.acquire(blocking=False):
+        return False
+    try:
+        loaded = upload.current_mount()
+        session.current_workspace = fresh
+        seen = getattr(session, "_loadable_seen", set())
+        if loaded is None:
+            if fresh.mount.dataset_path and fresh.mount.dataset_path != previous.mount.dataset_path:
+                upload.restore_mount(wss.downloaded_only(fresh.mount))
+                _adopt_loaded_mount(session, fresh)
+                save_status.mark_baseline(session)
+        elif loaded.dataset_path == fresh.mount.dataset_path:
+            here = {e.name for e in loaded.experiments}
+            new = [e for e in fresh.mount.experiments
+                   if e.name not in here and (e.name, e.path) not in seen and wss.is_downloaded(e)]
+            if new:
+                upload.add_mount_experiments(new)
+                _adopt_loaded_mount(session, fresh)
+        _remember_loadable(session, fresh)
+        session.mark("*")
+        return True
+    finally:
+        lock.release()
+
+
+def check_current_workspace(session) -> None:
+    workspace = session.current_workspace
+    if workspace is None or workspace.path is None:
+        return
+    try:
+        stat = (Path(workspace.path) / lib.MANIFEST_NAME).stat()
+    except OSError:
+        return
+    # The inode too: every write is a replace, so it moves on each one even
+    # when two land within one mtime tick.
+    seen = (workspace.id, stat.st_ino, stat.st_mtime_ns)
+    if getattr(session, "_seen_manifest", None) == seen:
+        return
+    fresh = lib.load_workspace(workspace.path)
+    if fresh is None:
+        return
+    if _content(fresh) == _content(workspace) or follow_workspace(session, fresh):
+        session._seen_manifest = seen
+
+
+def start_watching(session) -> None:
+    """Follow the open workspace's manifest for the life of the session.
+    A thread per tab rather than a signal between tabs: the only thing two
+    tabs share is the library on disk, and one stat every few seconds is
+    the whole cost."""
+    def watch():
+        while not session.closed:
+            time.sleep(WATCH_S)
+            try:
+                check_current_workspace(session)
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+
+    threading.Thread(target=watch, daemon=True, name=f"lookin-watch-{session.sid[:6]}").start()

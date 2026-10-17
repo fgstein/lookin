@@ -803,21 +803,40 @@ class NewWorkspaceDialog(Dialog):
         self.name = ""
         self.dataset = ""
         self.add_keys = bool(self.keys)
+        # The group the workspace goes in: the one whose + was clicked, else
+        # the first. Keyed by the board column's id, never by its name --
+        # two groups may share a name.
+        columns = bd.load()["columns"]
+        ids = [c["id"] for c in columns]
+        self.group = group if group in ids else (ids[0] if ids else "")
 
     def body(self) -> str:
         param = self.home.hub.config.dataset_param
         add = (h.checkbox(f"Add the {len(self.keys)} selected item(s)", self.add_keys, change=self.c("add_keys"))
                if self.keys else "")
-        return (f'<div class="form-col">{h.text_input(self.name, change=self.c("name"), label="Name", autofocus=True)}'
-                f'<label class="fld"><span class="fld-l">Dataset CSV (on this machine)</span><div class="row-nw">'
+        columns = bd.load()["columns"]
+        group = (h.select([(c["id"], c["name"]) for c in columns], self.group, change=self.c("group"), label="Group")
+                 if len(columns) > 1 else "")
+        return (f'<div class="form-col">{h.text_input(self.name, change=self.c("name"), enter=h.on_enter(self.target, "create_enter"), label="Name", autofocus=True)}'
+                f'{group}'
+                f'<label class="fld"><span class="fld-l">Dataset CSV (optional)</span><div class="row-nw">'
                 f'{h.text_input(self.dataset, change=self.c("dataset"), mono=True, cls="grow")}'
                 f'{h.button(icon_name="folder", act_attr=self.a("browse"), title="Browse the server")}'
                 f'{h.button("Datasets…", act_attr=self.a("pick"), small=False)}</div></label>'
-                f'<p class="muted small">Leave the dataset empty to take it from the first run added -- the value of its '
-                f"'{h.e(param)}' parameter.</p>{add}</div>")
+                f'<p class="muted small">Can be left empty: set it later in the Sources tab of the open workspace, or let the '
+                f"first run added bring it (its '{h.e(param)}' parameter).</p>{add}</div>")
 
     def footer(self) -> str:
-        return h.button("Cancel", act_attr=self.a("close")) + h.button("Create", act_attr=self.a("create"), kind="primary")
+        return (h.button("Cancel", act_attr=self.a("close"))
+                + h.button("Create", act_attr=self.a("create"))
+                + h.button("Create and open", act_attr=self.a("create", open_it=True), kind="primary", icon_name="external"))
+
+    def on_group(self, value: str = "", **_):
+        self.group = value or self.group
+
+    def on_create_enter(self, value: str = "", **_):
+        self.name = value or self.name
+        self.on_create()
 
     def on_name(self, value: str = "", **_):
         self.name = value or ""
@@ -842,7 +861,7 @@ class NewWorkspaceDialog(Dialog):
             self.refresh()
         self.session.open_dialog(DatasetsDialog(self.session, on_pick=picked, pick_label="Use this dataset"))
 
-    def on_create(self, **_):
+    def on_create(self, open_it=False, **_):
         if not (self.name or "").strip():
             self.error = "Enter a name."
             self.refresh()
@@ -863,6 +882,10 @@ class NewWorkspaceDialog(Dialog):
         self.session.toast(f"Created {ws.label()} ({ws.id}).", "ok")
         if self.add_keys and self.keys:
             home.add_keys(ws, self.keys)
+        if open_it:
+            # Runs added above that finish downloading later reach the open
+            # tab on their own (see workspaces.follow_workspace).
+            self.session.cmd(open=f"/?workspace={ws.id}")
 
 
 class SetDatasetDialog(Dialog):

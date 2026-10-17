@@ -50,6 +50,10 @@ def main(argv: list[str] | None = None) -> None:
                             help="Directory holding saved workspaces (same as `lookin ui --library`).")
     web_parser.add_argument("--experiment", action="append", default=[], metavar="NAME=PATH",
                             dest="experiments", help="Results CSV to load on startup, as NAME=PATH. Requires --dataset.")
+    web_parser.add_argument(
+        "--no-mcp", action="store_false", dest="mcp",
+        help="Do not serve the MCP endpoint for AI agents (served at /mcp on the same port by default).",
+    )
 
     args = parser.parse_args(argv)
 
@@ -66,7 +70,7 @@ def main(argv: list[str] | None = None) -> None:
         if args.command == "web":
             from lookin.web.server import run_web
             run_web(host=args.host, port=args.port, dataset=args.dataset, experiments=experiments,
-                    library_dir=args.library)
+                    library_dir=args.library, enable_mcp=args.mcp)
             return
         from lookin.app import run_ui  # deferred: keep `lookin --help` fast and dependency-light
         run_ui(host=args.host, port=args.port, dataset=args.dataset, experiments=experiments,

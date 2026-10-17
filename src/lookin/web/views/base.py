@@ -15,6 +15,13 @@ from typing import Callable, Optional
 from lookin.web import html as h
 
 
+# What an action returns when it has already said everything it changed
+# through commands (an infinite list's next batch goes out as an `append`):
+# the view is then not re-rendered, which for a long list would resend every
+# item already on screen.
+NO_RENDER = object()
+
+
 class Handler:
     target = ""
 

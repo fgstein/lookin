@@ -1185,6 +1185,22 @@ class SourcesView(View):
         self._load_mount_experiments(mount.experiments)
         self.s.notify_change()
 
+    def add_mount_experiments(self, experiments) -> None:
+        """Load a workspace's experiments into what is already loaded --
+        runs added to the open workspace from its Home card (see
+        workspaces.follow_workspace)."""
+        if self.state.dataset is None or not experiments:
+            return
+        self.s.busy.begin("Loading experiments")
+        try:
+            self._load_mount_experiments(experiments)
+        finally:
+            self.s.busy.end()
+        self.s.notify_change()
+
+    def is_loading(self) -> bool:
+        return bool(self.ds_loading or any(getattr(r, "loading", False) for r in self.rows))
+
     def _hold(self, experiments) -> None:
         self.held = [e for e in experiments if e.path]
         for e in self.held:

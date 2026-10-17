@@ -87,3 +87,30 @@ def test_snapshot_views_round_trip(example):
         view = t.view_state._views[key]
         assert view.restore_view_state(state) == [], key
         assert view.view_state() == state, key
+
+
+def test_an_open_workspace_follows_its_manifest(example, tmp_path):
+    """A dataset set on the Home card after the workspace was opened loads
+    into the empty tab; a run added later loads next to what is there."""
+    from lookin.core import library as lib
+    from lookin.web.views.workspaces import _remember_loadable, follow_workspace
+
+    lib.set_library_root(tmp_path / "lib")
+    try:
+        ws = lib.create_workspace("follow me", lib.Mount(dataset_path=""))
+        s = _session(WebApp(), "g" * 24)
+        s.current_workspace = ws
+        _remember_loadable(s, ws)
+
+        fresh = lib.update_workspace_mount(ws.path, lib.Mount(dataset_path=str(example / "dataset.csv")))
+        assert follow_workspace(s, fresh)
+        assert s.state.dataset is not None
+        assert not s.state.experiments
+
+        mount = lib.Mount(dataset_path=str(example / "dataset.csv"), experiments=[
+            lib.MountExperiment(name="baseline", path=str(example / "baseline_cnn_results.csv"))])
+        fresh = lib.update_workspace_mount(ws.path, mount)
+        assert follow_workspace(s, fresh)
+        assert list(s.state.experiments) == ["baseline"]
+    finally:
+        lib.set_library_root(None)

@@ -82,6 +82,8 @@ def boot(session, query: dict) -> None:
         return
     session.booted = True
     _wire(session)
+    from lookin.web.views.workspaces import start_watching
+    start_watching(session)
     sources = session.view("sources")
     app = session.app
     workspace_id = (query.get("workspace") or [""])[0]
@@ -131,6 +133,8 @@ def _route(session, query: dict) -> None:
 # ---- dispatch ---------------------------------------------------------------
 
 def dispatch(session, target: str, action: str, args: dict) -> None:
+    from lookin.web.views.base import NO_RENDER
+
     if target == "app":
         AppActions(session).handle(action, args)
         return
@@ -139,14 +143,15 @@ def dispatch(session, target: str, action: str, args: dict) -> None:
         if dialog is None:
             session.mark("dialogs")
             return
-        dialog.handle(action, args)
-        session.mark("dialogs", "chrome")
+        if dialog.handle(action, args) is not NO_RENDER:
+            session.mark("dialogs", "chrome")
         return
     from lookin.web.views import VIEW_CLASSES
 
     if target not in VIEW_CLASSES:
         raise KeyError(f"unknown target {target}")
-    session.view(target).handle(action, args)
+    if session.view(target).handle(action, args) is NO_RENDER:
+        return
     # Whatever a view's action changed is in its own region -- and in the
     # save chips, which compare the view's state with the saved one.
     session.mark(target, "chrome")
@@ -272,7 +277,7 @@ def render_top(session) -> str:
         sub = ""
     return (f'<h1>{h.e(title)}</h1>{f"<span class=top-sub>{h.e(sub)}</span>" if sub else ""}'
             f'<div class="top-r">{busy_html}{save_chips(session)}'
-            f'{h.button("Save snapshot", act_attr=h.act("app", "save_snapshot"), kind="primary", small=True, icon_name="bookmark")}</div>')
+            f'{h.button("Save snapshot", act_attr=h.act("app", "save_snapshot"), small=True, icon_name="bookmark")}</div>')
 
 
 def save_chips(session) -> str:
@@ -291,10 +296,22 @@ def save_chips(session) -> str:
         tip = f"{unsaved_tip} (last: {name})" if name else unsaved_tip
         return f'<button type="button" class="sv warn"{h.act("app", "workspaces")} title="{h.e(tip)}">{h.icon(icon_name, 13)}{h.e(label)}</button>'
 
-    return (chip(st.workspace_saved, st.workspace_name, "Workspace", "No workspace",
+    # The one-click answer to the workspace chip turning amber: shown only
+    # while there is something to save. Snapshots stay a deliberate act in
+    # the Workspaces window -- each is an id a report may quote.
+    save = ""
+    if st.has_data and not st.workspace_saved:
+        if st.workspace_name:
+            save = h.button("Save", act_attr=h.act("app", "save_workspace"), kind="primary", small=True, icon_name="save",
+                            title=f"Write the dataset and experiments loaded now into '{st.workspace_name}'. "
+                                  "Its id and its snapshots are kept.")
+        else:
+            save = h.button("Save as workspace", act_attr=h.act("app", "save_workspace"), kind="primary", small=True,
+                            icon_name="save", title="Keep the dataset and experiments loaded now as a named workspace.")
+    return save + (chip(st.workspace_saved, st.workspace_name, "Workspace", "No workspace",
                  "This data is saved as a workspace.",
                  "This data is not saved as a workspace -- loading something else loses the mount.", "save")
-            + chip(st.snapshot_saved, st.snapshot_name, "Snapshot", "Unsaved",
+            + chip(st.snapshot_saved, st.snapshot_name, "Snapshot", "No snapshot",
                    "What is on screen matches this snapshot.",
                    "The filters and settings on screen are not saved in any snapshot.", "bookmark"))
 
@@ -343,6 +360,29 @@ class AppActions:
     def on_workspaces(self, **_):
         from lookin.web.views.workspaces import WorkspacesDialog
         self.s.open_dialog(WorkspacesDialog(self.s))
+
+    def on_save_workspace(self, **_):
+        """The app bar's Save: write what is loaded into the workspace open
+        in this tab -- or, with none open, make it one."""
+        from lookin.core import library as lib
+        from lookin.ui import save_status
+        from lookin.web.views.workspaces import WorkspacesDialog
+
+        workspace = self.s.current_workspace
+        mount = self.s.upload_view.current_mount()
+        if mount is None:
+            return
+        if workspace is None or not workspace.exists():
+            self.s.open_dialog(WorkspacesDialog(self.s, focus_save=True))
+            return
+        fresh = lib.update_workspace_mount(workspace.path, mount)
+        if fresh is None:
+            self.s.toast("Could not write the workspace.", "error")
+            return
+        self.s.current_workspace = fresh
+        save_status.mark_baseline(self.s)
+        self.s.toast(f"Updated workspace {fresh.label()} ({fresh.id}).", "ok")
+        self.s.mark("chrome")
 
     def on_save_snapshot(self, **_):
         from lookin.web.views.workspaces import WorkspacesDialog

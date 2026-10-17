@@ -127,10 +127,38 @@ def page_html() -> str:
 </html>"""
 
 
-def create_app(webapp: WebApp) -> FastAPI:
+def _mcp_parts(enable_mcp: bool):
+    """(routes, lifespan) for the read-only MCP endpoint at MCP_PATH -- the
+    same one `lookin ui` serves (see lookin/mcp_server.py), so an agent can
+    read workspaces and results whichever interface is running."""
+    from contextlib import asynccontextmanager
+
+    if not enable_mcp:
+        return [], None
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    from lookin.mcp_server import MCP_PATH, build_server
+
+    server = build_server()
+    mcp_app = server.streamable_http_app(
+        streamable_http_path=MCP_PATH, stateless_http=True, json_response=True,
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        async with server.session_manager.run():
+            yield
+
+    return list(mcp_app.routes), lifespan
+
+
+def create_app(webapp: WebApp, enable_mcp: bool = False) -> FastAPI:
     from lookin.web import render
 
-    app = FastAPI(title="Lookin", docs_url=None, redoc_url=None, openapi_url=None)
+    mcp_routes, lifespan = _mcp_parts(enable_mcp)
+    app = FastAPI(title="Lookin", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+    app.router.routes.extend(mcp_routes)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     store = webapp.store
 
@@ -274,7 +302,7 @@ def create_app(webapp: WebApp) -> FastAPI:
 
 
 def run_web(host: str = "127.0.0.1", port: int = 8560, dataset: Optional[str] = None,
-            experiments=None, library_dir: Optional[str] = None) -> None:
+            experiments=None, library_dir: Optional[str] = None, enable_mcp: bool = True) -> None:
     import uvicorn
 
     from lookin.core import library
@@ -282,6 +310,10 @@ def run_web(host: str = "127.0.0.1", port: int = 8560, dataset: Optional[str] = 
     if library_dir:
         library.set_library_root(library_dir)
     webapp = WebApp(dataset=dataset, experiments=experiments)
-    app = create_app(webapp)
-    print(f"[lookin] web interface on http://{host}:{port}", flush=True)
+    app = create_app(webapp, enable_mcp=enable_mcp)
+    url = f"http://{'127.0.0.1' if host in ('', '0.0.0.0', '*') else host}:{port}"
+    print(f"[lookin] web interface on {url}", flush=True)
+    if enable_mcp:
+        from lookin.mcp_server import MCP_PATH
+        print(f"[lookin] MCP endpoint for AI agents: {url}{MCP_PATH}", flush=True)
     uvicorn.run(app, host=host, port=port, log_level="warning", ws="none")

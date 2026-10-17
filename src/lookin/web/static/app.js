@@ -182,6 +182,8 @@
       if (c.pixelated) img.setAttribute("data-pixelated", "1");
       openZoom(img);
     }
+    if (c.append) appendItems(c.append);
+    if (c.scroll_item) scrollToItem(c.scroll_item);
     if (c.event) document.dispatchEvent(new CustomEvent("lookin:" + c.event, { detail: c.detail }));
   }
 
@@ -340,7 +342,92 @@
     const spec = el.getAttribute(attr);
     if (!spec) return;
     const [target, action] = parseTarget(spec);
-    act(target, action, Object.assign(argsOf(el), extra || {}));
+    const args = Object.assign(argsOf(el), extra || {});
+    // data-anchor="<list id>": send which item of that infinite list is at
+    // the top of its scroll area, so a re-layout (a zoom step) can put it
+    // back there.
+    const anchorList = el.getAttribute("data-anchor");
+    if (anchorList) args.anchor = firstVisible(document.getElementById(anchorList));
+    return act(target, action, args);
+  }
+
+  // ---- infinite lists --------------------------------------------------
+  // A list (an element with an id and data-gen) followed somewhere by a
+  // sentinel [data-more="target:action"][data-list="<id>"]. When the
+  // sentinel comes within one screen of the bottom of its scroll area, the
+  // server is asked for the next batch ({gen, loaded}); it answers with an
+  // `append` command, so only the new items cross the wire.
+  function scrollParent(el) {
+    for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+      const s = getComputedStyle(p).overflowY;
+      if (s === "auto" || s === "scroll") return p;
+    }
+    return null;
+  }
+
+  function firstVisible(list) {
+    if (!list) return 0;
+    const sp = scrollParent(list);
+    const top = sp ? sp.getBoundingClientRect().top : 0;
+    const items = list.children;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].getBoundingClientRect().bottom > top + 2) return +(items[i].getAttribute("data-i") || i);
+    }
+    return 0;
+  }
+
+  function nearBottom(sentinel) {
+    const sp = scrollParent(sentinel);
+    const r = sentinel.getBoundingClientRect();
+    const bottom = sp ? sp.getBoundingClientRect().bottom : window.innerHeight;
+    const height = sp ? sp.clientHeight : window.innerHeight;
+    return r.top <= bottom + height && r.bottom >= 0 && sentinel.offsetParent !== null;
+  }
+
+  function requestMore(sentinel) {
+    if (sentinel._busy || sentinel.hidden) return;
+    const list = document.getElementById(sentinel.getAttribute("data-list"));
+    if (!list) return;
+    sentinel._busy = true;
+    const [target, action] = parseTarget(sentinel.getAttribute("data-more"));
+    act(target, action, Object.assign(argsOf(sentinel), {
+      gen: list.getAttribute("data-gen") || "", loaded: list.children.length,
+    })).then(() => {
+      sentinel._busy = false;
+      // Still in reach (a tall window, a fast scroll): keep going.
+      if (document.contains(sentinel) && !sentinel.hidden && nearBottom(sentinel)) requestMore(sentinel);
+    });
+  }
+
+  function wireInfiniteLists(root) {
+    root.querySelectorAll("[data-more]").forEach((s) => {
+      if (s._io) { if (nearBottom(s)) requestMore(s); return; }
+      const io = new IntersectionObserver((entries) => {
+        if (entries.some((e) => e.isIntersecting)) requestMore(s);
+      }, { root: scrollParent(s), rootMargin: "0px 0px 100% 0px" });
+      io.observe(s);
+      s._io = io;
+    });
+  }
+
+  function appendItems(c) {
+    const list = document.getElementById(c.to);
+    if (!list || String(list.getAttribute("data-gen")) !== String(c.gen)) return;
+    if (list.children.length !== c.start) return;     // out of step: the next render fixes it
+    list.insertAdjacentHTML("beforeend", c.html);
+    const count = document.getElementById(c.to + "-count");
+    if (count && c.count !== undefined) count.textContent = c.count;
+    document.querySelectorAll('[data-list="' + c.to + '"]').forEach((s) => { s.hidden = !!c.done; });
+  }
+
+  function scrollToItem(c) {
+    const list = document.getElementById(c.list);
+    if (!list) return;
+    const item = list.querySelector('[data-i="' + c.index + '"]');
+    const sp = scrollParent(list);
+    if (!sp) return;
+    if (!item) { sp.scrollTop = 0; return; }
+    sp.scrollTop += item.getBoundingClientRect().top - sp.getBoundingClientRect().top;
   }
 
   function valueOf(el) {
@@ -600,6 +687,7 @@
   const initializers = [];
   window.lookinInit = (fn) => initializers.push(fn);
   function initDynamic() {
+    wireInfiniteLists(document);
     initializers.forEach((fn) => { try { fn(document); } catch (e) { console.error(e); } });
   }
 
