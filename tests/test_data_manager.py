@@ -180,12 +180,13 @@ def test_numeric_columns_are_downcast(dataset_csv):
 
 def test_the_id_column_is_never_downcast(tmp_path):
     """A numeric-looking uuid downcast to int32 would stop matching the
-    experiment CSV's string uuids."""
+    experiment CSV's string uuids -- and is not even parsed as a number:
+    ids are read as the text they are (see data_manager._uuids_as_str)."""
     df = pd.DataFrame({"uuid": [1, 2, 3], "crop": ["c.png"] * 3, "label": list("abc")})
     csv = tmp_path / "d.csv"
     df.to_csv(csv, index=False)
     dataset = AppState().load_dataset(str(csv), ColumnConfig())
-    assert dataset.df["uuid"].dtype == np.int64
+    assert dataset.df["uuid"].tolist() == ["1", "2", "3"]
 
 
 # ---- a dataset with no id column ---------------------------------------
