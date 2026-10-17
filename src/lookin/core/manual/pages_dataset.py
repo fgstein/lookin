@@ -49,6 +49,9 @@ PAGES = (
                 "The label column, in the dataset CSV, carries the truth.",
                 "The score columns, in the results CSV, are read positionally against the class list: the first score column is the first class, and so on.",
                 "Rows present in only one of the two files are dropped from the merged view.",
+                "A dataset row with an empty label has no truth to be scored against, so it is left out of the merged view too -- of every metric, slice and map. Only an empty cell is missing: a class called None or NA is a class.",
+                "An empty score cell is never the prediction: a crop is predicted as its highest score that exists, and a crop with no score at all has no prediction (and counts as wrong). A row with a missing score is not a probability distribution, so log loss, Brier and ECE are disabled.",
+                "A dataset column named like a class is left out of the merged view: that class's scores take its place.",
             )),
             Callout(CALLOUT_TIP, "Crops with no ground truth", (
                 Para(
