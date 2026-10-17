@@ -17,11 +17,10 @@ import traceback
 from lookin import __version__
 from lookin.web import html as h
 
-# The analysis tabs, in the order the original UI numbered them: a snapshot
-# records the selected tab *by index* (see lookin.ui.view_state), so this
-# order is a file format, shared with `lookin ui`.
+# The analysis tabs, in the order the sidebar shows them.
 TABS = (
     ("sources", "Sources", "Data"),
+    ("filter", "Filter", "Data"),
     ("statistics", "Statistics", "Data"),
     ("gallery", "Gallery", "Data"),
     ("metrics", "Metrics", "Evaluate"),
@@ -35,15 +34,24 @@ TABS = (
 TAB_KEYS = [t[0] for t in TABS]
 TAB_TITLES = {t[0]: t[1] for t in TABS}
 
+# A snapshot records the selected tab *by index*, in the order the original
+# UI numbered its tabs (see lookin.ui.view_state) -- a file format shared
+# with `lookin ui`, so it does not move when a tab is added here. A tab the
+# original UI does not have is saved as the one it sits under.
+SNAPSHOT_TABS = ("sources", "statistics", "gallery", "metrics", "calibration", "confidence",
+                 "compare", "embeddings", "prototypes", "cleaning")
+_SNAPSHOT_ALIASES = {"filter": "sources"}
+
 
 def tab_index(session) -> int:
-    return TAB_KEYS.index(session.tab) if session.tab in TAB_KEYS else 0
+    tab = _SNAPSHOT_ALIASES.get(session.tab, session.tab)
+    return SNAPSHOT_TABS.index(tab) if tab in SNAPSHOT_TABS else 0
 
 
 def set_tab_index(session, index: int) -> None:
-    if 0 <= index < len(TAB_KEYS):
+    if 0 <= index < len(SNAPSHOT_TABS):
         session.mode = "analysis"
-        session.tab = TAB_KEYS[index]
+        session.tab = SNAPSHOT_TABS[index]
         session.mark("page")
 
 
@@ -58,6 +66,8 @@ def _wire(session) -> None:
     keys and the same order as the original UI (see app.py there)."""
     from lookin.ui import view_state as vs
 
+    # First: it changes which rows every view below restores against.
+    session.view_state.register(vs.DATASET_FILTER, session.view("filter"))
     session.view_state.register(vs.GALLERY, session.view("gallery"))
     session.view_state.register(vs.METRICS, session.view("metrics"))
     session.view_state.register(vs.CALIBRATION, session.view("calibration"))
@@ -249,6 +259,8 @@ def render_nav(session) -> str:
             group = grp
         on = session.mode == "analysis" and session.tab == key
         badge = f'<span class="nav-badge">{h.e(cleaning_badge)}</span>' if key == "cleaning" and cleaning_badge else ""
+        if key == "filter":
+            badge = filter_badge(session)
         items.append(f'<a href="?tab={key}" class="nav-a{" on" if on else ""}" data-tab="{key}"'
                      f'{" aria-current=page" if on else ""}>{h.e(title)}{badge}</a>')
     from lookin.web.views.display import display_label
@@ -276,8 +288,41 @@ def render_top(session) -> str:
     except Exception:  # noqa: BLE001
         sub = ""
     return (f'<h1>{h.e(title)}</h1>{f"<span class=top-sub>{h.e(sub)}</span>" if sub else ""}'
-            f'<div class="top-r">{busy_html}{save_chips(session)}'
+            f'<div class="top-r">{busy_html}{filter_chip(session)}{save_chips(session)}'
             f'{h.button("Save snapshot", act_attr=h.act("app", "save_snapshot"), small=True, icon_name="bookmark")}</div>')
+
+
+def filter_badge(session) -> str:
+    """The Filter tab's nav badge: how many rows are in view, while a filter
+    removes some."""
+    state = session.state
+    if state.dataset is None:
+        return ""
+    if state.dataset_filter_error:
+        return '<span class="nav-badge warn">!</span>'
+    if not state.dataset.is_filtered():
+        return ""
+    return f'<span class="nav-badge info">{len(state.dataset.df):,}</span>'
+
+
+def filter_chip(session) -> str:
+    """Shown on every tab while the Filter tab removes rows: every number
+    below is on fewer rows than the file has, and that must not be
+    forgotten two tabs later."""
+    from lookin.core.dataset_filter import describe
+
+    state = session.state
+    if state.dataset is None:
+        return ""
+    go = h.act("app", "tab", tab="filter")
+    if state.dataset_filter_error:
+        return (f'<button type="button" class="sv warn"{go} title="{h.e(state.dataset_filter_error)}">'
+                f'{h.icon("filter", 13)}Filter not applied</button>')
+    if not state.dataset.is_filtered():
+        return ""
+    tip = "Rows kept by the Filter tab:\n" + "\n".join(describe(state.dataset_filter))
+    return (f'<button type="button" class="sv filt"{go} title="{h.e(tip)}">{h.icon("filter", 13)}'
+            f'{len(state.dataset.df):,} / {len(state.dataset.full_df):,} rows</button>')
 
 
 def save_chips(session) -> str:

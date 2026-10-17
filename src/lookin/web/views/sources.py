@@ -248,7 +248,7 @@ class SourcesView(View):
         if self.row_filter_enabled and self.column_options and self.row_filter_col not in self.column_options:
             filter_note = f'<span class="muted small">no "{h.e(self.row_filter_col)}" column in this file: every row is kept</span>'
         elif state.dataset is not None and state.dataset.row_filter:
-            filter_note = f'<span class="muted small">{len(state.dataset.df):,} rows kept</span>'
+            filter_note = f'<span class="muted small">{len(state.dataset.full_df):,} rows kept</span>'
         rows_field = (f'<div class="row">{h.checkbox("Keep only rows where", self.row_filter_enabled, change=self.c("set_filter_enabled"))}'
                       f'{col_widget}<span>=</span>{h.text_input(self.row_filter_value, change=self.c("set_filter_value"), mono=True, width="140px")}'
                       f'{filter_note}</div>')
@@ -644,7 +644,11 @@ class SourcesView(View):
             state.split_kind = self.split_kind or SPLIT_TEST
             state.load_dataset(self.dataset_path.strip(), columns, progress_cb=progress_cb,
                                row_filter=row_filter, image_root=self.image_root.strip())
-            message = f"Loaded {len(state.dataset.df):,} rows, {len(state.dataset.metadata_columns())} metadata columns"
+            message = f"Loaded {len(state.dataset.full_df):,} rows, {len(state.dataset.metadata_columns())} metadata columns"
+            if state.dataset.is_filtered():
+                message += f" -- {len(state.dataset.df):,} kept by the Filter tab"
+            elif state.dataset_filter_error:
+                message += " -- the Filter tab's filter could not be applied"
             if not columns.has_ids():
                 message += " -- no uuid column, so no experiment can be loaded against it"
             self.ds_status = (message, "success")
@@ -1134,6 +1138,7 @@ class SourcesView(View):
             split_kind=state.split_kind,
             review_version=str(getattr(store, "active_version_id", "") or ""),
             experiments=[e for e in experiments if e.path],
+            dataset_filter=dict(state.dataset_filter or {}),
         )
 
     def _path_for_experiment(self, name: str) -> str:
@@ -1157,6 +1162,11 @@ class SourcesView(View):
             self.row_filter_col = mount.row_filter_col
             self.row_filter_value = mount.row_filter_value
         self.split_kind = mount.split_kind if mount.split_kind in (SPLIT_TEST, SPLIT_TRAIN, SPLIT_OTHER) else SPLIT_TEST
+        # Set before the load, which applies it: the filter is part of what
+        # the workspace is, not a view of it.
+        self.state.set_dataset_filter(getattr(mount, "dataset_filter", None) or {},
+                                      csv_path=mount.dataset_path or "")
+        self.s.view("filter").adopt_applied()
         for r in list(self.rows):
             if r.loaded_name:
                 self.state.remove_experiment(r.loaded_name)

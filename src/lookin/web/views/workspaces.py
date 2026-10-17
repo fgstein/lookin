@@ -203,6 +203,11 @@ class WorkspacesDialog(Dialog):
                 ("Saved", h.e(w.created_at)), ("Snapshots", str(len(self.snapshots)))]
         if m.row_filter_col:
             rows.append(("Row filter", h.e(f"{m.row_filter_col} = {m.row_filter_value}")))
+        if m.dataset_filter:
+            from lookin.core.dataset_filter import describe
+            lines = describe(m.dataset_filter)
+            if lines:
+                rows.append(("Filter", "<br>".join(h.e(line) for line in lines)))
         for k, v in (w.provenance or {}).items():
             rows.append((str(k), h.e(str(v))))
         warn = ""
@@ -579,7 +584,7 @@ def adopt_dataset(session) -> None:
         if fresh.mount.exists():
             return False
         for name in ("dataset_path", "uuid_col", "crop_col", "label_col", "image_root",
-                     "row_filter_col", "row_filter_value", "split_kind", "review_version"):
+                     "row_filter_col", "row_filter_value", "split_kind", "review_version", "dataset_filter"):
             setattr(fresh.mount, name, getattr(loaded, name))
         fresh.dataset_hash = digest
         return True

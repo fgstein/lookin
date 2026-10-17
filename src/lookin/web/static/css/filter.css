@@ -1,0 +1,32 @@
+/* Filter tab */
+.flt-draft { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 13px; }
+.flt-draft.err { color: var(--err); }
+.flt-bar { width: 220px; height: 8px; border-radius: 999px; background: var(--surface-3); overflow: hidden; flex: none; }
+.flt-bar > div { height: 100%; background: var(--acc); }
+.flt-steps { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 12px; }
+.flt-step { display: inline-flex; gap: 6px; }
+.flt-conds { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.flt-cond { border: 1px solid var(--line-2); border-radius: var(--r-s); padding: 6px 10px 8px; background: var(--surface); display: flex; flex-direction: column; gap: 6px; }
+.flt-cond.off { opacity: .55; }
+.flt-ch { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.flt-ch .chk { margin: 0; }
+.flt-col { font-weight: 600; }
+.flt-vals { display: flex; flex-wrap: wrap; gap: 4px; max-height: 190px; overflow: auto; }
+.flt-val { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 2px 8px 2px 4px; border: 1px solid var(--line-2); border-radius: 999px; cursor: pointer; background: var(--surface); max-width: 340px; }
+.flt-val .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flt-val.on { background: var(--acc-soft); border-color: var(--acc); }
+.flt-val input { margin: 0; }
+.flt-picked { gap: 4px; }
+.flt-q { width: 100%; min-height: 64px; resize: vertical; font-size: 13px; }
+.flt-qs { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; margin-top: 4px; }
+.flt-qs.err { color: var(--err); }
+.flt-qs.ok { color: var(--ink-2); }
+.flt-qs .ic { flex: none; margin-top: 1px; }
+.flt-ex { gap: 4px; margin-top: 8px; }
+.flt-ex .chip { font-size: 11px; }
+.flt-cols { margin-top: 6px; line-height: 1.6; }
+.flt-tbl { max-height: 420px; overflow: auto; }
+.flt-tbl td { white-space: nowrap; }
+.flt-tbl th { position: sticky; top: 0; }
+.sv.filt { color: var(--acc-ink); background: var(--acc-soft); }
+.nav-badge.info { background: var(--acc-soft); color: var(--acc-ink); }

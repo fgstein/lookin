@@ -122,6 +122,10 @@ def _add_provenance(report: Report, state, snapshot_id: str = "") -> None:
     dataset = state.dataset
     report.add_meta("Dataset CSV", dataset.csv_path or "(unsaved)")
     report.add_meta("Rows loaded", f"{len(dataset.df):,}")
+    if dataset.full_df is not None and dataset.full_df is not dataset.df:
+        from lookin.core.dataset_filter import describe
+        report.add_meta("Dataset filter", f"{len(dataset.df):,} of {len(dataset.full_df):,} rows kept: "
+                        + "; ".join(describe(getattr(state, "dataset_filter", None) or {})))
     report.add_meta("Split", state.split_kind)
     if dataset.row_filter:
         report.add_meta("Row filter", f"{dataset.row_filter[0]} = {dataset.row_filter[1]}")

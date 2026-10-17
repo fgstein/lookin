@@ -11,6 +11,7 @@ from lookin.web.views.base import View
 _SPECS = {
     "home": "lookin.web.views.home:HomeView",
     "sources": "lookin.web.views.sources:SourcesView",
+    "filter": "lookin.web.views.filter:FilterView",
     "statistics": "lookin.web.views.stats:StatsView",
     "gallery": "lookin.web.views.gallery:GalleryView",
     "metrics": "lookin.web.views.metrics:MetricsView",

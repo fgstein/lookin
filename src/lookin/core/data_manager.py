@@ -248,6 +248,19 @@ class Dataset:
     # The (column, value) row filter this was loaded through, if any --
     # remembered for the session history and shown next to the split kind.
     row_filter: Optional[tuple] = None
+    # Every row read from the CSV (after the load-time row filter above),
+    # before the Filter tab's filter (core/dataset_filter.py). `df` is what
+    # that filter keeps, and is what everything downstream reads; this is
+    # what the filter is applied *to*, so changing it never re-reads the
+    # file. The same frame as `df` while no filter is applied.
+    full_df: Optional[pd.DataFrame] = field(default=None, repr=False)
+
+    def __post_init__(self):
+        if self.full_df is None:
+            self.full_df = self.df
+
+    def is_filtered(self) -> bool:
+        return self.full_df is not self.df
 
     def metadata_columns(self) -> list:
         reserved = {self.columns.uuid_col, self.columns.crop_col, self.columns.label_col}
@@ -283,6 +296,8 @@ class Dataset:
         if not mapping:
             return
         col = self.columns.label_col
+        if self.full_df is not None and self.full_df is not self.df:
+            self.full_df[col] = self.full_df[col].replace(mapping)
         self.df[col] = self.df[col].replace(mapping)
 
 
@@ -547,6 +562,16 @@ class AppState:
     # cleaning passes and calling the difference a model improvement is the
     # mistake this exists to make impossible.
     review_version_id: Optional[str] = None
+    # The Filter tab's filter (a core.dataset_filter spec) and the CSV it
+    # was built against. Re-applied on every load of that same CSV -- a
+    # reload is not a request to see every row again -- and dropped when a
+    # different file is loaded, whose columns it knows nothing about.
+    dataset_filter: dict = field(default_factory=dict)
+    dataset_filter_csv: Optional[Path] = None
+    # Why the filter is not applied (a column it names is gone, a query
+    # that no longer parses), or "" when it is. A filter that fails is
+    # never applied in part: the whole dataset is shown, and this says so.
+    dataset_filter_error: str = ""
     _merged_cache_name: Optional[str] = field(default=None, repr=False, compare=False)
     _merged_cache_df: Optional[pd.DataFrame] = field(default=None, repr=False, compare=False)
     # (use_reviewed_labels, review revision) at the time the cache was
@@ -603,14 +628,60 @@ class AppState:
             csv_path=Path(csv_path).resolve(), row_filter=row_filter,
         )
         self.dataset = dataset
+        if self.dataset_filter and self.dataset_filter_csv != dataset.csv_path:
+            _log("a different dataset was loaded: its Filter tab filter is dropped")
+            self.dataset_filter, self.dataset_filter_csv = {}, None
         if not columns.has_ids() and self.experiments:
             # Loaded against the previous dataset; with no id to join on,
             # every view would fail on them rather than show nothing.
             _log(f"dataset has no uuid column: unloading {len(self.experiments)} experiment(s)")
             self.experiments.clear()
+        # Adopted from every row, before the filter: a review column is a
+        # property of the file, not of what is in view.
         self.attach_review_store(dataset)
-        self._invalidate_merged_cache()
+        self._apply_dataset_filter()
         return dataset
+
+    def set_dataset_filter(self, spec: Optional[dict], csv_path=None) -> tuple:
+        """Apply a Filter tab filter to the loaded dataset (or remember it
+        for the next load of `csv_path`, when nothing is loaded yet).
+        Returns (rows kept, rows in total), both 0 with no dataset; on
+        failure the whole dataset stays in view and dataset_filter_error
+        says why."""
+        from lookin.core import dataset_filter as dsf
+
+        spec = dsf.normalize_spec(spec) if spec else {}
+        self.dataset_filter = spec if dsf.is_active(spec) else {}
+        if csv_path is not None:
+            self.dataset_filter_csv = Path(csv_path).expanduser().resolve() if str(csv_path) else None
+        elif self.dataset is not None:
+            self.dataset_filter_csv = self.dataset.csv_path
+        self._apply_dataset_filter()
+        if self.dataset is None:
+            return 0, 0
+        return len(self.dataset.df), len(self.dataset.full_df)
+
+    def _apply_dataset_filter(self) -> None:
+        from lookin.core import dataset_filter as dsf
+
+        dataset = self.dataset
+        self.dataset_filter_error = ""
+        if dataset is None:
+            return
+        full = dataset.full_df
+        if not dsf.is_active(self.dataset_filter):
+            dataset.df = full
+        else:
+            try:
+                mask, _steps = dsf.apply_spec(full, self.dataset_filter)
+            except dsf.FilterError as ex:
+                self.dataset_filter_error = str(ex)
+                _log(f"dataset filter not applied: {ex}")
+                dataset.df = full
+            else:
+                dataset.df = full[mask.to_numpy()].reset_index(drop=True)
+                _log(f"dataset filter: kept {len(dataset.df):,}/{len(full):,} rows")
+        self._invalidate_merged_cache()
 
     def attach_review_store(self, dataset: Dataset, author: str = "") -> object:
         """Load (or start) the review store belonging to a dataset CSV, and
@@ -830,6 +901,7 @@ class AppState:
         self.review = None
         self.use_reviewed_labels = False
         self.review_version_id = None
+        self.dataset_filter, self.dataset_filter_csv, self.dataset_filter_error = {}, None, ""
         self._merged_cache_name = None
         self._merged_cache_df = None
         self._merged_cache_stamp = None
@@ -879,10 +951,14 @@ class AppState:
         experiment_uuids = experiment.df[experiment.uuid_col]
         dataset_set = set(dataset_uuids)
         experiment_set = set(experiment_uuids)
+        # Rows the Filter tab removed are not "results with no dataset
+        # row": they have one, it is just out of view.
+        known = set(self.dataset.full_df[self.dataset.columns.uuid_col]) if self.dataset.is_filtered() \
+            else dataset_set
         return UuidOverlap(
             matched=len(dataset_set & experiment_set),
             dataset_only=len(dataset_set - experiment_set),
-            experiment_only=len(experiment_set - dataset_set),
+            experiment_only=len(experiment_set - known),
             dataset_dupes=int(dataset_uuids.duplicated().sum()),
             experiment_dupes=int(experiment_uuids.duplicated().sum()),
         )

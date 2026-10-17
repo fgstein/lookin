@@ -65,6 +65,9 @@ METRICS = "metrics"
 CALIBRATION = "calibration"
 COMPARE = "compare"
 CLEANING = "cleaning"
+# The Filter tab of `lookin web`. Not registered by `lookin ui`, which has
+# no such tab: restoring there says the filter was not applied.
+DATASET_FILTER = "dataset_filter"
 
 # The app-wide block, and the keys inside it.
 APP = "app"
@@ -143,6 +146,11 @@ class ViewStateRegistry:
         if not isinstance(views, dict):
             return warnings + ["The snapshot could not be read."]
         restored = []
+        saved_filter = views.get(DATASET_FILTER)
+        if DATASET_FILTER not in self._views and isinstance(saved_filter, dict) \
+                and (saved_filter.get("conditions") or saved_filter.get("query")):
+            warnings.append("This snapshot filters the dataset (Filter tab of `lookin web`); "
+                            "the filter is not applied here, so every row is shown.")
         for key, view in self._views.items():
             saved = views.get(key)
             if not isinstance(saved, dict):

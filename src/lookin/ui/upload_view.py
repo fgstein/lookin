@@ -1128,6 +1128,10 @@ class UploadView:
             split_kind=state.split_kind,
             review_version=str(getattr(store, "active_version_id", "") or ""),
             experiments=[e for e in experiments if e.path],
+            # This UI has no Filter tab (`lookin web` does): a workspace's
+            # filter is carried through a save untouched rather than erased.
+            dataset_filter=dict(workspace.mount.dataset_filter or {}) if workspace is not None
+            and workspace.mount.dataset_path == str(state.dataset.csv_path) else {},
         )
 
     def _path_for_experiment(self, name: str) -> str:

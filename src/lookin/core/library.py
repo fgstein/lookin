@@ -238,6 +238,10 @@ class Mount:
     saved_at: str = ""
     dataset_size: int = 0
     dataset_mtime: float = 0.0
+    # The Filter tab's filter (a core.dataset_filter spec; {} for none).
+    # Written by `lookin web`; `lookin ui` reads and keeps it, but does not
+    # apply it.
+    dataset_filter: dict = field(default_factory=dict)
 
     def label(self) -> str:
         return Path(self.dataset_path).name or self.dataset_path
@@ -264,6 +268,11 @@ class Mount:
             bits.append(f"split: {self.split_kind}")
         if self.row_filter_col and self.row_filter_value:
             bits.append(f"{self.row_filter_col}={self.row_filter_value}")
+        if self.dataset_filter:
+            from lookin.core.dataset_filter import describe
+            n = len(describe(self.dataset_filter))
+            if n:
+                bits.append(f"filtered ({n} condition{'s' if n > 1 else ''})")
         if self.experiments:
             bits.append(f"{len(self.experiments)} experiment(s)")
         if self.review_version:
@@ -310,6 +319,8 @@ def mount_from_dict(raw: dict) -> Mount:
     experiments = [_experiment_from_dict(e) for e in raw.get("experiments", []) or [] if isinstance(e, dict)]
     known = {f for f in Mount.__dataclass_fields__ if f != "experiments"}
     kwargs = {k: v for k, v in raw.items() if k in known}
+    if not isinstance(kwargs.get("dataset_filter", {}), dict):
+        kwargs.pop("dataset_filter")
     return Mount(experiments=experiments, **kwargs)
 
 

@@ -143,3 +143,53 @@ def test_gallery_loads_as_it_is_scrolled(example):
     assert "page" not in state and "rows" not in state
     # A snapshot written before the mosaic scrolled still restores.
     assert gallery.restore_view_state({**state, "rows": "4", "page": 3}) == []
+
+
+def test_the_filter_reaches_every_tab_and_is_saved(example, tmp_path):
+    """Applied from the Filter tab: the merge, the mount a workspace saves,
+    and the snapshot all carry it; a snapshot without one removes it."""
+    from lookin.core import library as lib
+    from lookin.ui import view_state as vs
+
+    s = _session(WebApp(), "i" * 24)
+    _load(s, example, [("baseline", str(example / "baseline_cnn_results.csv"))])
+    total = len(s.state.dataset.df)
+    f = s.view("filter")
+    with RequestScope(s):
+        f.on_choose_column(value="label")
+        f.on_add()
+        cid = f.conditions[0]["_cid"]
+        f.on_pick(cid=cid, v="cat", value=True)
+        assert len(s.state.dataset.df) == total          # a draft moves nothing
+        f.on_apply()
+    kept = len(s.state.dataset.df)
+    assert 0 < kept < total
+    assert len(s.state.merged("baseline")) == kept
+    mount = s.view("sources").current_mount()
+    assert mount.dataset_filter["conditions"][0]["values"] == ["cat"]
+    assert lib.mount_from_dict(lib.mount_to_dict(mount)).dataset_filter == mount.dataset_filter
+
+    captured = s.view_state.capture()
+    assert captured[vs.VIEWS][vs.DATASET_FILTER]["conditions"]
+    # The Filter tab is saved as the tab it sits under: the index is shared with `lookin ui`.
+    with RequestScope(s):
+        s.goto("filter")
+    assert s.view_state.capture()[vs.APP][vs.TAB] == 0
+
+    with RequestScope(s):
+        f.on_clear()
+    assert len(s.state.dataset.df) == total
+    empty = s.view_state.capture()
+    with RequestScope(s):
+        assert s.view_state.restore(captured) == []
+    assert len(s.state.dataset.df) == kept
+    with RequestScope(s):
+        s.view_state.restore(empty)
+    assert len(s.state.dataset.df) == total
+
+    # A workspace opened with a filter applies it on load.
+    t = _session(WebApp(), "j" * 24)
+    with RequestScope(t):
+        t.view("sources").restore_mount(mount)
+    assert len(t.state.dataset.df) == kept
+    assert t.view("filter").conditions[0]["values"] == ["cat"]

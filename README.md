@@ -52,6 +52,15 @@ Every browser tab is its own session: open several workspaces side by side
 and nothing in one affects the others. See `src/lookin/web/README.md` for how
 it is built.
 
+It also has a **Filter** tab, right after Sources, that `lookin ui` does not:
+remove rows from the loaded dataset by conditions on its columns (pick
+values, a numeric range, contains / regex, empty or not) or by a query
+written like a pandas one (`width >= 32 and label in ['cat', 'dog']`,
+`` `object size`.between(0.2, 0.8) ``, `crop.str.contains('cam2/')`). The
+query is parsed and checked, never run as Python. Once applied, every other
+tab works on the rows kept, the bar above them says how many, and the filter
+is saved with the workspace and in each snapshot.
+
 ## What it does
 
 1. **Data tab** -- load a dataset CSV (one row per cropped image: an id,

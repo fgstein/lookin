@@ -89,6 +89,138 @@ PAGES = (
     ),
 
     ManualPage(
+        id="dataset-filter",
+        title="Filtering the dataset",
+        summary=(
+            "The Filter tab removes rows from the loaded dataset. Every other tab -- statistics, "
+            "gallery, metrics, curves, embeddings, cleaning -- then works on the rows kept, exactly as "
+            "if the file had only those rows. The file itself is never modified."
+        ),
+        shown_in="Filter tab, and the row count in the bar above every tab while a filter is applied",
+        blocks=(
+            Heading("Conditions and the query"),
+            Para(
+                "A filter is a list of conditions on columns, plus an optional query. A row is kept "
+                "when it satisfies every condition that is on, and the query. A condition that is "
+                "turned off, or not filled in yet (no value picked, no bound typed), keeps every row."
+            ),
+            Table(
+                headers=("Condition", "Keeps a row when"),
+                rows=(
+                    ("is one of / is not one of", "its value, read as text, is (is not) one of the values picked. A row with no value is never one of them."),
+                    ("is between", "its value, read as a number, is at least the lower bound and at most the upper one; either bound can be left empty. A row with no value, or a value that is not a number, is removed."),
+                    ("contains / does not contain", "its text contains (does not contain) what was typed, ignoring case."),
+                    ("matches regex", "a regular expression matches somewhere in its text (Python syntax, case sensitive)."),
+                    ("is empty / is not empty", "it has no value (a blank cell counts as empty)."),
+                ),
+                weights=(2, 6),
+            ),
+            Para(
+                "Values are matched as text, and a whole number is written without its decimals: a "
+                "column that reads 3.0 because one of its cells is empty still matches a 3 picked "
+                "earlier. A CSV has no types, and the same column can read as numbers in one version "
+                "of a file and as text in the next."
+            ),
+            Heading("Draft, then apply"),
+            Para(
+                "Everything changed in the tab is a draft: the tab counts the rows it keeps, says how "
+                "many each condition removes on its own, and previews the rows kept and removed -- "
+                "but no other tab moves until Apply. Applying changes the population every number is "
+                "computed on, so every other tab then shows its out-of-date banner."
+            ),
+            Callout(CALLOUT_WARNING, "A filtered metric is a different metric", (
+                Para(
+                    "While a filter is applied, the bar above every tab shows how many rows are kept. "
+                    "Two numbers computed under two different filters are not comparable, and a model "
+                    "that looks better on a filtered pool may only be looking at easier crops."
+                ),
+            )),
+            Heading("Where it is kept"),
+            Bullets((
+                "In the workspace, with the dataset: opening the workspace applies it again, and saving it records the filter applied at that moment.",
+                "In each snapshot: reopening one puts back the filter it was taken under, including no filter at all.",
+                "Reloading the same CSV keeps the filter; loading a different file drops it, since its columns may not exist there.",
+                "A filter that can no longer be applied (a column it names is gone) is not applied in part: every row stays in view and the bar says the filter was not applied.",
+            )),
+            Callout(CALLOUT_TIP, "Two filters, two places", (
+                Para(
+                    "The row filter on the Sources tab (keep only rows where a column equals a value) "
+                    "is applied while the file is read: rows it drops are never loaded. The Filter "
+                    "tab works on what was loaded, and can be changed without reading the file again."
+                ),
+            )),
+            Callout(CALLOUT_PITFALL, "Experiments are not filtered, they are joined", (
+                Para(
+                    "Results files are never filtered themselves: they are joined with the rows kept. "
+                    "A result whose row was removed by the filter is not counted as a result with no "
+                    "matching dataset row in the overlap banner -- it has one, out of view."
+                ),
+            )),
+        ),
+        see_also=("dataset-filter-query", "dataset-join", "column-statistics"),
+        keywords=("filter", "remove rows", "subset", "condition", "where", "keep rows"),
+    ),
+
+    ManualPage(
+        id="dataset-filter-query",
+        title="Writing a filter query",
+        summary=(
+            "A query is a formula over the dataset's columns that is true for the rows to keep, "
+            "written like a pandas query: comparisons, and / or / not, lists, and a few functions. "
+            "It is checked as it is typed, and Enter applies the filter."
+        ),
+        shown_in="Filter tab, Query section",
+        blocks=(
+            Heading("What can be written"),
+            Table(
+                headers=("Write", "Keeps the rows where"),
+                rows=(
+                    ("width >= 32", "width is at least 32"),
+                    ("label == 'cat'", "the label is cat (text goes in quotes, single or double)"),
+                    ("label != 'cat' and width < 10", "both hold; 'or' and 'not' work the same way, and parentheses group"),
+                    ("label in ['cat', 'dog']", "the label is one of the list; 'not in' for the opposite"),
+                    ("`object size` > 0.5", "a column whose name has spaces or symbols goes between backticks"),
+                    ("col('object size') > 0.5", "the same, written as a function -- F('object size') also works"),
+                    ("width.between(32, 64)", "32 <= width <= 64 -- which can also be written as is"),
+                    ("crop.str.contains('blur')", "the text contains blur (a regular expression; case=False to ignore case)"),
+                    ("'blur' in crop", "the same, as a plain substring"),
+                    ("crop.str.startswith('cam2/')", "the text starts with cam2/; also endswith, match, fullmatch"),
+                    ("annotator.isna()", "the column has no value; notna() for the opposite"),
+                    ("abs(score - 0.5) < 0.1", "arithmetic between columns and numbers: + - / % and powers"),
+                    ("len(label) > 3", "functions: len, abs, lower, upper, num, isna, notna, contains, matches, startswith, endswith, between"),
+                ),
+                weights=(4, 6),
+            ),
+            Para(
+                "Symbols work too: & for and, | for or, ~ for not. They come from pandas, where each "
+                "comparison then has to be in parentheses: (width > 3) & (height > 3)."
+            ),
+            Heading("Numbers and text"),
+            Bullets((
+                "A number compared with a text column reads that column as numbers: a cell that is not a number does not match.",
+                "A text compared with a numeric column: equality compares the text of the values, an ordering needs the text to be a number.",
+                "A cell with no value matches no comparison, except != and 'is None'.",
+            )),
+            Callout(CALLOUT_TIP, "From conditions to a query", (
+                Para(
+                    "Write the conditions as a query turns the conditions built by clicking into one "
+                    "query that says the same thing, to extend it by hand -- an or between two of "
+                    "them, for instance, which conditions cannot express."
+                ),
+            )),
+            Callout(CALLOUT_WARNING, "Only a formula", (
+                Para(
+                    "The query is not run as Python: it is read and checked piece by piece, and "
+                    "anything that is not in the list above (an attribute, an import, an assignment, "
+                    "a function not listed) is refused with a message saying what to write instead."
+                ),
+            )),
+        ),
+        see_also=("dataset-filter",),
+        keywords=("query", "formula", "expression", "pandas", "fiftyone", "regex", "syntax"),
+    ),
+
+    ManualPage(
         id="score-diagnostics",
         title="Score diagnostics: are these probabilities?",
         summary=(
