@@ -16,6 +16,7 @@ import traceback
 
 from lookin import __version__
 from lookin.web import html as h
+from lookin.web.views.base import Handler
 
 # The analysis tabs, in the order the sidebar shows them.
 TABS = (
@@ -367,15 +368,13 @@ def save_chips(session) -> str:
 
 # ---- app-level actions -----------------------------------------------------
 
-class AppActions:
+class AppActions(Handler):
+    """The "app" target -- dispatched like a view's (see Handler.handle)."""
+
+    target = "app"
+
     def __init__(self, session):
         self.s = session
-
-    def handle(self, action: str, args: dict):
-        fn = getattr(self, f"on_{action}", None)
-        if fn is None:
-            raise KeyError(f"app: no action '{action}'")
-        return fn(**(args or {}))
 
     def on_tab(self, tab: str = "sources", **_):
         if tab not in TAB_KEYS:

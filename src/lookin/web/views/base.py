@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import secrets
 import traceback
+import types
 from typing import Callable, Optional
 
 from lookin.web import html as h
@@ -22,14 +23,27 @@ from lookin.web import html as h
 NO_RENDER = object()
 
 
+# on_* methods the session calls, not the page: a client naming one of them
+# as an action would run a hook out of turn.
+HOOKS = frozenset({"on_shown", "on_data_change", "on_review_change", "on_display_changed",
+                   "on_prototype_source_changed"})
+
+
 class Handler:
     target = ""
 
     def handle(self, action: str, args: dict):
-        fn = getattr(self, f"on_{action}", None)
-        if fn is None or not callable(fn):
+        # Only a method of the class is an action. Several handlers keep the
+        # callback they were given in an attribute named like one
+        # (on_pick_fn, on_yes_fn, on_submit_fn, on_done...), and a client
+        # sending "pick_fn" would call it directly with arguments of its own
+        # choosing, past whatever checks the real action makes.
+        name = f"on_{action}"
+        if name in HOOKS or not isinstance(getattr(type(self), name, None), types.FunctionType):
             raise KeyError(f"{self.target}: no action '{action}'")
-        return fn(**(args or {}))
+        if not isinstance(args or {}, dict):
+            raise TypeError(f"{self.target}: the arguments of '{action}' must be an object")
+        return getattr(self, name)(**(args or {}))
 
 
 class View(Handler):

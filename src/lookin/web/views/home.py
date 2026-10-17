@@ -21,6 +21,7 @@ import time
 import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import quote
 
 from lookin.core import board as bd
 from lookin.core import library as lib
@@ -87,6 +88,16 @@ def _snapshot_count(ws) -> int:
         return sum(1 for e in ws.snapshots_dir().iterdir() if e.suffix == ".json")
     except OSError:
         return 0
+
+
+def _mlflow_link(uri: str) -> str:
+    """A server chip's "Open in MLflow" -- only for an http(s) address (see
+    h.safe_href): the address comes from the Home settings file."""
+    href = h.safe_href(f"{uri}/")
+    if not href:
+        return ""
+    return (f'<a href="{h.e(href)}" target="_blank" rel="noopener">{h.icon("external", 14)}'
+            f'<span>Open in MLflow</span></a>')
 
 
 class HomeView(View):
@@ -217,12 +228,12 @@ class HomeView(View):
             if found:
                 ws, snap = found
                 return (f'<div class="lst-foot">{h.icon("bookmark", 13)} Snapshot {h.mono(snap.id)} of {h.e(ws.label())} — '
-                        f'<a href="/?snapshot={h.e(snap.id)}" target="_blank" rel="noopener">open it in a new tab</a></div>')
+                        f'<a href="/?snapshot={h.e(quote(snap.id, safe=""))}" target="_blank" rel="noopener">open it in a new tab</a></div>')
             return f'<div class="lst-foot">No snapshot {h.mono(q)} in the library.</div>'
         ws = next((w for w in self.workspaces if w.id == q), None)
         if ws:
             return (f'<div class="lst-foot">Workspace {h.e(ws.label())} — '
-                    f'<a href="/?workspace={h.e(ws.id)}" target="_blank" rel="noopener">open it in a new tab</a></div>')
+                    f'<a href="/?workspace={h.e(quote(ws.id, safe=""))}" target="_blank" rel="noopener">open it in a new tab</a></div>')
         return ""
 
     def _group_tbody(self, gid, name, color, items, gtotal, is_column) -> str:
@@ -246,7 +257,7 @@ class HomeView(View):
             if pending:
                 bits.append(f"{pending} to download")
             summary = " · ".join(bits)
-        drop = (f' data-drop="home:move_ws" data-drop-kinds="ws" data-args=\'{{"group":"{h.e(gid)}"}}\''
+        drop = (f' data-drop="home:move_ws" data-drop-kinds="ws"{h.data_args(group=gid)}'
                 if is_column else "")
         gmenu = ""
         if is_column:
@@ -298,7 +309,7 @@ class HomeView(View):
             name_link = (f'<button type="button" class="ws-name btn-link" style="border:0;background:none;padding:0;font:inherit;font-weight:500;cursor:pointer;color:var(--ink)"'
                          f'{self.a("open_ws", id=w.id)} title="{h.e(w.description or w.label())}">{h.e(w.label())}</button>')
         else:
-            name_link = (f'<a class="ws-name" href="/?workspace={h.e(w.id)}" target="_blank" rel="noopener" '
+            name_link = (f'<a class="ws-name" href="/?workspace={h.e(quote(w.id, safe=""))}" target="_blank" rel="noopener" '
                          f'title="{h.e(w.description or "Open in a new tab")}">{h.e(w.label())}</a>')
         is_open = current is not None and current.id == w.id
         star = h.icon("star", 12, "c-warn") if lib.is_favorite(w.id) else ""
@@ -312,7 +323,7 @@ class HomeView(View):
             "hr",
             ("Delete…", self.a("delete", id=w.id), "trash", True),
         ], title="Workspace actions")
-        tr = (f'<tr data-drop="home:drop_on_ws" data-drop-kinds="run csv" data-args=\'{{"id":"{h.e(w.id)}"}}\''
+        tr = (f'<tr data-drop="home:drop_on_ws" data-drop-kinds="run csv"{h.data_args(id=w.id)}'
               f'{" class=sel" if expanded else ""}>'
               f'<td><span class="row-nw" style="gap:2px"><span class="handle" draggable="true" data-drag="{h.e(w.id)}" data-drag-kind="ws" '
               f'data-drag-label="{h.e(w.label())}" title="Drag to move this workspace to another group">{h.icon("drag", 13)}</span>'
@@ -360,7 +371,7 @@ class HomeView(View):
             items = "".join(
                 f'<div class="row-nw" style="min-height:22px">{h.icon("bookmark", 13)}'
                 f'<span class="small ell grow" title="{h.e(s.id)}">{h.e(s.label())}</span>'
-                f'<a class="btn btn-sm btn-ghost btn-icon" href="/?snapshot={h.e(s.id)}" target="_blank" rel="noopener" title="Open this snapshot in a new tab">{h.icon("external", 13)}</a></div>'
+                f'<a class="btn btn-sm btn-ghost btn-icon" href="/?snapshot={h.e(quote(s.id, safe=""))}" target="_blank" rel="noopener" title="Open this snapshot in a new tab">{h.icon("external", 13)}</a></div>'
                 for s in snaps[:6])
             more = (f'<div class="small muted" style="font-style:italic">... and {len(snaps) - 6} more '
                     f'{h.button("(Manage)", act_attr=self.a("details", id=w.id), kind="link", small=True)}</div>') if len(snaps) > 6 else ""
@@ -381,7 +392,7 @@ class HomeView(View):
                 f'<span class="menu-wrap"><button type="button" class="chip{" off" if server.status == "down" else ""}" data-menu="1" title="{h.e(tip)}">'
                 f'{h.dot(color, size=6)}{h.e(server.name)}</button><div class="menu">'
                 f'<button type="button"{self.a("refresh_server", uri=server.uri)}>{h.icon("refresh", 14)}<span>Refresh</span></button>'
-                f'<a href="{h.e(server.uri)}/" target="_blank" rel="noopener">{h.icon("external", 14)}<span>Open in MLflow</span></a>'
+                f'{_mlflow_link(server.uri)}'
                 f'<button type="button" class="danger"{self.a("remove_server", uri=server.uri)}>{h.icon("unlink", 14)}<span>Remove this server</span></button>'
                 f'</div></span>')
         chips.append(h.button("+ server", act_attr=self.a("add_server"), small=True, cls="chip"))
@@ -630,7 +641,7 @@ class HomeView(View):
             return
         snap = lib.load_snapshot(ws, snapshot) if snapshot else None
         missing = wss.missing_files(ws)
-        link = f"/?snapshot={snap.id}" if snap is not None else f"/?workspace={ws.id}"
+        link = f"/?snapshot={quote(snap.id, safe='')}" if snap is not None else f"/?workspace={quote(ws.id, safe='')}"
         if not missing:
             self.s.cmd(open=link)
             return
@@ -884,7 +895,7 @@ class NewWorkspaceDialog(Dialog):
         if open_it:
             # Runs added above that finish downloading later reach the open
             # tab on their own (see workspaces.follow_workspace).
-            self.session.cmd(open=f"/?workspace={ws.id}")
+            self.session.cmd(open=f"/?workspace={quote(ws.id, safe='')}")
 
 
 class SetDatasetDialog(Dialog):

@@ -48,6 +48,13 @@ def _is_numeric(series: pd.Series) -> bool:
     return pd.api.types.is_numeric_dtype(series) and not pd.api.types.is_bool_dtype(series)
 
 
+
+def _query_text(value) -> str:
+    """The query field's text. It is kept and drawn on every render, so a
+    request carrying anything but a string (null, a number) must not leave
+    the tab failing to draw until the field is retyped."""
+    return "" if value is None else str(value)
+
 class FilterView(View):
     name = "filter"
     title = "Filter"
@@ -489,11 +496,11 @@ class FilterView(View):
         self._changed()
 
     def on_query(self, value: str = "", **_):
-        self.query = value or ""
+        self.query = _query_text(value)
         self._changed()
 
     def on_query_enter(self, value: str = "", **_):
-        self.query = value or ""
+        self.query = _query_text(value)
         self._changed()
         if self.has_changes():
             self.on_apply()
@@ -503,7 +510,7 @@ class FilterView(View):
         self._changed()
 
     def on_example(self, text: str = "", **_):
-        self.query = text
+        self.query = _query_text(text)
         self._changed()
 
     def on_to_query(self, **_):

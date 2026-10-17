@@ -19,6 +19,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
+from urllib.parse import quote
 
 from lookin.core import library as lib
 from lookin.ui import save_status
@@ -41,7 +42,7 @@ def _matches(query: str, *fields) -> bool:
 
 
 def workspace_link(workspace, snapshot=None) -> str:
-    return f"/?snapshot={snapshot.id}" if snapshot is not None else f"/?workspace={workspace.id}"
+    return f"/?snapshot={quote(snapshot.id, safe='')}" if snapshot is not None else f"/?workspace={quote(workspace.id, safe='')}"
 
 
 def provenance() -> dict:
