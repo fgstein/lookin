@@ -21,6 +21,7 @@ from lookin.core.chart_style import subplots
 from lookin.core.confidence import MARGIN_COL, NORMALIZED_ENTROPY_COL, compute_confidence, confident_and_wrong
 from lookin.ui.class_matrix import ClassFocus, make_searchable
 from lookin.ui.components import (
+    name_option,
     ACCENT, BackgroundRebuild, GRID_NONE, StaleBanner, card, fig_to_zoomable_image, info_banner,
     score_diagnostics_banner, section_title, style_axes, uuid_overlap_banner,
 )
@@ -145,7 +146,7 @@ class ConfidenceView:
     # ---- experiment picker ---------------------------------------------
     def _rebuild_experiment_dropdown(self):
         names = list(self.ctx.state.experiments)
-        self.experiment_dropdown.options = [ft.dropdown.Option(n) for n in names]
+        self.experiment_dropdown.options = [name_option(n) for n in names]
         if self.experiment_dropdown.value not in names:
             self.experiment_dropdown.value = names[0] if names else None
 

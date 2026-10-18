@@ -32,6 +32,7 @@ from lookin.core import comparison as cmp
 from lookin.ui.class_matrix import ClassFocus, short_column_labels
 from lookin.ui.carousel import Carousel
 from lookin.ui.components import (
+    name_text,
     info_button,
     ACCENT, BackgroundRebuild, StaleBanner, card, diverging_color, grid_card_width,
     info_banner, matrix_cell_size, matrix_label_chars, matrix_text_size, section_title,
@@ -502,9 +503,9 @@ class CompareView:
 
         self.summary_area.controls = [card(ft.Column([
             ft.Row([
-                ft.Text(diff.baseline, weight=ft.FontWeight.BOLD, size=15),
+                name_text(diff.baseline, weight=ft.FontWeight.BOLD, size=15),
                 ft.Icon(ft.Icons.ARROW_FORWARD, size=16, color=ft.Colors.ON_SURFACE_VARIANT),
-                ft.Text(diff.candidate, weight=ft.FontWeight.BOLD, size=15),
+                name_text(diff.candidate, weight=ft.FontWeight.BOLD, size=15),
             ], spacing=10),
             ft.Text(headline, size=14),
             ft.Text(accuracy_line, size=13, color=ft.Colors.ON_SURFACE_VARIANT),

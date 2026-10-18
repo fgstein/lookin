@@ -957,7 +957,7 @@ class CleaningView(StaleTracking, View):
         head = "".join(f'<th{" class=num" if c not in ("version", "flag precision by source") else ""}>{c}</th>'
                        for c in ["version", "reviewed", "relabelled", "excluded", "before", "after", "delta",
                                  "flag precision by source"])
-        out = [f'<div class="muted small">\'{h.e(exp_name)}\' scored before and after each version\'s decisions.</div>',
+        out = [f'<div class="muted small">{h.name(exp_name)} scored before and after each version\'s decisions.</div>',
                f'<div class="tbl-wrap"><table class="tbl compact"><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table></div>']
         if breakdown is not None:
             out.append(self._breakdown_html(breakdown))

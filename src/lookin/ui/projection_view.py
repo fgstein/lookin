@@ -38,7 +38,7 @@ import flet as ft
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
-from lookin.core.chart_style import subplots
+from lookin.core.chart_style import short_name, subplots
 from lookin.core import embedding_analysis as ea
 from lookin.core import point_coloring as pc
 from lookin.core import point_filters as pf
@@ -47,6 +47,7 @@ from lookin.core import class_focus as cf
 from lookin.core.class_focus import FOCUS_MAX
 from lookin.ui.class_matrix import ClassFocus, ClassPicker, make_searchable, short_column_labels
 from lookin.ui.components import (
+    name_option,
     INLINE_DPI, BackgroundRebuild, blues_color, card, fig_to_zoomable_image,
     info_banner, section_title,
 )
@@ -876,7 +877,7 @@ class ProjectionView:
 
     def _refresh_experiment_dropdown(self):
         names = experiments_with_embeddings(self.ctx.state)
-        self.experiment_dropdown.options = [ft.dropdown.Option(n) for n in names]
+        self.experiment_dropdown.options = [name_option(n) for n in names]
         if self.experiment_dropdown.value not in names:
             self.experiment_dropdown.value = names[0] if names else None
         # An experiment that is gone (unloaded, or its sidecar detached)
@@ -1422,7 +1423,7 @@ class ProjectionView:
             suffix = f"{shown:,} crops" if shown == len(inference.df) else \
                 f"{shown:,} of {len(inference.df):,} crops"
             check = ft.Checkbox(
-                label=f"{name} ({suffix})", value=name in self._overlay_selection,
+                label=f"{short_name(name)} ({suffix})", tooltip=name, value=name in self._overlay_selection,
                 on_change=lambda e, n=name: self._on_overlay_toggle(n, bool(e.control.value)),
             )
             self._overlay_checks[name] = check
@@ -2313,7 +2314,7 @@ class ProjectionView:
                     mask = mapping.groups == name
                     pool_mask = mask & ~is_overlay
                     ax.scatter(proj[pool_mask, 0], proj[pool_mask, 1], s=6, alpha=0.7,
-                               color=color, label=name)
+                               color=color, label=short_name(name))
                     # The same color, a different marker: an overlaid crop
                     # is not a dataset row and has to be recognizable as
                     # one whatever the coloring says.

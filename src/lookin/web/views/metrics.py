@@ -24,7 +24,7 @@ import numpy as np
 
 from lookin.core import class_focus as cf
 from lookin.core import library
-from lookin.core.chart_style import subplots
+from lookin.core.chart_style import short_name, subplots
 from lookin.core.metrics import MACRO_AVERAGE, compute_curves, compute_metrics
 from lookin.core.report import Report
 from lookin.core.report_builder import build_report, default_report_name
@@ -128,7 +128,7 @@ class MetricsView(RebuildView):
                 f'{h.button(icon_name="chev-up", act_attr=self.a("move", name=name, delta=-1), small=True, kind="ghost", title="Move up", disabled=position == 0)}'
                 f'{h.button(icon_name="chev-down", act_attr=self.a("move", name=name, delta=1), small=True, kind="ghost", title="Move down", disabled=position == total - 1)}'
                 f'{h.dot(color, size=10)}'
-                f'{h.checkbox(name, self.checked.get(name, True), change=self.c("check", name=name), cls="grow")}'
+                f'{h.checkbox(name, self.checked.get(name, True), change=self.c("check", name=name), cls="grow", ellipsis=True)}'
                 f'</div>')
         head = (f'<div class="row"><span class="muted small grow">{h.e(summary)}</span>'
                 f'{h.button("Select all", act_attr=self.a("select_all"), small=True, kind="ghost", icon_name="check")}'
@@ -278,7 +278,7 @@ class MetricsView(RebuildView):
                       m.ece, m.mce]
             cells = "".join(f"<td class=num>{f'{v:.3f}' if v == v else '—'}</td>" for v in values)
             rows.append(f'<tr><td><span class="row-nw">{h.dot(color_for_experiment(name, self.state.color_slots), size=10)}'
-                        f'{h.e(name)}</span></td><td class=num>{m.n_samples:,}</td>{cells}</tr>')
+                        f'{h.name(name)}</span></td><td class=num>{m.n_samples:,}</td>{cells}</tr>')
         table = (f'<div class="tbl-wrap"><table class="tbl compact"><thead><tr>{head}</tr></thead>'
                  f'<tbody>{"".join(rows)}</tbody></table></div>')
         return h.section("Summary", table, manual="summary-table")
@@ -300,7 +300,7 @@ class MetricsView(RebuildView):
             per_class = per_class_by_name[name]
             values = [per_class[metric_key].get(l, np.nan) for l in labels_union]
             offset = (i - (n_exp - 1) / 2) * width
-            ax.bar(x + offset, values, width, label=name, color=color_for_experiment(name, self.state.color_slots))
+            ax.bar(x + offset, values, width, label=short_name(name), color=color_for_experiment(name, self.state.color_slots))
         ax.set_xticks(x)
         tick_labels, uneven_support = _class_tick_labels(labels_union, per_class_by_name)
         ax.set_xticklabels(tick_labels, rotation=45, ha="right")
@@ -353,8 +353,8 @@ class MetricsView(RebuildView):
         ax1.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1)
         for name, curve in drawable.items():
             color = color_for_experiment(name, self.state.color_slots)
-            ax1.plot(curve.fpr, curve.tpr, color=color, label=f"{name} (AUC={curve.roc_auc:.3f})")
-            ax2.plot(curve.recall, curve.precision, color=color, label=f"{name} (AP={curve.average_precision:.3f})")
+            ax1.plot(curve.fpr, curve.tpr, color=color, label=f"{short_name(name)} (AUC={curve.roc_auc:.3f})")
+            ax2.plot(curve.recall, curve.precision, color=color, label=f"{short_name(name)} (AP={curve.average_precision:.3f})")
         ax1.set_xlabel("False positive rate")
         ax1.set_ylabel("True positive rate")
         ax1.set_title(f"ROC curve — {target}")
@@ -456,7 +456,7 @@ class MetricsView(RebuildView):
         hint = ("Click a cell or a pair to preview those images right here"
                 + (f" -- column headers leave out the shared prefix '{dropped_prefix}'" if dropped_prefix else ""))
         return (f'<section class="card cm-card" data-key="cm-{h.e(name)}"><div class="card-h">{h.dot(color, size=10)}'
-                f'<h2>{h.e(name)} — accuracy {m.accuracy:.3f}</h2></div><div class="card-b">'
+                f'<h2 class="ell">{h.name(name)}<span class="nowrap">— accuracy {m.accuracy:.3f}</span></h2></div><div class="card-b">'
                 f'<div class="cm-scroll">{grid_html}</div>'
                 f'<div class="muted small"><i>{h.e(hint)}</i></div>'
                 f'<div class="row-wrap" style="align-items:flex-start;gap:16px">{"".join(extras)}</div></div></section>')

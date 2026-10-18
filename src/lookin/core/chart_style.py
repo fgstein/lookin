@@ -142,6 +142,19 @@ def style_axes(ax, x: str = GRID_BOTH, y: str = GRID_BOTH) -> None:
 # with tight_layout's own `rect` is what guarantees no overlap, since
 # tight_layout fits the axes *and every label around them* inside what is
 # left.
+# An experiment name drawn in a chart (a title, a legend entry) is cut past
+# this many characters: a figure cannot show a tooltip, and a long name makes
+# the figure as wide as the name, which shrinks the plot to fit the page.
+CHART_NAME_MAX = 40
+
+
+def short_name(name, limit: int = CHART_NAME_MAX) -> str:
+    """`name` cut to `limit` characters with an ellipsis, for chart text.
+    The full name is in the page around the chart."""
+    text = str(name)
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
 LEGEND_MAX_COLS = 4
 LEGEND_ROW_INCHES = 0.24
 # A legend taller than this much of the figure means the chart has become a

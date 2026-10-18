@@ -1,5 +1,5 @@
 /* Calibration tab (views/calibration.py) */
-.cal-exp { display: inline-flex; align-items: center; gap: 4px; margin-right: 8px; }
+.cal-exp { display: inline-flex; align-items: center; gap: 4px; margin-right: 8px; min-width: 0; max-width: 100%; }
 .cal-charts { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
 .cal-charts + .cal-charts { margin-top: 10px; }
 .cal-tile { border: 1px solid var(--line-2); border-radius: 6px; padding: 6px; background: var(--surface); }

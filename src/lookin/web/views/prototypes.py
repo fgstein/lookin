@@ -659,7 +659,7 @@ class PrototypesView(RebuildView):
                       f'<button type="submit" class="btn btn-sm"{h.attrs(disabled=self.progress_text != "" or None)}>'
                       f'{h.icon("target", 14)}<span>Estimate with k-means</span></button></form>')
             rows.append(
-                f'<tr><td><b>{h.e(name)}</b></td>'
+                f'<tr><td><b>{h.name(name)}</b></td>'
                 f'<td><div class="small muted ell">{h.e(embed_line)}</div><div class="small muted ell">{h.e(proto_line)}</div></td>'
                 f'<td>{kmeans}</td>'
                 f'<td class="small muted">{h.e(self.s.prototype_source.status_text(name))}</td></tr>')

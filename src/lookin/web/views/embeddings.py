@@ -29,7 +29,7 @@ from lookin.core import class_focus as cf
 from lookin.core import embedding_analysis as ea
 from lookin.core import point_coloring as pc
 from lookin.core import point_filters as pf
-from lookin.core.chart_style import subplots
+from lookin.core.chart_style import short_name, subplots
 from lookin.core.class_focus import FOCUS_MAX
 from lookin.core.data_manager import DATASET_SOURCE_GROUP
 from lookin.ui.class_matrix import short_column_labels
@@ -206,7 +206,7 @@ class EmbeddingsView(StaleTracking, View):
         self._apply_pending_filters()
         self._prune_filters()
         self._prune_overlays()
-        status = f'<div class="muted small">{len(ctx["embeddings"]):,} embeddings loaded for \'{h.e(exp_name)}\'.</div>'
+        status = f'<div class="muted small">{len(ctx["embeddings"]):,} embeddings loaded for {h.name(exp_name)}</div>'
         note = coverage_note(ctx, state, exp_name)
         if note:
             status += h.banner(note, "warn")
@@ -902,7 +902,7 @@ class EmbeddingsView(StaleTracking, View):
             for color, name in mapping.legend:
                 mask = mapping.groups == name
                 pool_mask = mask & ~is_overlay
-                ax.scatter(proj[pool_mask, 0], proj[pool_mask, 1], s=6, alpha=0.7, color=color, label=name)
+                ax.scatter(proj[pool_mask, 0], proj[pool_mask, 1], s=6, alpha=0.7, color=color, label=short_name(name))
                 over_mask = mask & is_overlay
                 if over_mask.any():
                     ax.scatter(proj[over_mask, 0], proj[over_mask, 1], marker="s", s=24, color=color,
@@ -1102,7 +1102,7 @@ class EmbeddingsView(StaleTracking, View):
         known = set(names)
         filterable = all(label in known for _, label in mapping.legend)
         if not filterable:
-            body = "".join(f'<div class="row-nw">{h.dot(color, size=10)}<span class="small">{h.e(label)}</span></div>'
+            body = "".join(f'<div class="row-nw">{h.dot(color, size=10)}<span class="small xname" title="{h.e(label)}">{h.e(label)}</span></div>'
                            for color, label in mapping.legend)
             head = '<b class="small">Legend</b>'
         else:
@@ -1110,7 +1110,7 @@ class EmbeddingsView(StaleTracking, View):
             body = "".join(
                 f'<div class="row-nw pm-lg"><button type="button" class="btn btn-sm btn-ghost btn-icon" data-front="{gi[label]}" '
                 f'title="Draw on top of the other points">{h.icon("layers", 13)}</button>{h.dot(color, size=10)}'
-                f'<label class="chk"><input type="checkbox" checked data-g="{gi[label]}"><span>{h.e(label)}</span></label></div>'
+                f'<label class="chk ell" title="{h.e(label)}"><input type="checkbox" checked data-g="{gi[label]}"><span>{h.e(label)}</span></label></div>'
                 for color, label in mapping.legend)
             head = (f'<div class="row-nw"><b class="small">{h.e(f"Show {mapping.column}")}</b>'
                     f'<button type="button" class="btn btn-sm btn-link" data-pm="all">All</button>'
@@ -1235,7 +1235,7 @@ class EmbeddingsView(StaleTracking, View):
                 f'<section class="card" style="width:380px"><div class="card-b"><b class="small">Least separated classes</b>'
                 f'<div class="muted small"><i>Own-class similarity minus the closest other class. At or below zero, a class is no more like itself than like its neighbour.</i></div>'
                 f'{"".join(seps)}</div></section></div>')
-        return (f'<div class="muted small">Measured in \'{h.e(exp_name)}\' over {int(overlap.counts.sum()):,} crops.</div>'
+        return (f'<div class="muted small">Measured in {h.name(exp_name)} over {int(overlap.counts.sum()):,} crops.</div>'
                 f'{self.overlap_focus.render()}{grid}{side}')
 
     def on_ofocus(self, op: str = "", **args):
@@ -1359,7 +1359,7 @@ class EmbeddingsView(StaleTracking, View):
             shown = len(overlay_indices(len(inference.df)))
             suffix = f"{shown:,} crops" if shown == len(inference.df) else f"{shown:,} of {len(inference.df):,} crops"
             rows.append(h.checkbox(f"{name} ({suffix})", name in self._overlay_selection,
-                                   change=self.c("overlay_toggle", name=name)))
+                                   change=self.c("overlay_toggle", name=name), ellipsis=True))
         forced = self._refit_forced()
         tip = ("t-SNE cannot place points it was not fitted on, so overlaid crops are always part of "
                "the fit -- which moves every other point too." if forced else

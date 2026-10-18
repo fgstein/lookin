@@ -433,7 +433,7 @@ class HomeView(View):
                 f'{" style=opacity:.55" if server.offline else ""} title="{h.e(run.label())} · {h.e(run.status)} · drag onto a workspace">'
                 f'{h.dot(STATUS_DOT.get(run.status, "var(--ghost)"), run.status, 6)}'
                 f'<span class="mono ell" style="font-size:12px">{h.e(run.label())}</span>'
-                f'<span class="small muted nowrap">{h.e(exp_name)}</span><span class="sp"></span>{badge}'
+                f'<span class="xname small muted" style="max-width:14em" title="{h.e(exp_name)}">{h.e(exp_name)}</span><span class="sp"></span>{badge}'
                 f'<span class="small muted nowrap" style="width:68px;text-align:right">{h.e(_ms_when(run.start_time))}</span></div>')
         if not rows:
             loading = any(s.status == "loading" for s in hub.servers.values())

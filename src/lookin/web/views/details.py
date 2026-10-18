@@ -35,7 +35,7 @@ def _value(v) -> str:
 
 def _prediction(entry: dict, color: str) -> str:
     name = entry["experiment"]
-    head = f'<div class="zi-exp">{h.dot(color, size=10)}<b>{h.e(name)}</b></div>'
+    head = f'<div class="zi-exp">{h.dot(color, size=10)}<b class="xname" title="{h.e(name)}">{h.e(name)}</b></div>'
     if not entry["found"]:
         return f'<div class="zi-pred">{head}<span class="muted small">No score for this crop</span></div>'
     correct = entry["correct"]

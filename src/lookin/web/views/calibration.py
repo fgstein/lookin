@@ -30,7 +30,8 @@ import pandas as pd
 from lookin.core import calibration as cal
 from lookin.core import class_focus as cf
 from lookin.core.chart_style import (
-    legend_below, legend_columns, legend_height_inches, reserve_legend_space, style_axes, subplots,
+    legend_below, legend_columns, legend_height_inches, reserve_legend_space, short_name, style_axes,
+    subplots,
 )
 from lookin.core.metrics import compute_reliability, diagnose_scores
 from lookin.ui.components import color_for_experiment
@@ -349,7 +350,7 @@ class CalibrationView(RebuildView):
         ax1.set_xlim(0, 1)
         ax1.set_ylim(0, 1)
         ax1.set_ylabel("accuracy")
-        ax1.set_title(f"{name} — ECE={data.ece:.3f} · MCE={data.mce:.3f}", fontsize=11)
+        ax1.set_title(f"{short_name(name)} — ECE={data.ece:.3f} · MCE={data.mce:.3f}", fontsize=11)
         ax1.legend(fontsize=7, loc="upper left")
 
         ax2.bar(data.bin_centers, data.bin_fraction, width=width * 0.9, color=color)
@@ -376,7 +377,7 @@ class CalibrationView(RebuildView):
         ax.set_yscale("log")
         ax.set_xlabel("predicted confidence")
         ax.set_ylabel("crops (log)")
-        ax.set_title(f"{name} — confidence of right vs. wrong", fontsize=10)
+        ax.set_title(f"{short_name(name)} — confidence of right vs. wrong", fontsize=10)
         style_axes(ax)
         ax.legend(fontsize=7)
         fig.tight_layout()
@@ -390,7 +391,7 @@ class CalibrationView(RebuildView):
             if not len(curve.coverage):
                 continue
             ax.plot(curve.coverage, curve.risk, color=color_for_experiment(name, self.state.color_slots),
-                    label=f"{name} (AURC={curve.aurc:.4f})")
+                    label=f"{short_name(name)} (AURC={curve.aurc:.4f})")
         ax.set_xlabel("Coverage -- share of crops the model is allowed to decide")
         ax.set_ylabel("Selective risk -- error rate among those")
         ax.set_title("Risk-coverage: what abstaining buys")
@@ -624,7 +625,7 @@ class CalibrationView(RebuildView):
         all_names = list(state.experiments)
         ticks = "".join(
             f'<span class="cal-exp">{h.dot(color_for_experiment(name, self.state.color_slots), size=10)}'
-            f'{h.checkbox(name, ticked, change=self.c("tick", experiment=name))}</span>'
+            f'{h.checkbox(name, ticked, change=self.c("tick", experiment=name), ellipsis=True)}</span>'
             for name, ticked in self.checks.items())
         if not ticks:
             ticks = '<span class="muted small">No experiment loaded.</span>'
@@ -687,7 +688,7 @@ class CalibrationView(RebuildView):
             excess = bundle.curve.aurc - bundle.curve.optimal_aurc
             gap_cls = " c-warn" if abs(gap) > 0.05 else ""
             rows.append(
-                f'<tr><td>{h.dot(color_for_experiment(name, self.state.color_slots), size=10)} {h.e(name)}</td>'
+                f'<tr><td><span class="row-nw">{h.dot(color_for_experiment(name, self.state.color_slots), size=10)}{h.name(name)}</span></td>'
                 f'<td class="num">{bundle.n:,}</td>'
                 f'<td class="num">{_fmt(bundle.accuracy)}</td>'
                 f'<td class="num">{_fmt(bundle.mean_confidence)}</td>'
@@ -707,7 +708,7 @@ class CalibrationView(RebuildView):
             if chart is None and data.disabled_reason:
                 reliability.append(
                     f'<div class="cal-tile cal-off" data-key="calrel-{h.e(name)}">'
-                    f'<b class="small">{h.e(name)} — calibration unavailable</b>'
+                    f'<b class="small row-nw">{h.name(name)}<span class="nowrap">— calibration unavailable</span></b>'
                     + h.banner(f"No reliability diagram: {data.disabled_reason}. ECE and MCE are blank for the "
                                f"same reason, and so is temperature scaling below -- the threshold sections are "
                                f"unaffected, since they only ever rank by confidence.", "info")
@@ -740,7 +741,7 @@ class CalibrationView(RebuildView):
                            disabled=point.n_abstained == 0,
                            act_attr=self.a("crops", experiment=name, threshold=threshold, which="abstained")))
             rows.append(
-                f'<tr><td>{h.e(name)}</td>'
+                f'<tr><td>{h.name(name)}</td>'
                 f'<td class="num">{point.n_accepted:,}</td>'
                 f'<td class="num">{_pct(point.coverage)}</td>'
                 f'<td class="num"><b>{_fmt(point.accuracy)}</b></td>'
@@ -770,11 +771,11 @@ class CalibrationView(RebuildView):
             if point is None:
                 continue
             if point.unreachable:
-                rows.append(f'<tr><td>{h.e(name)}</td><td class="num c-warn">unreachable</td>'
+                rows.append(f'<tr><td>{h.name(name)}</td><td class="num c-warn">unreachable</td>'
                             + "".join(f'<td class="num">{DASH}</td>' for _ in range(5)) + '</tr>')
                 continue
             rows.append(
-                f'<tr><td>{h.e(name)}</td>'
+                f'<tr><td>{h.name(name)}</td>'
                 f'<td class="num"><b>{_fmt(point.threshold, 4)}</b></td>'
                 f'<td class="num"><b>{_pct(point.coverage)}</b></td>'
                 f'<td class="num">{point.n_accepted:,}</td>'
@@ -861,7 +862,7 @@ class CalibrationView(RebuildView):
                 continue
             improved = fit.ece_after < fit.ece_before
             rows.append(
-                f'<tr><td>{h.e(name)}</td>'
+                f'<tr><td>{h.name(name)}</td>'
                 f'<td class="num"><b>{_fmt(fit.temperature, 3)}</b></td>'
                 f'<td class="num">{_fmt(fit.nll_before)}</td>'
                 f'<td class="num">{_fmt(fit.nll_after)}</td>'

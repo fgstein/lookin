@@ -50,13 +50,14 @@ import flet as ft
 import numpy as np
 import pandas as pd
 
-from lookin.core.chart_style import subplots
+from lookin.core.chart_style import short_name, subplots
 from lookin.core import calibration as cal
 from lookin.core import class_focus as cf
 from lookin.core.metrics import compute_reliability, diagnose_scores
 from lookin.ui.carousel import Carousel
 from lookin.ui.class_matrix import ClassFocus
 from lookin.ui.components import (
+    NAME_MAX, name_checkbox, name_option, name_text,
     info_button,
     ACCENT, BackgroundRebuild, StaleBanner, card, color_for_experiment,
     fig_to_zoomable_image, info_banner, legend_below, legend_columns,
@@ -206,7 +207,7 @@ class CalibrationView:
         controls = []
         names = list(state.experiments)
         for name in names:
-            cb = ft.Checkbox(label=name, value=existing.get(name, True), on_change=self._on_selection_change)
+            cb = name_checkbox(name, value=existing.get(name, True), on_change=self._on_selection_change)
             self.experiment_checks[name] = cb
             controls.append(ft.Row([
                 ft.Container(width=10, height=10, bgcolor=color_for_experiment(name, self.ctx.state.color_slots), border_radius=5),
@@ -215,7 +216,7 @@ class CalibrationView:
         self.selection_row.controls = controls
 
         selected = self._selected_names()
-        self.class_experiment_dropdown.options = [ft.dropdown.Option(n) for n in selected]
+        self.class_experiment_dropdown.options = [name_option(n) for n in selected]
         if self.class_experiment_dropdown.value not in selected:
             self.class_experiment_dropdown.value = selected[0] if selected else None
 
@@ -351,7 +352,7 @@ class CalibrationView:
             name_cell = ft.Row([
                 ft.Container(width=10, height=10, border_radius=5,
                              bgcolor=color_for_experiment(name, self.ctx.state.color_slots)),
-                ft.Text(name, size=12),
+                name_text(name, size=12),
             ], spacing=8)
             rows.append(ft.DataRow(cells=[
                 ft.DataCell(name_cell),
@@ -394,7 +395,7 @@ class CalibrationView:
         are computed from, so the two always agree."""
         if data.disabled_reason:
             return card(ft.Column([
-                ft.Text(f"{name} — calibration unavailable", weight=ft.FontWeight.BOLD, size=13),
+                ft.Text(f"{short_name(name, NAME_MAX)} — calibration unavailable", tooltip=name, weight=ft.FontWeight.BOLD, size=13),
                 ft.Container(width=340, content=info_banner(
                     f"No reliability diagram: {data.disabled_reason}. ECE and MCE are blank for the "
                     f"same reason, and so is temperature scaling below -- the threshold sections are "
@@ -413,7 +414,7 @@ class CalibrationView:
         ax1.set_xlim(0, 1)
         ax1.set_ylim(0, 1)
         ax1.set_ylabel("accuracy")
-        ax1.set_title(f"{name} — ECE={data.ece:.3f} · MCE={data.mce:.3f}", fontsize=11)
+        ax1.set_title(f"{short_name(name)} — ECE={data.ece:.3f} · MCE={data.mce:.3f}", fontsize=11)
         ax1.legend(fontsize=7, loc="upper left")
 
         ax2.bar(data.bin_centers, data.bin_fraction, width=width * 0.9, color=color)
@@ -455,7 +456,7 @@ class CalibrationView:
         ax.set_yscale("log")
         ax.set_xlabel("predicted confidence")
         ax.set_ylabel("crops (log)")
-        ax.set_title(f"{name} — confidence of right vs. wrong", fontsize=10)
+        ax.set_title(f"{short_name(name)} — confidence of right vs. wrong", fontsize=10)
         style_axes(ax)
         ax.legend(fontsize=7)
         fig.tight_layout()
@@ -473,7 +474,7 @@ class CalibrationView:
             if not len(curve.coverage):
                 continue
             ax.plot(curve.coverage, curve.risk, color=color_for_experiment(name, self.ctx.state.color_slots),
-                    label=f"{name} (AURC={curve.aurc:.4f})")
+                    label=f"{short_name(name)} (AURC={curve.aurc:.4f})")
         ax.set_xlabel("Coverage -- share of crops the model is allowed to decide")
         ax.set_ylabel("Selective risk -- error rate among those")
         ax.set_title("Risk-coverage: what abstaining buys")
@@ -504,7 +505,7 @@ class CalibrationView:
         for name, bundle in bundles.items():
             point = cal.threshold_point(bundle.index, threshold)
             rows.append(ft.DataRow(cells=[
-                ft.DataCell(ft.Text(name, size=12)),
+                ft.DataCell(name_text(name, size=12)),
                 ft.DataCell(ft.Text(f"{point.n_accepted:,}", size=12)),
                 ft.DataCell(ft.Text(_pct(point.coverage), size=12)),
                 ft.DataCell(ft.Text(_fmt(point.accuracy), size=12, weight=ft.FontWeight.BOLD)),
@@ -538,13 +539,13 @@ class CalibrationView:
             point = cal.threshold_for_target(bundle.index, target)
             if point.unreachable:
                 rows.append(ft.DataRow(cells=[
-                    ft.DataCell(ft.Text(name, size=12)),
+                    ft.DataCell(name_text(name, size=12)),
                     ft.DataCell(ft.Text("unreachable", size=12, color=ft.Colors.ORANGE)),
                     *[ft.DataCell(ft.Text("—", size=12)) for _ in range(5)],
                 ]))
                 continue
             rows.append(ft.DataRow(cells=[
-                ft.DataCell(ft.Text(name, size=12)),
+                ft.DataCell(name_text(name, size=12)),
                 ft.DataCell(ft.Text(_fmt(point.threshold, 4), size=12, weight=ft.FontWeight.BOLD)),
                 ft.DataCell(ft.Text(_pct(point.coverage), size=12, weight=ft.FontWeight.BOLD)),
                 ft.DataCell(ft.Text(f"{point.n_accepted:,}", size=12)),
@@ -684,7 +685,7 @@ class CalibrationView:
         table = ft.DataTable(columns=columns, rows=rows,
                              heading_row_color=ft.Colors.SURFACE_CONTAINER_HIGHEST, border_radius=8)
         self.class_area.controls = [
-            ft.Row([ft.Text(f"{name} — target precision {target:g}"
+            ft.Row([ft.Text(f"{short_name(name, NAME_MAX)} — target precision {target:g}"
                             + (f" -- {len(rows_data)} of {n_all_classes:,} classes, picked above"
                                if self.class_focus.many else ""),
                             size=12, weight=ft.FontWeight.BOLD),
@@ -715,7 +716,7 @@ class CalibrationView:
                 continue
             improved = fit.ece_after < fit.ece_before
             rows.append(ft.DataRow(cells=[
-                ft.DataCell(ft.Text(name, size=12)),
+                ft.DataCell(name_text(name, size=12)),
                 ft.DataCell(ft.Text(_fmt(fit.temperature, 3), size=12, weight=ft.FontWeight.BOLD)),
                 ft.DataCell(ft.Text(_fmt(fit.nll_before), size=12)),
                 ft.DataCell(ft.Text(_fmt(fit.nll_after), size=12)),

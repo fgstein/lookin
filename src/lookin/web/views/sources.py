@@ -409,10 +409,13 @@ class SourcesView(View):
         if origin is None:
             origin = next((o for (n, p), o in origins.items() if p == row.path), None)
         if origin is not None and origin.from_mlflow():
-            src = f"MLflow · {h.e(origin.mlflow_run_name or origin.mlflow_run_id[:8])}"
+            run = origin.mlflow_run_name or origin.mlflow_run_id[:8]
+            src = (f'<span class="row-nw">MLflow ·<span class="xname" style="max-width:16em" title="{h.e(run)}">'
+                   f'{h.e(run)}</span></span>')
         else:
             src = "Local file"
-        name_input = (f'<input class="inp mono" value="{h.e(row.name)}" style="width:160px;height:24px;background:var(--surface-2)"'
+        name_input = (f'<input class="inp mono" value="{h.e(row.name)}" title="{h.e(row.name)}" '
+                      f'style="width:160px;height:24px;background:var(--surface-2);text-overflow:ellipsis"'
                       f'{self.c("rename", row=row.id)}{h.on_enter(self.name, "rename", row=row.id)} aria-label="Experiment name">')
         if row.loading:
             ids_html = f'<div class="progress-cell">{h.progress(row.status[0], _fraction(row.progress))}</div>'

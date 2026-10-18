@@ -385,8 +385,8 @@ class CompareView(RebuildView):
             notes.append(status_line(
                 "Both models are judged against the reviewed labels (the overlay is on).", "neutral"))
         return (f'<div class="cmp-sum">'
-                f'<div class="cmp-pair"><b>{h.e(diff.baseline)}</b>{h.icon("arrow-right", 15, "muted")}'
-                f'<b>{h.e(diff.candidate)}</b></div>'
+                f'<div class="cmp-pair"><b class="xname" title="{h.e(diff.baseline)}">{h.e(diff.baseline)}</b>{h.icon("arrow-right", 15, "muted")}'
+                f'<b class="xname" title="{h.e(diff.candidate)}">{h.e(diff.candidate)}</b></div>'
                 f'<div class="cmp-headline">{h.e(headline)}</div>'
                 f'<div class="muted">{h.e(accuracy_line)}</div>'
                 f'<div class="muted small"><i>The accuracy delta only shows the net; these four numbers '

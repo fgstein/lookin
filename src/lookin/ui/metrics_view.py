@@ -41,12 +41,12 @@ from lookin.core import library
 from lookin.core.report_pptx import PptxReport
 from lookin.core.metrics import compute_metrics, compute_curves, MACRO_AVERAGE
 from lookin.core import class_focus as cf
-from lookin.ui.components import fig_to_zoomable_image, saved_path_message, section_title, info_banner, color_for_experiment, blues_color, card, grid_card_width, matrix_cell_size, matrix_text_size, matrix_label_chars, uuid_overlap_banner, score_diagnostics_banner, status_row, style_axes, legend_below, legend_columns, legend_height_inches, reserve_legend_space, GRID_MAJOR, GRID_NONE, ACCENT, BackgroundRebuild, StaleBanner
+from lookin.ui.components import fig_to_zoomable_image, saved_path_message, section_title, info_banner, color_for_experiment, blues_color, card, grid_card_width, matrix_cell_size, matrix_text_size, matrix_label_chars, uuid_overlap_banner, score_diagnostics_banner, status_row, style_axes, legend_below, legend_columns, legend_height_inches, reserve_legend_space, GRID_MAJOR, GRID_NONE, ACCENT, BackgroundRebuild, StaleBanner, NAME_MAX, name_checkbox, name_text
 from lookin.ui.carousel import Carousel
 from lookin.ui.class_matrix import ClassFocus, PAIRS_SHOWN, make_searchable, confused_pairs_table, overview_image, short_column_labels
 from lookin.ui.server_browser import ServerFileBrowser
 from lookin.ui.slice_panel import SlicePanel
-from lookin.core.chart_style import subplots
+from lookin.core.chart_style import short_name, subplots
 
 
 def _log(msg: str) -> None:
@@ -237,7 +237,7 @@ class MetricsView:
         names = list(state.experiments)
         for position, name in enumerate(names):
             default = existing.get(name, True)
-            cb = ft.Checkbox(label=name, value=default, on_change=self._on_change, expand=True)
+            cb = name_checkbox(name, value=default, on_change=self._on_change, expand=True)
             self.experiment_checks[name] = cb
             self.experiments_list.controls.append(self._build_picker_row(position, name, names, cb))
 
@@ -506,7 +506,7 @@ class MetricsView:
         rows = []
         for name, m in metrics_by_name.items():
             color = color_for_experiment(name, self.ctx.state.color_slots)
-            name_cell = ft.Row([ft.Container(width=10, height=10, bgcolor=color, border_radius=5), ft.Text(name)], spacing=8)
+            name_cell = ft.Row([ft.Container(width=10, height=10, bgcolor=color, border_radius=5), name_text(name)], spacing=8)
             values = [
                 m.accuracy, m.balanced_accuracy, m.macro_f1, m.weighted_f1,
                 m.mcc, m.cohen_kappa, m.macro_roc_auc, m.weighted_roc_auc,
@@ -567,7 +567,7 @@ class MetricsView:
             per_class = per_class_by_name[name]
             values = [per_class[metric_key].get(l, np.nan) for l in labels_union]
             offset = (i - (n_exp - 1) / 2) * width
-            ax.bar(x + offset, values, width, label=name, color=color_for_experiment(name, self.ctx.state.color_slots))
+            ax.bar(x + offset, values, width, label=short_name(name), color=color_for_experiment(name, self.ctx.state.color_slots))
         ax.set_xticks(x)
         tick_labels, uneven_support = _class_tick_labels(labels_union, per_class_by_name)
         ax.set_xticklabels(tick_labels, rotation=45, ha="right")
@@ -654,8 +654,8 @@ class MetricsView:
         ax1.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1)
         for name, curve in drawable.items():
             color = color_for_experiment(name, self.ctx.state.color_slots)
-            ax1.plot(curve.fpr, curve.tpr, color=color, label=f"{name} (AUC={curve.roc_auc:.3f})")
-            ax2.plot(curve.recall, curve.precision, color=color, label=f"{name} (AP={curve.average_precision:.3f})")
+            ax1.plot(curve.fpr, curve.tpr, color=color, label=f"{short_name(name)} (AUC={curve.roc_auc:.3f})")
+            ax2.plot(curve.recall, curve.precision, color=color, label=f"{short_name(name)} (AP={curve.average_precision:.3f})")
         ax1.set_xlabel("False positive rate")
         ax1.set_ylabel("True positive rate")
         ax1.set_title(f"ROC curve — {target}")
@@ -812,7 +812,7 @@ class MetricsView:
             ft.Column([
                 ft.Row([
                     ft.Container(width=10, height=10, bgcolor=color, border_radius=5),
-                    ft.Text(f"{name} — accuracy {m.accuracy:.3f}", weight=ft.FontWeight.BOLD, size=13),
+                    ft.Text(f"{short_name(name, NAME_MAX)} — accuracy {m.accuracy:.3f}", tooltip=name, weight=ft.FontWeight.BOLD, size=13),
                 ], spacing=8),
                 # AUTO, not ALWAYS: most matrices have nothing to scroll,
                 # and a permanent scrollbar under them is a lie.

@@ -35,7 +35,7 @@ from lookin.core.chart_style import (  # noqa: F401
     reserve_legend_space, style_axes,
 )
 from lookin.ui.image_export import publish_png, slug
-from lookin.core.chart_style import subplots
+from lookin.core.chart_style import short_name, subplots
 
 
 _PLACEHOLDER_PNG_B64 = None
@@ -44,6 +44,28 @@ ACCENT = "#6C5CE7"
 # The Lookin logo (the eye in the app bar, and the web UI's favicon and
 # brand) -- orange, apart from the accent the controls use.
 LOGO_COLOR = "#FC6D26"
+
+# An experiment name can be any length (an MLflow run name often is): past
+# this many characters it is cut with an ellipsis, the full name on hover.
+NAME_MAX = 60
+
+
+def name_text(name, limit: int = NAME_MAX, **kwargs) -> ft.Text:
+    """A Text for a name the user chose, on one line whatever its length."""
+    text = str(name)
+    return ft.Text(short_name(text, limit), tooltip=text if len(text) > limit else None, no_wrap=True, **kwargs)
+
+
+def name_option(name, limit: int = NAME_MAX) -> ft.dropdown.Option:
+    """A dropdown option for an experiment: the key stays the full name
+    (code compares it), only the label is cut."""
+    return ft.dropdown.Option(key=name, text=short_name(name, limit))
+
+
+def name_checkbox(name, limit: int = NAME_MAX, **kwargs) -> ft.Checkbox:
+    """A Checkbox labelled with an experiment name, cut like name_text."""
+    text = str(name)
+    return ft.Checkbox(label=short_name(text, limit), tooltip=text if len(text) > limit else None, **kwargs)
 
 
 INLINE_DPI = 110  # what the chart is drawn at where it sits in the page
