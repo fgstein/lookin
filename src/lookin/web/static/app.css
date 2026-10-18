@@ -24,6 +24,7 @@
   --faint: #626979;
   --ghost: #8A93A6;
   --acc: #2550C8;
+  --logo: #FC6D26;
   --acc-ink: #1A3C9E;
   --acc-soft: #E8EEFB;
   --acc-soft-2: #EEF3FD;
@@ -58,6 +59,7 @@ p { margin: 0 0 8px; }
 .muted { color: var(--faint); }
 .small { font-size: 11px; }
 .c-acc { color: var(--acc); }
+.c-logo { color: var(--logo); }
 .c-ok { color: var(--ok); }
 .c-warn { color: var(--warn-dot); }
 .c-err { color: var(--err); }

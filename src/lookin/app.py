@@ -29,7 +29,7 @@ from lookin.ui.save_status import SaveStatusIndicator
 from lookin.ui import view_state as vs
 from lookin.core import library
 from lookin.ui.display_settings import DisplaySettings
-from lookin.ui.components import ACCENT
+from lookin.ui.components import ACCENT, LOGO_COLOR
 
 DATA_TAB_INDEX = 0
 GALLERY_TAB_INDEX = 2   # Data, Statistics, Gallery, ...
@@ -268,7 +268,7 @@ def main(page: ft.Page, dataset: str | None = None, experiments: list[tuple[str,
 
     page.appbar = ft.AppBar(
         title=ft.Row([
-            ft.Icon(ft.Icons.VISIBILITY_OUTLINED, color=ACCENT),
+            ft.Icon(ft.Icons.VISIBILITY_OUTLINED, color=LOGO_COLOR),
             ft.Text("Lookin", weight=ft.FontWeight.BOLD),
             # The running version, in the one place every tab shares. A
             # report or a snapshot can outlive the build that made it, so

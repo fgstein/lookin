@@ -41,6 +41,9 @@ from lookin.core.chart_style import subplots
 _PLACEHOLDER_PNG_B64 = None
 
 ACCENT = "#6C5CE7"
+# The Lookin logo (the eye in the app bar, and the web UI's favicon and
+# brand) -- orange, apart from the accent the controls use.
+LOGO_COLOR = "#FC6D26"
 
 
 INLINE_DPI = 110  # what the chart is drawn at where it sits in the page

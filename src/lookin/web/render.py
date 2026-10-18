@@ -230,7 +230,7 @@ def render_page(session) -> str:
 
 
 def _brand() -> str:
-    return (f'<span class="brand">{h.icon("eye", 18, "c-acc")}<b>Lookin</b>'
+    return (f'<span class="brand">{h.icon("eye", 18, "c-logo")}<b>Lookin</b>'
             f'<span class="ver mono">v{h.e(__version__)}</span></span>')
 
 
