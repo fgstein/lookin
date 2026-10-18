@@ -282,10 +282,15 @@
       if (b.hasAttribute("data-force")) a.open = b.hasAttribute("open");
     }
     if (a.hasAttribute("data-keep")) return;   // e.g. a canvas that draws itself
+    // Read before morphing the children: an option that is new is moved out
+    // of `b` into `a`, and would no longer be found in `b` afterwards -- the
+    // select then fell back to its first option ("None (no id)" shown for a
+    // uuid column the server had picked).
+    const wanted = tag === "SELECT" ? b.querySelector("option[selected]") : null;
+    const wantedValue = wanted ? wanted.getAttribute("value") : null;
     morphChildren(a, b);
     if (tag === "SELECT") {
-      const sel = b.querySelector("option[selected]");
-      const v = sel ? sel.getAttribute("value") : (a.options[0] ? a.options[0].value : "");
+      const v = wantedValue !== null ? wantedValue : (a.options[0] ? a.options[0].value : "");
       if (a.value !== v) a.value = v;
     }
   }
@@ -498,6 +503,7 @@
   });
 
   document.addEventListener("keydown", (ev) => {
+    if (zoomState && !ev.ctrlKey && !ev.metaKey && !ev.altKey && zoomKey(ev)) { ev.preventDefault(); return; }
     if (ev.key === "Escape") {
       if (closeZoom() || closeMenus()) { ev.preventDefault(); return; }
       const top = document.querySelector("#dialogs .dlg-back:last-child");
@@ -576,61 +582,69 @@
   }, true);
 
   // ---- drag and drop ------------------------------------------------------
+  // What is being dragged is only readable on drop (dataTransfer hides its
+  // data during dragover), so its kind is kept here from dragstart: a target
+  // lights up, and takes the drop, only for the kinds it lists -- a run
+  // dragged over a group header must not look droppable there.
+  let dragKind = null;
   document.addEventListener("dragstart", (ev) => {
     const el = ev.target.closest("[data-drag]");
     if (!el) return;
+    dragKind = el.getAttribute("data-drag-kind") || "";
     ev.dataTransfer.effectAllowed = "copyMove";
     ev.dataTransfer.setData("application/x-lookin", JSON.stringify({
-      kind: el.getAttribute("data-drag-kind") || "", key: el.getAttribute("data-drag"),
+      kind: dragKind, key: el.getAttribute("data-drag"),
     }));
     ev.dataTransfer.setData("text/plain", el.getAttribute("data-drag-label") || el.textContent.trim().slice(0, 60));
     document.body.classList.add("dragging");
   });
   document.addEventListener("dragend", () => {
+    dragKind = null;
     document.body.classList.remove("dragging");
     document.querySelectorAll(".drop-on").forEach((d) => d.classList.remove("drop-on"));
   });
-  function dropTarget(ev) {
-    const el = ev.target.closest("[data-drop]");
-    if (!el) return null;
+  function accepts(el, kind) {
     const kinds = (el.getAttribute("data-drop-kinds") || "").split(" ").filter(Boolean);
-    return { el, kinds };
+    return !kinds.length || kinds.includes(kind);
+  }
+  // The innermost [data-drop] under the pointer that takes `kind`: a run
+  // over a workspace row is that row's, a workspace over the same row goes
+  // up to the row's group.
+  function dropTarget(ev, kind) {
+    if (kind === null) return null;
+    let el = ev.target.closest ? ev.target.closest("[data-drop]") : null;
+    while (el && !accepts(el, kind)) el = el.parentElement ? el.parentElement.closest("[data-drop]") : null;
+    return el;
   }
   document.addEventListener("dragover", (ev) => {
-    const t = dropTarget(ev);
-    if (!t) return;
+    const el = dropTarget(ev, dragKind);
+    document.querySelectorAll(".drop-on").forEach((d) => { if (d !== el) d.classList.remove("drop-on"); });
+    if (!el) return;
     ev.preventDefault();
-    document.querySelectorAll(".drop-on").forEach((d) => { if (d !== t.el) d.classList.remove("drop-on"); });
-    t.el.classList.add("drop-on");
+    el.classList.add("drop-on");
   });
   document.addEventListener("dragleave", (ev) => {
-    const t = dropTarget(ev);
-    if (t && !t.el.contains(ev.relatedTarget)) t.el.classList.remove("drop-on");
+    const el = dropTarget(ev, dragKind);
+    if (el && !el.contains(ev.relatedTarget)) el.classList.remove("drop-on");
   });
   document.addEventListener("drop", (ev) => {
-    const t = dropTarget(ev);
-    if (!t) return;
-    ev.preventDefault();
-    t.el.classList.remove("drop-on");
     let payload = null;
-    try { payload = JSON.parse(ev.dataTransfer.getData("application/x-lookin")); } catch (e) { return; }
-    if (!payload) return;
-    if (t.kinds.length && !t.kinds.includes(payload.kind)) {
-      // dropped on the wrong kind of target: hand it to the closest ancestor that takes it
-      let up = t.el.parentElement ? t.el.parentElement.closest("[data-drop]") : null;
-      while (up) {
-        const k = (up.getAttribute("data-drop-kinds") || "").split(" ").filter(Boolean);
-        if (!k.length || k.includes(payload.kind)) break;
-        up = up.parentElement ? up.parentElement.closest("[data-drop]") : null;
-      }
-      if (!up) return;
-      fire(up, "data-drop", { kind: payload.kind, key: payload.key });
-      return;
-    }
-    fire(t.el, "data-drop", { kind: payload.kind, key: payload.key });
+    try { payload = JSON.parse(ev.dataTransfer.getData("application/x-lookin")); } catch (e) { payload = null; }
+    const el = payload ? dropTarget(ev, payload.kind || "") : null;
+    if (!el) return;
+    ev.preventDefault();
+    el.classList.remove("drop-on");
+    fire(el, "data-drop", { kind: payload.kind, key: payload.key });
   });
 
   // ---- zoom -------------------------------------------------------------
+  // The full-screen view of a chart or a crop: it opens fitted to the
+  // window, the wheel zooms about the pointer (as far in as wanted -- a crop
+  // is shown with its pixels, a chart as drawn), a drag pans, a double click
+  // goes back and forth between fitted and 2x at that point. + - 0 on the
+  // keyboard do the same as the buttons.
+  let zoomState = null;
+
   function openZoom(img) {
     const src = img.getAttribute("data-zoom-src") || img.currentSrc || img.src;
     const title = img.getAttribute("data-title") || img.alt || "image";
@@ -638,23 +652,133 @@
     const fname = "lookin_" + title.replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 60) + ".png";
     z.innerHTML =
       '<div class="zoom-back"><div class="zoom-bar"><span class="zoom-t"></span>' +
+      '<button type="button" class="btn btn-sm zoom-out" title="Zoom out (-)">-</button>' +
+      '<span class="zoom-pct mono small"></span>' +
+      '<button type="button" class="btn btn-sm zoom-in" title="Zoom in (+)">+</button>' +
+      '<button type="button" class="btn btn-sm zoom-fit" title="Fit to the window (0)">Fit</button>' +
+      '<button type="button" class="btn btn-sm zoom-one" title="Actual size">1:1</button>' +
+      '<span class="vsep"></span>' +
       '<a class="btn btn-sm" target="_blank" rel="noopener">Open in a new tab</a>' +
       '<a class="btn btn-sm">Save</a>' +
       '<button type="button" class="btn btn-sm btn-primary zoom-close">Close</button></div>' +
-      '<div class="zoom-img"><img alt=""></div></div>';
+      '<div class="zoom-img"><img alt="" draggable="false"></div></div>';
     z.querySelector(".zoom-t").textContent = title;
     const links = z.querySelectorAll("a");
     links[0].href = src;
     links[1].href = src; links[1].download = fname;
-    const big = z.querySelector(".zoom-img img");
-    big.src = src;
+    const stage = z.querySelector(".zoom-img");
+    const big = stage.querySelector("img");
     big.alt = title;
     if (img.hasAttribute("data-pixelated")) big.classList.add("pix");
+    const st = { stage, big, scale: 1, x: 0, y: 0, fit: 1, w: 0, h: 0 };
+    zoomState = st;
+    big.onload = () => { st.w = big.naturalWidth; st.h = big.naturalHeight; zoomFit(); };
+    big.src = src;
+
     z.querySelector(".zoom-close").onclick = closeZoom;
-    z.querySelector(".zoom-back").onclick = (ev) => { if (ev.target.classList.contains("zoom-back")) closeZoom(); };
+    z.querySelector(".zoom-in").onclick = () => zoomBy(1.5);
+    z.querySelector(".zoom-out").onclick = () => zoomBy(1 / 1.5);
+    z.querySelector(".zoom-fit").onclick = zoomFit;
+    z.querySelector(".zoom-one").onclick = () => zoomTo(1);
+    stage.addEventListener("wheel", (ev) => {
+      ev.preventDefault();
+      const r = stage.getBoundingClientRect();
+      zoomBy(Math.exp(-ev.deltaY * (ev.deltaMode === 1 ? 0.05 : 0.0015)), ev.clientX - r.left, ev.clientY - r.top);
+    }, { passive: false });
+    let drag = null;
+    stage.addEventListener("pointerdown", (ev) => {
+      if (ev.button !== 0) return;
+      drag = { px: ev.clientX, py: ev.clientY, x: st.x, y: st.y, moved: false };
+      stage.setPointerCapture(ev.pointerId);
+      stage.classList.add("drag");
+    });
+    stage.addEventListener("pointermove", (ev) => {
+      if (!drag) return;
+      const dx = ev.clientX - drag.px, dy = ev.clientY - drag.py;
+      if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+      st.x = drag.x + dx; st.y = drag.y + dy;
+      zoomApply();
+    });
+    const endDrag = (ev) => {
+      if (!drag) return;
+      const wasClick = !drag.moved;
+      drag = null;
+      stage.classList.remove("drag");
+      // A click on the dark margin, not on the picture, closes as before.
+      if (wasClick && ev.type === "pointerup" && ev.target === stage && !zoomOnImage(ev)) closeZoom();
+    };
+    stage.addEventListener("pointerup", endDrag);
+    stage.addEventListener("pointercancel", endDrag);
+    stage.addEventListener("dblclick", (ev) => {
+      const r = stage.getBoundingClientRect();
+      if (st.scale > st.fit * 1.05) zoomFit();
+      else zoomTo(Math.max(st.fit * 2, 1), ev.clientX - r.left, ev.clientY - r.top);
+    });
   }
+
+  function zoomOnImage(ev) {
+    const st = zoomState;
+    if (!st) return false;
+    const r = st.stage.getBoundingClientRect();
+    const x = ev.clientX - r.left, y = ev.clientY - r.top;
+    return x >= st.x && y >= st.y && x <= st.x + st.w * st.scale && y <= st.y + st.h * st.scale;
+  }
+
+  function zoomLimits(st) {
+    return [Math.min(st.fit, 1) / 4, Math.max(32, st.fit * 16)];
+  }
+
+  function zoomApply() {
+    const st = zoomState;
+    if (!st) return;
+    st.big.style.transform = "translate(" + st.x + "px," + st.y + "px) scale(" + st.scale + ")";
+    const pct = document.querySelector("#zoom .zoom-pct");
+    if (pct) pct.textContent = Math.round(st.scale * 100) + "%";
+  }
+
+  function zoomFit() {
+    const st = zoomState;
+    if (!st || !st.w) return;
+    const W = st.stage.clientWidth, H = st.stage.clientHeight;
+    let fit = Math.min(W / st.w, H / st.h);
+    // A chart is drawn at twice the screen resolution: shown no larger than
+    // that to start with. A crop is small: enlarged to fill the window.
+    if (!st.big.classList.contains("pix")) fit = Math.min(fit, 1);
+    st.fit = fit;
+    st.scale = fit;
+    st.x = (W - st.w * fit) / 2;
+    st.y = (H - st.h * fit) / 2;
+    zoomApply();
+  }
+
+  function zoomTo(scale, cx, cy) {
+    const st = zoomState;
+    if (!st || !st.w) return;
+    const [lo, hi] = zoomLimits(st);
+    const next = Math.max(lo, Math.min(hi, scale));
+    if (cx === undefined) { cx = st.stage.clientWidth / 2; cy = st.stage.clientHeight / 2; }
+    st.x = cx - (cx - st.x) * (next / st.scale);
+    st.y = cy - (cy - st.y) * (next / st.scale);
+    st.scale = next;
+    zoomApply();
+  }
+
+  function zoomBy(factor, cx, cy) {
+    if (zoomState) zoomTo(zoomState.scale * factor, cx, cy);
+  }
+
+  function zoomKey(ev) {
+    if (!zoomState) return false;
+    if (ev.key === "+" || ev.key === "=") zoomBy(1.5);
+    else if (ev.key === "-" || ev.key === "_") zoomBy(1 / 1.5);
+    else if (ev.key === "0") zoomFit();
+    else return false;
+    return true;
+  }
+
   function closeZoom() {
     const z = document.getElementById("zoom");
+    zoomState = null;
     if (!z.firstChild) return false;
     z.innerHTML = "";
     return true;

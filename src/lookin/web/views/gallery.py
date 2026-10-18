@@ -5,15 +5,15 @@ user adds a filter for a column (checkboxes for label / categorical /
 binary columns, a class search past FOCUS_MAX values, a range for numeric
 ones); optionally colour each thumbnail by whether an experiment's
 prediction was right and filter on the predicted label; shuffle with a
-seed (0 = the dataset's order); click a crop to open the shared carousel
-on the whole filtered set, starting from that crop.
+seed (0 = the dataset's order).
 
-The mosaic has no pages: it opens with enough rows to fill the window and
-appends the next rows whenever the scroll position comes within a screen
-of the bottom (an infinite list, see app.js) -- only the new crops cross
-the wire, and each image is fetched by the browser as it nears the screen.
-The user sets how many crops sit on a row; how many rows there are is the
-size of the filtered set.
+The mosaic is the shared carousel (views/carousel.py), drawn in the tab
+itself: zoom steps, class badges, the metadata and review controls on every
+crop, and a click shows the crop full size. It used to be a grid of its own,
+and a click opened the carousel in a dialog on the very same set -- two
+mosaics of the same crops. It has no pages: it opens with enough rows to
+fill the window and appends the next ones as the bottom comes near (an
+infinite list, see app.js).
 
 Building the filter panel scans every unique value of each filtered column,
 so it runs in the background and a data change only marks the view stale.
@@ -21,24 +21,24 @@ Ticking filters, scrolling and the mosaic itself stay immediate.
 """
 from __future__ import annotations
 
-import math
 
 import numpy as np
 import pandas as pd
 
 from lookin.core.class_focus import FOCUS_MAX
 from lookin.web import html as h
-from lookin.web.views.base import NO_RENDER, PromptDialog, RebuildView
-from lookin.web.views.carousel import CarouselDialog
-from lookin.web.views.media import crop_url
+from lookin.web.views.base import NO_RENDER, RebuildView
+from lookin.web.views.carousel import Carousel
 from lookin.web.views.widgets import ClassPicker
 
-MAX_COLS = 12
+# Kept for snapshots, which have always carried "cols"; the carousel's zoom
+# steps decide how many crops sit on a row now.
 DEFAULT_COLS = 6
-# Height a row takes beyond its thumbnail: the caption, the cell's padding
-# and border, and the gap to the next row.
-ROW_EXTRA_HEIGHT = 34
 GRID_ID = "gal-grid"
+# What the window has besides the mosaic: the navigation column, the
+# filter column and the gaps (width); the top bar, the mosaic's toolbar and
+# the paddings (height).
+GALLERY_CHROME = (214 + 20 + 300 + 10 + 18, 44 + 20 + 34 + 4 + 18)
 NONE_EXPERIMENT = "__none__"
 SLIDER_DIVISIONS = 100
 
@@ -61,11 +61,11 @@ class GalleryView(RebuildView):
         self.shuffle_seed = 0
         self.add_choice = ""
         # The filtered (and possibly shuffled) frame the mosaic draws from,
-        # and the records of its first len(_records) rows -- the crops in
-        # the grid so far. `gen` changes whenever the grid starts over, so a
-        # batch asked for by the old one is not appended to the new one.
+        # and the carousel showing it -- a new one whenever the set changes.
+        # `gen` is carried from one to the next, so a batch asked for by the
+        # old grid is never appended to the new one.
         self._filtered = None
-        self._records: list = []
+        self.carousel = None
         self.gen = 0
         self.grid_error = ""
         self.built = False
@@ -181,30 +181,16 @@ class GalleryView(RebuildView):
             return merged
         return filtered
 
-    def _grid_cols(self) -> int:
-        try:
-            v = int(self.cols_value)
-        except (TypeError, ValueError):
-            v = DEFAULT_COLS
-        return max(1, min(MAX_COLS, v))
-
-    def _thumb_size(self) -> int:
-        return max(56, min(150, 920 // self._grid_cols()))
-
-    def _batch(self) -> int:
-        """Crops per load: a window's worth of rows plus one, so the first
-        load overflows the view and there is something to scroll."""
-        rows = math.ceil(self.s.viewport[1] / (self._thumb_size() + ROW_EXTRA_HEIGHT)) + 1
-        return rows * self._grid_cols()
-
     def _total(self) -> int:
         return 0 if self._filtered is None else len(self._filtered)
 
     def _render_grid(self) -> None:
-        """Start the mosaic over from the top of the current filtered set."""
+        """Start the mosaic over from the top of the current filtered set,
+        keeping how it is shown (zoom, badges, details)."""
         self.grid_error = ""
         self.gen += 1
-        self._records = []
+        previous = self.carousel
+        self.carousel = None
         self._filtered = None
         if self.state.dataset is None:
             return
@@ -214,16 +200,25 @@ class GalleryView(RebuildView):
                 order = np.random.default_rng(self.shuffle_seed).permutation(len(filtered))
                 filtered = filtered.iloc[order]
             self._filtered = filtered
-            self._records = filtered.iloc[:self._batch()].to_dict("records")
+            self.carousel = self._new_carousel(filtered, previous)
         except Exception as ex:  # noqa: BLE001
-            self._records = []
+            self.carousel = None
             self.grid_error = f"Error rebuilding the gallery: {ex}"
 
-    def _count_text(self) -> str:
-        shown, total = len(self._records), self._total()
-        if shown >= total:
-            return f"{total:,} matching rows"
-        return f"{shown:,} of {total:,} matching rows shown  -  scroll for more"
+    def _new_carousel(self, filtered, previous) -> Carousel:
+        cols = self.state.dataset.columns
+        carousel = Carousel(
+            self, self.s, self.state.dataset, len(filtered),
+            lambda start, end: filtered.iloc[start:end].to_dict("records"),
+            cols.crop_col, cols.uuid_col or None, review_source="gallery", label_col=cols.label_col,
+            chrome=GALLERY_CHROME, shuffle_toggle=False, outcome_borders=True, list_id=GRID_ID)
+        if previous is not None:
+            carousel.zoom_index = previous.zoom_index
+            carousel.show_labels = previous.show_labels
+            carousel.show_info = previous.show_info
+            carousel.picks.update(previous.picks)
+        carousel.gen = self.gen
+        return carousel
 
     def _on_filter_change(self) -> None:
         self._render_grid()
@@ -244,7 +239,7 @@ class GalleryView(RebuildView):
         self.on_shown()
         return (f'<div class="stack">{self.stale_html()}'
                 f'<div class="gal">{self._filters_html()}<div class="gal-main stack">'
-                f'{self._mosaic_controls()}{self.progress_html()}{self._grid_html()}</div></div></div>')
+                f'{self.progress_html()}{self._grid_html()}</div></div></div>')
 
     def _filters_html(self) -> str:
         state = self.state
@@ -304,54 +299,23 @@ class GalleryView(RebuildView):
                 f'<div class="small mono" id="{out_id}">[{entry["start"]:.2f}, {entry["end"]:.2f}]</div>')
 
     def _mosaic_controls(self) -> str:
-        cols_n = self._grid_cols()
+        """The Gallery's own controls, at the start of the mosaic's toolbar."""
         options = [(NONE_EXPERIMENT, "(none)")] + [(n, n) for n in self.state.experiments]
         shuffle = h.checkbox("Shuffle", bool(self.shuffle_seed), change=self.c("shuffle"), cls="sw")
         reshuffle = (h.button(icon_name="shuffle", act_attr=self.a("reshuffle"), small=True, kind="ghost",
                               title="Another random order") if self.shuffle_seed else "")
-        controls = (f'<div class="row-wrap">'
-                    f'{h.button(icon_name="sliders", act_attr=self.a("settings"), small=True, kind="ghost", title="Mosaic settings")}'
-                    f'<span class="muted small">{cols_n} per row</span><span class="vsep"></span>'
-                    f'{h.select(options, self.experiment, change=self.c("experiment"), label="Color by experiment prediction")}'
-                    f'<span class="vsep"></span>{shuffle}{reshuffle}<span class="grow"></span>'
-                    f'<span class="small muted" id="{GRID_ID}-count">{h.e(self._count_text())}</span></div>')
-        return h.section("Mosaic", controls, cls="gal-mosaic")
-
-    def _cells_html(self, start: int, records: list) -> str:
-        state = self.state
-        cols_cfg = state.dataset.columns
-        show_prediction = self.experiment != NONE_EXPERIMENT
-        cells = []
-        for offset, rec in enumerate(records):
-            i = start + offset
-            img_path = state.dataset.resolve_crop_path(rec[cols_cfg.crop_col])
-            label = rec.get(cols_cfg.label_col)
-            annotated = label is not None and not pd.isna(label) and str(label) != ""
-            caption = str(label) if annotated else ""
-            border = ""
-            if show_prediction:
-                if annotated:
-                    border = " ok" if rec.get("correct") else " bad"
-                caption = f"{caption or '?'} -> {rec.get('predicted_label')}"
-            url = crop_url(self.s, img_path, rec)
-            cells.append(f'<button type="button" class="gcell{border}" data-i="{i}"{self.a("open", i=i)}>'
-                         f'<img class="crop" src="{h.e(url)}" alt="" loading="lazy" decoding="async" style="object-fit:cover">'
-                         f'<span class="gcap">{h.e(caption)}</span></button>')
-        return "".join(cells)
+        return (f'{h.select(options, self.experiment, change=self.c("experiment"), label="Color by experiment prediction")}'
+                f'<span class="vsep"></span>{shuffle}{reshuffle}')
 
     def _grid_html(self) -> str:
         if self.grid_error:
             return h.banner(self.grid_error, "error")
-        cols_n = self._grid_cols()
-        thumb = self._thumb_size()
+        if self.carousel is None:
+            return ""
         if not self._total():
-            return '<div class="empty">No crop matches these filters.</div>'
-        more = len(self._records) < self._total()
-        sentinel = (f'<div class="more" data-more="{self.name}:more" data-list="{GRID_ID}"{"" if more else " hidden"}>'
-                    f'{h.button("Show more", act_attr=self.a("more_click"), small=True, kind="ghost", icon_name="chev-down")}</div>')
-        return (f'<div class="ggrid" id="{GRID_ID}" data-gen="{self.gen}" '
-                f'style="grid-template-columns:repeat({cols_n},minmax(0,{thumb + 10}px))">'
-                f'{self._cells_html(0, self._records)}</div>{sentinel}')
+            return (f'<div class="car"><div class="car-tb">{self._mosaic_controls()}</div>'
+                    f'<div class="empty">No crop matches these filters.</div></div>')
+        return f'<section class="card gal-car">{self.carousel.render(self._mosaic_controls())}</section>'
 
     # ---- actions ----
 
@@ -418,14 +382,6 @@ class GalleryView(RebuildView):
         self._render_grid()
         self._to_top()
 
-    def on_settings(self, **_):
-        def apply(values):
-            self.cols_value = str(values.get("cols", ""))
-            self._render_grid()
-            self.refresh()
-        self.s.open_dialog(PromptDialog("Mosaic settings", [("cols", "images per row", self.cols_value)],
-                                        apply, submit_label="Apply"))
-
     def on_shuffle(self, value=False, **_):
         self._set_shuffle(self._next_seed() if value else 0)
 
@@ -441,47 +397,12 @@ class GalleryView(RebuildView):
         self._render_grid()
         self._to_top()
 
-    # ---- scrolling ----
+    # ---- the mosaic ----
 
-    def on_more(self, gen="", loaded: int = 0, **_):
-        """The next batch, asked for by the page as the bottom of the grid
-        comes near. Sent as an `append`: the crops already shown stay put."""
-        if str(gen) != str(self.gen) or self._filtered is None:
-            return NO_RENDER                    # a grid that has since started over
-        if int(loaded) != len(self._records):
-            return None                         # out of step: a full render puts it right
-        start = len(self._records)
-        records = self._filtered.iloc[start:start + self._batch()].to_dict("records")
-        self._records.extend(records)
-        done = len(self._records) >= self._total()
-        self.s.cmd(append={"to": GRID_ID, "gen": str(self.gen), "start": start,
-                           "html": self._cells_html(start, records), "count": self._count_text(), "done": done})
-        return NO_RENDER
-
-    def on_more_click(self, **_):
-        """'Show more', for a window tall enough that nothing overflows."""
-        return self.on_more(gen=self.gen, loaded=len(self._records))
-
-    def on_open(self, i: int = 0, **_):
-        """The carousel on the whole filtered set, in the mosaic's order,
-        starting at the clicked crop and wrapping round -- rows are read from
-        the frame as the carousel scrolls to them."""
-        filtered, total = self._filtered, self._total()
-        if filtered is None or not (0 <= i < total):
-            return
-        cols_cfg = self.state.dataset.columns
-
-        def provider(start: int, end: int) -> list:
-            positions = [(i + k) % total for k in range(start, end)]
-            return filtered.iloc[positions].to_dict("records")
-
-        uuid_col = cols_cfg.uuid_col or None
-        clicked = filtered.iloc[i]
-        clicked_uuid = clicked.get(uuid_col) if uuid_col else None
-        self.s.open_dialog(CarouselDialog(
-            self.s, f"{total:,} matching image(s), from the one clicked", self.state.dataset, total, provider,
-            cols_cfg.crop_col, uuid_col, highlight_uuid=clicked_uuid, review_source="gallery",
-            label_col=cols_cfg.label_col))
+    def on_car(self, op: str = "", **args):
+        if self.carousel is None:
+            return NO_RENDER
+        return self.carousel.handle(op, args)
 
     def on_update(self, **_):
         self.rebuild(self._refresh_now)
@@ -494,7 +415,14 @@ class GalleryView(RebuildView):
     def on_display_changed(self) -> None:
         # Same crops, new URLs: a new generation redraws every loaded cell.
         self.gen += 1
+        if self.carousel is not None:
+            self.carousel.gen = self.gen
         self.refresh()
+
+    def on_review_change(self) -> None:
+        # The decision under each crop, in details mode.
+        if self.carousel is not None and self.carousel.show_info:
+            self.refresh()
 
     def apply_external_filter(self, experiment_name: str, true_label, predicted_label) -> None:
         """From a confusion-matrix cell: the crops of that cell, here."""

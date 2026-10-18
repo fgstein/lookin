@@ -165,14 +165,22 @@ class DecisionBar:
 # ---- the mosaic ---------------------------------------------------------------
 
 class Carousel:
-    """A component: `owner` is the dialog it sits in, whose `on_car(op, ...)`
-    forwards here. `chrome_height` is what the host takes above the mosaic
-    on top of a plain dialog's chrome."""
+    """A component: `owner` is the dialog (or the view) it sits in, whose
+    `on_car(op, ...)` forwards here. `chrome_height` is what the host takes
+    above the mosaic on top of a plain dialog's chrome; a host that is not
+    a dialog gives its own `chrome` -- (width, height) of the window that
+    is not the mosaic.
+
+    `shuffle_toggle`: offer the shuffle button (a host with its own shuffle
+    turns it off). `outcome_borders`: frame each crop green or red by
+    whether the prediction it carries ("correct") was right."""
 
     def __init__(self, owner, session, dataset, total: int, page_provider: Callable[[int, int], list],
                  crop_col: str, uuid_col: Optional[str] = None, highlight_uuid=None,
                  review_source: str = "", suggestions: Optional[dict] = None,
-                 label_col: Optional[str] = None, chrome_height: int = 0, action: str = "car"):
+                 label_col: Optional[str] = None, chrome_height: int = 0, action: str = "car",
+                 chrome: Optional[tuple] = None, shuffle_toggle: bool = True, outcome_borders: bool = False,
+                 list_id: str = ""):
         self.owner = owner
         self.s = session
         self.dataset = dataset
@@ -185,10 +193,13 @@ class Carousel:
         self.suggestions = suggestions or {}
         self.label_col = label_col
         self.extra_chrome = chrome_height
+        self.chrome = chrome or (DIALOG_CHROME_W, DIALOG_CHROME_H)
+        self.shuffle_toggle = shuffle_toggle
+        self.outcome_borders = outcome_borders
         self.action = action
         self.loaded = 0                 # crops in the grid so far
         self.gen = 0                    # bumped whenever the grid starts over
-        self.list_id = f"car-{secrets.token_hex(4)}"
+        self.list_id = list_id or f"car-{secrets.token_hex(4)}"
         self.show_labels = True
         self.show_info = False
         self._order: Optional[np.ndarray] = None
@@ -211,10 +222,10 @@ class Carousel:
     # ---- geometry ----
 
     def _grid_width(self) -> int:
-        return int(max(MIN_GRID_WIDTH, self.s.viewport[0] - DIALOG_CHROME_W))
+        return int(max(MIN_GRID_WIDTH, self.s.viewport[0] - self.chrome[0]))
 
     def _grid_height(self) -> int:
-        return int(max(MIN_GRID_HEIGHT, self.s.viewport[1] - DIALOG_CHROME_H - self.extra_chrome))
+        return int(max(MIN_GRID_HEIGHT, self.s.viewport[1] - self.chrome[1] - self.extra_chrome))
 
     def _info_extra_height(self) -> int:
         if not self.show_info:
@@ -335,16 +346,21 @@ class Carousel:
                        and rec.get(self.uuid_col) == self.highlight_uuid)
         title = (str(rec.get(self.uuid_col)) if self.uuid_col and rec.get(self.uuid_col) is not None
                  else img_path.name)
+        outcome = ""
+        if self.outcome_borders and "correct" in rec:
+            truth = rec.get(self.label_col) if self.label_col else None
+            if truth is not None and str(truth) != "" and truth == truth:
+                outcome = " ok" if rec.get("correct") else " bad"
         img = (f'<span class="ctile-i" style="width:{img_w}px;height:{tile}px">'
                f'<img class="crop" src="{h.e(url)}" alt="{h.e(title)}" loading="lazy" data-zoom data-pixelated '
                f'data-title="{h.e(title)}" title="{h.e(self._tooltip(rec))}" '
                f'style="width:{img_w}px;height:{tile}px">{self._badge(rec)}</span>')
         if not self.show_info:
-            return (f'<div class="ctile{" hl" if highlighted else ""}" data-i="{i}" '
+            return (f'<div class="ctile{" hl" if highlighted else ""}{outcome}" data-i="{i}" '
                     f'style="width:{tile}px;height:{tile}px">{img}</div>')
-        return self._card(rec, img, cell_w, highlighted, i)
+        return self._card(rec, img, cell_w, highlighted, i, outcome)
 
-    def _card(self, rec: dict, img: str, cell_w: int, highlighted: bool, i: int) -> str:
+    def _card(self, rec: dict, img: str, cell_w: int, highlighted: bool, i: int, outcome: str = "") -> str:
         items = [(k, v) for k, v in rec.items() if k != self.crop_col]
         items.sort(key=lambda kv: kv[0] not in PREDICTION_KEYS)
         meta = "".join(
@@ -360,7 +376,7 @@ class Carousel:
                                   title="The crops nearest to this one in the model's embedding space"))
         if self._reviewable():
             parts.append(self.bar.render(uid, str(self.suggestions.get(str(uid), ""))))
-        return (f'<div class="ccard{" hl" if highlighted else ""}" data-i="{i}" style="width:{cell_w}px">'
+        return (f'<div class="ccard{" hl" if highlighted else ""}{outcome}" data-i="{i}" style="width:{cell_w}px">'
                 f'{"".join(parts)}</div>')
 
     def _tiles_html(self, start: int, end: int) -> str:
@@ -373,13 +389,12 @@ class Carousel:
         return "".join(self._tile(rec, start + k) for k, rec in enumerate(records))
 
     def _count_text(self) -> str:
-        if not self.total:
-            return "0 images"
-        if self.loaded >= self.total:
-            return f"{self.total:,} image(s)"
-        return f"{self.loaded:,} of {self.total:,} shown  -  scroll for more"
+        # The size of the set, not how much of it is loaded yet: a text that
+        # changed length as the grid filled in moved every button beside it.
+        return f"{self.total:,} image(s)" if self.total else "0 images"
 
-    def render(self) -> str:
+    def render(self, lead_html: str = "") -> str:
+        """`lead_html`: the host's own controls, at the start of the toolbar."""
         if not self.loaded and self.total:
             self.loaded = min(self.total, self._batch_size())
         a = lambda op, **kw: h.act(self.owner.target, self.action, op=op, **kw)  # noqa: E731
@@ -389,16 +404,19 @@ class Carousel:
         shuffled = self._order is not None
         tog = lambda on, name, tip, op: h.button(icon_name=name, act_attr=a(op) + anchor, small=True,  # noqa: E731
                                                  kind="ghost", title=tip, cls="on" if on else "")
-        toolbar = (f'<div class="car-tb">'
-                   f'<span class="muted small" id="{self.list_id}-count">{h.e(self._count_text())}</span>'
-                   f'{h.button(icon_name="chev-up", act_attr=a("top"), small=True, kind="ghost", title="Back to the top")}'
-                   f'<span class="vsep"></span>'
+        shuffle = (tog(shuffled, "shuffle", "Back to the original order" if shuffled else "Show the crops in a random order", "shuffle")
+                   if self.shuffle_toggle else "")
+        lead = f'{lead_html}<span class="vsep"></span>' if lead_html else ""
+        toolbar = (f'<div class="car-tb">{lead}'
                    f'{h.button("-", act_attr=a("zoom_out") + anchor, small=True, title="Smaller images", disabled=self.zoom_index <= 0)}'
                    f'{h.button("+", act_attr=a("zoom_in") + anchor, small=True, title="Bigger images", disabled=zoom_in_off)}'
                    f'<span class="vsep"></span>'
                    f'{tog(self.show_labels, "bookmark", "Hide the class labels" if self.show_labels else "Show the class labels", "labels")}'
                    f'{tog(self.show_info, "info", "Back to the plain mosaic" if self.show_info else "Show the metadata and the review controls on every crop", "info")}'
-                   f'{tog(shuffled, "shuffle", "Back to the original order" if shuffled else "Show the crops in a random order", "shuffle")}'
+                   f'{shuffle}'
+                   f'{h.button(icon_name="chev-up", act_attr=a("top"), small=True, kind="ghost", title="Back to the top")}'
+                   f'<span class="grow"></span>'
+                   f'<span class="muted small nowrap" id="{self.list_id}-count">{h.e(self._count_text())}</span>'
                    f'</div>')
         tiles = self._tiles_html(0, self.loaded) if self.total else ""
         err = self.messages.pop("__page__", "")

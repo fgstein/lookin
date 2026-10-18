@@ -43,6 +43,30 @@ PAGES = (
                 "click to fix. Several results CSVs can be loaded at once: that is what makes the "
                 "Metrics, Compare and consensus views possible."
             ),
+            Heading("Saying it once: lookin.toml"),
+            Para(
+                "A file named lookin.toml in the folder of the dataset CSVs fills the Columns and the "
+                "Root in whenever one of them is picked, instead of the guess. It holds one table per "
+                "CSV, titled with its file name in quotes, for instance [\"train.csv\"], or with a "
+                "pattern such as [\"*_test.csv\"] (an exact name wins over a pattern). An optional "
+                "[defaults] table applies to every CSV of the folder; a CSV's own table overrides it, "
+                "key by key."
+            ),
+            Table(
+                headers=("Key", "What it sets"),
+                rows=(
+                    ("id", "the id column; an empty text (id = \"\") says the file has none"),
+                    ("image", "the column holding the path to each crop"),
+                    ("label", "the column holding the true class"),
+                    ("root", "the folder those paths are relative to; itself relative to lookin.toml's folder unless absolute"),
+                ),
+                weights=(1, 5),
+            ),
+            Para(
+                "Opening a workspace keeps the columns it was saved with; lookin.toml only fills the "
+                "ones still at their default. A column it names that is not in the file is ignored, "
+                "with a warning under the columns, and guessed instead."
+            ),
             Heading("The join"),
             Bullets((
                 "The id column identifies a crop. It must appear in both files and match exactly, as text.",
@@ -88,7 +112,7 @@ PAGES = (
             )),
         ),
         see_also=("predictions", "score-diagnostics", "column-statistics", "support-and-imbalance"),
-        keywords=("join", "merge", "uuid", "overlap", "split", "filter", "id column"),
+        keywords=("join", "merge", "uuid", "overlap", "split", "filter", "id column", "toml", "lookin.toml", "root"),
     ),
 
     ManualPage(
@@ -203,13 +227,6 @@ PAGES = (
                 "A number compared with a text column reads that column as numbers: a cell that is not a number does not match.",
                 "A text compared with a numeric column: equality compares the text of the values, an ordering needs the text to be a number.",
                 "A cell with no value matches no comparison, except != and 'is None'.",
-            )),
-            Callout(CALLOUT_TIP, "From conditions to a query", (
-                Para(
-                    "Write the conditions as a query turns the conditions built by clicking into one "
-                    "query that says the same thing, to extend it by hand -- an or between two of "
-                    "them, for instance, which conditions cannot express."
-                ),
             )),
             Callout(CALLOUT_WARNING, "Only a formula", (
                 Para(

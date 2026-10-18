@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Optional
 
 from lookin.core import library
+from lookin.core.dataset_config import CONFIG_NAME, config_for_csv
 from lookin.core.class_focus import FOCUS_MAX
 from lookin.core.data_manager import (
     SPLIT_OTHER, SPLIT_TEST, SPLIT_TRAIN, ColumnConfig, sidecar_paths_for_csv,
@@ -53,6 +54,12 @@ SPLIT_OPTIONS = ((SPLIT_TEST, "test (held out)"), (SPLIT_TRAIN, "train (used to 
 PROGRESS_PUSH_S = 0.25
 
 _ids = itertools.count(1)
+
+
+def _fraction(progress: Optional[float]) -> Optional[float]:
+    """A bar's fill, or None for a moving bar: nothing counted yet (the
+    rows are being counted) is shown as work going on, not as 0%."""
+    return progress if progress else None
 
 
 class ExpRow:
@@ -104,7 +111,9 @@ class SourcesView(View):
         self.crop_value = "crop"
         self.label_value = "label"
         self.column_options: list = []
-        self.schema_note = ""
+        # One line under the columns: which lookin.toml filled them in, or
+        # why it was not used.
+        self.config_note = ("", "neutral")
         self.image_root = ""
         self.row_filter_enabled = True
         self.row_filter_col = "split"
@@ -119,11 +128,16 @@ class SourcesView(View):
         self.relabel_open = False
         self.relabel_query = ""
         self.relabel_picked: list = []
+        # Each class of the dataset CSV -> the name it has now. A relabeling
+        # renames the values in the loaded frame, so without this the field
+        # of a class renamed "cat" -> "feline" would be titled "feline" from
+        # then on, and the CSV's own name would be gone from the screen.
+        self.label_names: dict = {}
         self._last_push = 0.0
         if not session.app.dataset:
             for name, path in EXAMPLE_EXPERIMENTS:
                 self.rows.append(ExpRow(name, str(path)))
-        self._sniff()
+        self._sniff(apply_config=True)
 
     # ------------------------------------------------------------------
     # small helpers
@@ -161,31 +175,65 @@ class SourcesView(View):
     # guessing the roles
     # ------------------------------------------------------------------
 
-    def _sniff(self) -> None:
-        """Read the head of the file and guess the three roles -- only ever
-        replacing a role whose current value is not a column of this file
-        (see UploadView._sniff_dataset for the reasoning)."""
+    def _sniff(self, apply_config: bool = False) -> None:
+        """Read the head of the file and fill the three columns and the
+        root in: from the lookin.toml next to it where it says (see
+        core/dataset_config.py), else by guessing from the values.
+
+        `apply_config`: the user just picked this file, so lookin.toml wins
+        over every field. Otherwise (a workspace being restored) it only
+        fills a field still at its default -- a value the workspace chose
+        itself stays -- and a guess only ever replaces a column that is not
+        in this file (see UploadView._sniff_dataset for the reasoning)."""
         path = (self.dataset_path or "").strip()
+        self.config_note = ("", "neutral")
         if not path:
             self.column_options = []
-            self.schema_note = ""
             return
         guess = sniff_csv(path)
         self.column_options = list(guess.columns)
-        for attr, guessed in (("uuid_value", guess.uuid_col), ("crop_value", guess.crop_col),
-                              ("label_value", guess.label_col)):
+        config = config_for_csv(path)
+        from_config = []
+        if config is not None and config.error:
+            self.config_note = (f"{CONFIG_NAME} next to this file {config.error} -- not used.", "warning")
+        elif config is not None:
+            defaults = library.Mount()
+            unknown = []
+            for attr, key, default in (("uuid_value", "id", defaults.uuid_col), ("crop_value", "image", defaults.crop_col),
+                                       ("label_value", "label", defaults.label_col)):
+                value = getattr(config, key)
+                if value is None:
+                    continue
+                if value and value not in self.column_options:
+                    unknown.append(value)
+                    continue
+                if apply_config or getattr(self, attr) in ("", default) or getattr(self, attr) not in self.column_options:
+                    setattr(self, attr, value)
+                    from_config.append(key)
+            if config.root is not None and (apply_config or not self.image_root):
+                self.image_root = config.root
+                from_config.append("root")
+            if unknown:
+                self.config_note = (f"{CONFIG_NAME} names {', '.join(repr(u) for u in unknown)}, not a column of this "
+                                    f"file -- guessed instead.", "warning")
+            elif from_config:
+                self.config_note = (f"{', '.join(k.capitalize() for k in from_config)} from the {CONFIG_NAME} "
+                                    f"next to this file", "neutral")
+        for attr, key, guessed in (("uuid_value", "id", guess.uuid_col), ("crop_value", "image", guess.crop_col),
+                                   ("label_value", "label", guess.label_col)):
+            if key in from_config:
+                continue
             if attr == "uuid_value" and not self.uuid_value:
                 continue
             if guessed and getattr(self, attr) not in self.column_options:
                 setattr(self, attr, guessed)
-        if (self.uuid_value and self.uuid_value not in self.column_options
+        if ("id" not in from_config and self.uuid_value and self.uuid_value not in self.column_options
                 and self.column_options and not guess.uuid_col):
             self.uuid_value = ""
-        self.schema_note = guess.explain()
 
     def set_dataset_path(self, path: str) -> None:
         self.dataset_path = path
-        self._sniff()
+        self._sniff(apply_config=True)
 
     # ------------------------------------------------------------------
     # rendering
@@ -254,17 +302,21 @@ class SourcesView(View):
                       f'{filter_note}</div>')
         pool = (h.segmented(SPLIT_OPTIONS, self.split_kind, act_for=lambda k: self.a("set_split", kind=k), label="Pool")
                 + '<span class="muted small">predictions on a train pool are in-sample: changes what Cleaning allows</span>')
+        note_text, note_kind = self.config_note
+        note = (f'<div class="small {"c-warn" if note_kind == "warning" else "muted"}" style="margin-top:3px">{h.e(note_text)}</div>'
+                if note_text else "")
         grid = h.kv_grid([
             ("File", file_field + file_meta),
-            ("Roles", f'<div class="row">{roles}</div>'
-                      + (f'<div class="muted small" style="margin-top:3px">{h.e(self.schema_note)}</div>' if self.schema_note else "")),
-            ("Images from", root_field),
+            ("Columns", f'<div class="row">{roles}</div>' + note),
+            ("Root", root_field),
             ("Rows", rows_field),
             ("Pool", f'<div class="row">{pool}</div>'),
         ])
+        # Across the card, above the form: a load can take a minute on a
+        # large file, and a bar tucked under the form went unnoticed.
         prog = ""
         if self.ds_loading:
-            prog = f'<div style="margin-top:10px">{h.progress(text, self.ds_progress)}</div>'
+            prog = f'<div class="progress-wide" style="margin-bottom:10px">{h.progress(text, _fraction(self.ds_progress))}</div>'
         extra = ""
         if state.dataset is not None:
             kinds = state.dataset.column_kinds()
@@ -275,12 +327,21 @@ class SourcesView(View):
                              + ", ".join(kinds.high_cardinality))
             extra = (f'<div class="muted small" style="margin-top:10px">{h.e("  ·  ".join(parts))}</div>'
                      + self._relabel_block())
-        return h.section("Dataset", grid + prog + extra, manual="dataset-join", right=right,
+        return h.section("Dataset", prog + grid + extra, manual="dataset-join", right=right,
                          sub="", id_="src-dataset").replace(
             '<div class="card-r">', f'{status}<div class="card-r">', 1)
 
+    def _label_names(self) -> dict:
+        """label_names, started over from the loaded labels whenever it no
+        longer describes them (a new dataset, or labels changed elsewhere)."""
+        labels = [str(l) for l in self.state.dataset.labels()]
+        if set(self.label_names.values()) != set(labels):
+            self.label_names = {l: l for l in labels}
+        return self.label_names
+
     def _relabel_block(self) -> str:
-        labels = self.state.dataset.labels()
+        names = self._label_names()
+        originals = sorted(names, key=lambda l: (l.casefold(), l))
         chev = "▼" if self.relabel_open else "▶"
         head = (f'<button type="button" class="grp-btn" style="margin-top:8px;border-top:1px solid var(--line-2);padding-top:8px;height:auto"'
                 f'{self.a("toggle_relabel")} aria-expanded="{"true" if self.relabel_open else "false"}">'
@@ -288,19 +349,23 @@ class SourcesView(View):
                 f'<span class="muted">rename the dataset\'s label values; cascades into every experiment\'s mapping</span></button>')
         if not self.relabel_open:
             return head
-        if len(labels) > MAPPING_MAX_ALL:
+        if len(originals) > MAPPING_MAX_ALL:
             q = self.relabel_query.strip().lower()
-            matches = [l for l in labels if q and q in l.lower() and l not in self.relabel_picked][:30]
+            matches = [l for l in originals if q and (q in l.lower() or q in names[l].lower())
+                       and l not in self.relabel_picked][:30]
             finder = (f'<div class="row" style="margin:6px 0">{h.text_input(self.relabel_query, input_=self.i("relabel_query"), placeholder="Find a class to rename", width="260px")}'
                       + "".join(h.chip(m, act_attr=self.a("relabel_pick", label=m)) for m in matches) + "</div>")
-            shown = self.relabel_picked
+            shown = [l for l in self.relabel_picked if l in names]
         else:
             finder = ""
-            shown = labels
+            shown = originals
+        # The title of each field is the class as the CSV names it, and stays
+        # so; the field holds what it is called now.
         fields = "".join(
             f'<label class="fld" style="flex-direction:column;align-items:stretch;gap:2px">'
-            f'<span class="fld-l mono" style="font-size:11px">{h.e(l)}</span>'
-            f'<input class="inp mono" name="r{i}" value="{h.e(l)}" style="width:150px" data-orig="{h.e(l)}"></label>'
+            f'<span class="fld-l mono" style="font-size:11px" title="In the dataset CSV">{h.e(l)}</span>'
+            f'<input class="inp mono{" relabelled" if names[l] != l else ""}" name="r{i}" value="{h.e(names[l])}" '
+            f'style="width:150px" data-orig="{h.e(l)}"></label>'
             for i, l in enumerate(shown))
         self._relabel_shown = list(shown)
         form = (f'<form{self.submit_attr("apply_relabel")} class="col" style="margin-top:6px">{finder}'
@@ -339,8 +404,10 @@ class SourcesView(View):
     def _exp_tbody(self, row: ExpRow, names: list, origins: dict) -> str:
         state = self.state
         exp = state.experiments.get(row.loaded_name) if row.loaded_name else None
-        color = color_for_experiment(row.loaded_name, names) if exp is not None else "var(--ghost)"
-        is_open = row.open or exp is None
+        color = color_for_experiment(row.loaded_name, self.state.color_slots) if exp is not None else "var(--ghost)"
+        # A row with nothing loaded opens on its files -- except while it
+        # waits or loads, which its bar in the row already says.
+        is_open = row.open or (exp is None and not row.held and not row.loading)
         origin = origins.get((row.loaded_name, row.path)) if exp is not None else None
         if origin is None:
             origin = next((o for (n, p), o in origins.items() if p == row.path), None)
@@ -351,7 +418,7 @@ class SourcesView(View):
         name_input = (f'<input class="inp mono" value="{h.e(row.name)}" style="width:160px;height:24px;background:var(--surface-2)"'
                       f'{self.c("rename", row=row.id)}{h.on_enter(self.name, "rename", row=row.id)} aria-label="Experiment name">')
         if row.loading:
-            ids_html = f'<span class="small" style="color:var(--acc-ink)">{h.e(row.status[0])}</span>'
+            ids_html = f'<div class="progress-cell">{h.progress(row.status[0], _fraction(row.progress))}</div>'
         elif exp is not None and row.overlap is not None:
             ov = row.overlap
             n_ds = len(state.dataset.df) if state.dataset is not None else 0
@@ -415,7 +482,7 @@ class SourcesView(View):
         text, kind = row.status
         color = {"error": "var(--err)", "warning": "var(--warn)", "success": "var(--ok)", "busy": "var(--acc-ink)"}.get(kind, "var(--faint)")
         status = f'<div class="small" style="color:{color};margin:4px 0">{h.e(text)}</div>'
-        prog = h.progress(text, row.progress) if row.loading else ""
+        prog = ""
         files = (f'<div class="subhead">Files</div>'
                  + path_line("Results CSV", row.path, "path", "browse_row")
                  + status + prog
@@ -535,7 +602,7 @@ class SourcesView(View):
         for r in self.inf_rows:
             text, kind = r.status
             color = {"error": "var(--err)", "warning": "var(--warn)", "success": "var(--ok)", "busy": "var(--acc-ink)"}.get(kind, "var(--faint)")
-            prog = h.progress(text, r.progress) if r.loading else ""
+            prog = h.progress(text, _fraction(r.progress)) if r.loading else ""
             rows.append(
                 f'<div data-key="inf-{r.id}" style="padding:8px 0;border-top:1px solid var(--line-2)">'
                 f'<div class="row">'
@@ -562,14 +629,14 @@ class SourcesView(View):
 
     def on_set_path(self, value: str = "", **_):
         self.dataset_path = (value or "").strip()
-        self._sniff()
+        self._sniff(apply_config=True)
 
     def on_browse_dataset(self, **_):
         self._browse(self._picked_dataset, self.dataset_path, {".csv"}, title="Select dataset CSV")
 
     def _picked_dataset(self, path: str) -> None:
         self.dataset_path = path
-        self._sniff()
+        self._sniff(apply_config=True)
         self.refresh()
 
     def on_pick_dataset(self, **_):
@@ -628,14 +695,20 @@ class SourcesView(View):
         --dataset runs at startup (then_experiments: --experiment pairs)."""
         state = self.state
         self.ds_loading = True
-        self.ds_status = ("Loading...", "busy")
-        self.ds_progress = 0.0
+        self.ds_status = ("Reading the file...", "busy")
+        self.ds_progress = None
         self.s.busy.begin("Loading dataset")
         loaded = False
 
         def progress_cb(done: int, total: int):
             self.ds_progress = done / total if total else 0
-            self.ds_status = (f"Loading... {done:,} / {total:,} rows", "busy")
+            if total and done >= total:
+                # Read; what is left (labels, types, the column kinds) has
+                # no count to show.
+                self.ds_progress = None
+                self.ds_status = (f"Preparing {total:,} rows...", "busy")
+            else:
+                self.ds_status = (f"Loading... {done:,} / {total:,} rows", "busy")
             self.s.busy.detail_text(f"{done:,} / {total:,} rows")
             self._push()
 
@@ -665,6 +738,7 @@ class SourcesView(View):
                 elif row.loaded_name:
                     row.overlap = state.uuid_overlap(row.loaded_name)
             self.relabel_picked = []
+            self.label_names = {}
             self.s.notify_change()
         except Exception as ex:  # noqa: BLE001
             print(f"[lookin] error loading dataset from {self.dataset_path.strip()!r}:")
@@ -691,6 +765,7 @@ class SourcesView(View):
         self.ds_status = ("Not loaded", "neutral")
         self.rows = []
         self.inf_rows = []
+        self.label_names = {}
         self.s.notify_change()
 
     def on_toggle_relabel(self, **_):
@@ -707,15 +782,21 @@ class SourcesView(View):
         self.refresh()
 
     def on_apply_relabel(self, **values):
-        shown = getattr(self, "_relabel_shown", [])
+        if self.state.dataset is None:
+            return
+        names = self._label_names()
+        shown = [l for l in getattr(self, "_relabel_shown", []) if l in names]
         mapping = {}
         for i, orig in enumerate(shown):
-            new = str(values.get(f"r{i}", orig) or "").strip()
-            if new and new != orig:
-                mapping[orig] = new
+            current = names[orig]
+            new = str(values.get(f"r{i}", current) or "").strip()
+            # Two classes merged earlier share a name; the first field
+            # changed says what that name becomes.
+            if new and new != current and current not in mapping:
+                mapping[current] = new
         if mapping:
             self.state.apply_label_remap(mapping)
-            self.relabel_picked = []
+            self.label_names = {orig: mapping.get(cur, cur) for orig, cur in names.items()}
             self.s.notify_change()
             self.s.toast(f"Relabelled {len(mapping)} class(es).", "ok")
         self.refresh()
@@ -847,13 +928,18 @@ class SourcesView(View):
             r.status = ("Enter a CSV path", "warning")
             return False
         r.loading = True
-        r.progress = 0.0
-        r.status = ("Loading...", "busy")
+        r.progress = None
+        r.status = ("Reading the file...", "busy")
+        self._push(force=True)
         self.s.busy.begin(f"Loading experiment '{name}'")
 
         def progress_cb(done: int, total: int):
             r.progress = done / total if total else 0
-            r.status = (f"Loading... {done:,} / {total:,} rows", "busy")
+            if total and done >= total:
+                r.progress = None
+                r.status = (f"Matching {total:,} rows...", "busy")
+            else:
+                r.status = (f"Loading... {done:,} / {total:,} rows", "busy")
             self.s.busy.detail_text(f"{done:,} / {total:,} rows")
             self._push()
 
@@ -969,13 +1055,15 @@ class SourcesView(View):
             r.mapping_picked.append(column)
         self.refresh()
 
-    def add_experiment_from_path(self, path: str, suggested_name: str) -> tuple:
-        """Add a row for an already-available CSV and load it now, on the
-        calling thread. Used by MLflow loads, --experiment and restores."""
+    def add_experiment_from_path(self, path: str, suggested_name: str, row: Optional[ExpRow] = None) -> tuple:
+        """Add a row for an already-available CSV (or use `row`, one already
+        listed) and load it now, on the calling thread. Used by MLflow
+        loads, --experiment and restores."""
         if self.state.dataset is None:
             return False, "Load the dataset first (Sources tab)."
-        row = ExpRow(suggested_name, path)
-        self.rows.append(row)
+        if row is None:
+            row = ExpRow(suggested_name, path)
+            self.rows.append(row)
         ok = self._load_row_sync(row)
         return ok, ("Loaded successfully." if ok else "Failed to load -- check the Sources tab for details.")
 
@@ -1159,8 +1247,8 @@ class SourcesView(View):
         self.uuid_value = mount.uuid_col
         self.crop_value = mount.crop_col
         self.label_value = mount.label_col
-        self._sniff()
         self.image_root = mount.image_root
+        self._sniff()
         self.row_filter_enabled = bool(mount.row_filter_col)
         if mount.row_filter_col:
             self.row_filter_col = mount.row_filter_col
@@ -1175,6 +1263,10 @@ class SourcesView(View):
             if r.loaded_name:
                 self.state.remove_experiment(r.loaded_name)
         self.rows = []
+        self.held = []
+        # Every experiment listed from the start, each loading in its own
+        # row in turn -- not rows appearing one by one as each is done.
+        self._hold(mount.experiments, "Waiting for the dataset...")
         self._push(force=True)
         self.s.busy.begin(f"Restoring {mount.label()}")
         try:
@@ -1196,13 +1288,16 @@ class SourcesView(View):
             self.ds_status = ("This workspace has no dataset yet -- pick its CSV above and click Load dataset", "neutral")
             self.s.notify_change()
         if self.state.dataset is None:
-            self._hold(mount.experiments)
+            for r in self.rows:
+                if r.held:
+                    r.status = ("Loads once the dataset is loaded", "neutral")
             self._push(force=True)
             return
         store = getattr(self.state, "review", None)
         if store is not None and mount.review_version and mount.review_version in store.versions:
             store.active_version_id = mount.review_version
-        self._load_mount_experiments(mount.experiments)
+        held, self.held = self.held, []
+        self._load_mount_experiments(held)
         self.s.notify_change()
 
     def add_mount_experiments(self, experiments) -> None:
@@ -1221,29 +1316,36 @@ class SourcesView(View):
     def is_loading(self) -> bool:
         return bool(self.ds_loading or any(getattr(r, "loading", False) for r in self.rows))
 
-    def _hold(self, experiments) -> None:
+    def _hold(self, experiments, status: str = "Loads once the dataset is loaded") -> None:
         self.held = [e for e in experiments if e.path]
         for e in self.held:
             r = ExpRow(e.name, e.path)
             r.held = True
             r.embed_path = e.embeddings_path
             r.proto_path = e.prototypes_path
-            r.status = ("Loads once the dataset is loaded", "neutral")
+            r.status = (status, "neutral")
             self.rows.append(r)
 
     def _load_held(self) -> None:
         held, self.held = self.held, []
         if not held:
             return
-        self.rows = [r for r in self.rows if not r.held]
         self._load_mount_experiments(held)
         self.s.notify_change()
+
+    def _take_held_row(self, name: str, path: str) -> Optional[ExpRow]:
+        """The row waiting for this experiment, if one is: it is loaded in
+        place, where the user already sees it."""
+        row = next((r for r in self.rows if r.held and r.name == name and r.path == path), None)
+        if row is not None:
+            row.held = False
+        return row
 
     def _load_mount_experiments(self, experiments) -> None:
         for e in experiments:
             if not e.path:
                 continue
-            ok, message = self.add_experiment_from_path(e.path, e.name)
+            ok, message = self.add_experiment_from_path(e.path, e.name, row=self._take_held_row(e.name, e.path))
             if not ok:
                 print(f"[lookin] library: could not restore experiment {e.name!r} from {e.path}: {message}", flush=True)
                 continue

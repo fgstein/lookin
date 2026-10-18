@@ -271,7 +271,6 @@ def test_hostile_names_are_escaped_on_every_tab(hostile):
     metrics = session.view("metrics")
     with RequestScope(session):
         metrics.on_cell(experiment=HOSTILE_EXPERIMENT, true=HOSTILE_LABELS["cat"], pred=HOSTILE_LABELS["dog"])
-        session.view("gallery").on_open(i=0)
         from lookin.web.views.files import FileBrowserDialog
         session.open_dialog(FileBrowserDialog(lambda p: None, start_path=str(hostile)))
         session.open_dialog(__import__("lookin.web.views.workspaces", fromlist=["x"]).WorkspacesDialog(session))

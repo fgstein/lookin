@@ -22,8 +22,6 @@
 .flt-qs.err { color: var(--err); }
 .flt-qs.ok { color: var(--ink-2); }
 .flt-qs .ic { flex: none; margin-top: 1px; }
-.flt-ex { gap: 4px; margin-top: 8px; }
-.flt-ex .chip { font-size: 11px; }
 .flt-cols { margin-top: 6px; line-height: 1.6; }
 .flt-tbl { max-height: 420px; overflow: auto; }
 .flt-tbl td { white-space: nowrap; }

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 from lookin.core import fileio
+from lookin.core.dataset_config import config_for_csv
 from lookin.core import workspace_sources as wss
 from lookin.core.prefs import config_dir
 
@@ -189,6 +190,14 @@ def read_facts(path: str) -> Facts:
         facts.columns = list(guess.columns)
         facts.uuid_col, facts.crop_col, facts.label_col = guess.uuid_col or "", guess.crop_col or "", guess.label_col or ""
         facts.note = guess.explain()
+        # What the lookin.toml next to it says wins over the guess, as in
+        # the Sources tab (see core/dataset_config.py).
+        config = config_for_csv(path)
+        if config is not None and not config.error:
+            for attr, value in (("uuid_col", config.id), ("crop_col", config.image), ("label_col", config.label)):
+                if value is not None and (not value or value in facts.columns):
+                    setattr(facts, attr, value)
+            facts.note = f"Columns from {config.source}."
         facts.rows = _count_data_rows(path)
         if facts.label_col:
             import pandas as pd
