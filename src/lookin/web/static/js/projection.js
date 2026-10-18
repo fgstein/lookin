@@ -7,8 +7,13 @@
  * original file, through the session's display setting, fetched from
  * /pimg only for the points the pointer lands on), a click opens it in the
  * carousel, a lasso selects a group and opens it there, the wheel / the
- * box / the buttons zoom, a drag pans. The legend hides groups and brings
- * them to the front in place. One transform (toScreen) both places the dots
+ * box / the buttons zoom, a drag pans -- past the edge of the cloud too, so
+ * a point on the rim can be brought to the middle. The legend hides groups
+ * and brings them to the front in place.
+ *
+ * Gallery mode: a lasso shrinks the map into the top-left corner (lasso
+ * still drawn on it, still live) and fills the rest of the square with the
+ * crops of a random sample of the selected points -- as many as fit. One transform (toScreen) both places the dots
  * and answers "which point is under the cursor", so the two cannot drift.
  *
  * Talks to the server only through window.lookinAct.
@@ -18,9 +23,10 @@
 
   const POINT_DIAMETER = 5.0;
   const PICK_RADIUS = 11.0;
-  const HOVER_THUMB = 120;
+  const HOVER_THUMB = 240;
   const HOVER_OFFSET = 16;
   const LASSO_COLOR = "#1f6feb";
+  const LASSO_FILL = "rgba(31, 111, 235, 0.10)";
   const ZOOM_BOX_COLOR = "#a04ec9";
   const MARKER_COLOR = "#111111";
   const LASSO_MIN_STEP = 4.0;
@@ -28,6 +34,12 @@
   const ZOOM_BOX_MIN_SIDE = 12.0;
   const ZOOM_STEP = 1.25;
   const ZOOM_MAX = 100.0;
+  const ZOOM_MIN = 0.5;                 // relative to the fitted view
+  // how far a drag may push the cloud off the canvas: its bounding box
+  // keeps at least this fraction of the view's half-width on screen
+  const PAN_KEEP = 0.1;
+  const GALLERY_CELL = 104;             // target crop tile side, px
+  const GALLERY_MAP_FRAC = 0.4;         // map side / box side in gallery mode
   const PROTOTYPE_RADIUS = 9.0;
   const SUBCENTER_SHAPES = ["star", "plus", "cross", "diamond", "triangle_up", "triangle_down", "square", "pentagon"];
   const PLOT_PADDING_MIN = 22;
@@ -99,8 +111,11 @@
       this.mode = "pan";
       this.current = null;
       this.sprites = {};
+      this.gallery = false;             // the toggle
+      this.galleryOn = false;           // the layout actually shown
       this.buildDom();
-      this.size = this.measure();
+      this.full = this.measure();       // side of the square box
+      this.size = this.full;            // side of the map canvas inside it
       this.fit();
       this.wire();
       this.redraw();
@@ -119,13 +134,17 @@
       this.card = document.createElement("div");
       this.card.className = "pmap-card";
       this.card.innerHTML = '<img alt=""><b></b><span></span>';
+      this.gal = document.createElement("div");
+      this.gal.className = "pmap-gal";
       this.box.innerHTML = "";
-      this.box.append(this.canvas, this.overlay, this.card);
+      this.box.append(this.gal, this.canvas, this.overlay, this.card);
       this.zoomText = r.querySelector(".pm-zoomtext");
       this.selText = r.querySelector(".pm-seltext");
       this.btnReset = r.querySelector("[data-pm=reset]");
       this.btnShow = r.querySelector("[data-pm=show]");
       this.btnClear = r.querySelector("[data-pm=clear]");
+      this.btnGallery = r.querySelector("[data-pm=gallery]");
+      this.btnShuffle = r.querySelector("[data-pm=shuffle]");
     }
 
     measure() {
@@ -144,8 +163,8 @@
         c.style.height = this.size + "px";
         c.getContext("2d").setTransform(dpr, 0, 0, dpr, 0, 0);
       }
-      this.box.style.width = this.size + "px";
-      this.box.style.height = this.size + "px";
+      this.box.style.width = this.full + "px";
+      this.box.style.height = this.full + "px";
       this.sprites = {};
     }
 
@@ -188,15 +207,17 @@
     }
 
     clampCentre() {
+      // the centre may wander until only a sliver of the cloud's box is
+      // left on screen -- enough room to centre any point of the rim
       const halfSpan = (this.size / 2) / this.scale;
       const fitHalf = (this.size / 2 - plotPadding(this.size)) / this.fitScale;
-      const limit = Math.max(0, fitHalf - halfSpan);
+      const limit = fitHalf + halfSpan * (1 - PAN_KEEP);
       this.cx = Math.min(this.base[0] + limit, Math.max(this.base[0] - limit, this.cx));
       this.cy = Math.min(this.base[1] + limit, Math.max(this.base[1] - limit, this.cy));
     }
 
     applyZoom(newScale, anchor) {
-      newScale = Math.max(this.fitScale, Math.min(ZOOM_MAX * this.fitScale, newScale));
+      newScale = Math.max(ZOOM_MIN * this.fitScale, Math.min(ZOOM_MAX * this.fitScale, newScale));
       if (newScale === this.scale) return;
       const half = this.size / 2;
       const [ax, ay] = anchor || [half, half];
@@ -209,15 +230,71 @@
     }
 
     resize() {
-      const size = this.measure();
-      if (Math.abs(size - this.size) < 2) return;
+      const full = this.measure();
+      if (Math.abs(full - this.full) < 2) return;
+      this.full = full;
+      this.layout();
+    }
+
+    // Size the map canvas for the current layout (the whole box, or its
+    // corner in gallery mode) keeping the same view, then lay out the tiles.
+    layout() {
+      this.galleryOn = this.gallery && this.selected.length > 0;
+      let size = this.full;
+      if (this.galleryOn) {
+        const cols = Math.max(4, Math.round(this.full / GALLERY_CELL));
+        this.cell = this.full / cols;
+        this.cols = cols;
+        this.mapCells = Math.max(2, Math.round(cols * GALLERY_MAP_FRAC));
+        size = Math.floor(this.mapCells * this.cell);
+      }
       const ratio = this.scale / this.fitScale;
       this.size = size;
       this.setupCanvas();
       this.fitScale = (size - 2 * plotPadding(size)) / this.span;
       this.scale = this.fitScale * ratio;
       this.clampCentre();
+      this.box.classList.toggle("pm-gallery", this.galleryOn);
+      this.fillGallery();
       this.requestRedraw();
+    }
+
+    // ---- gallery ----
+    fillGallery() {
+      this.gal.innerHTML = "";
+      if (!this.galleryOn) return;
+      const cols = this.cols, m = this.mapCells, cell = this.cell;
+      const slots = [];
+      for (let r = 0; r < cols; r++) for (let c = 0; c < cols; c++) if (r >= m || c >= m) slots.push([r, c]);
+      const pool = this.selected.slice();
+      const take = Math.min(slots.length, pool.length);
+      for (let k = 0; k < take; k++) {      // partial Fisher-Yates
+        const j = k + Math.floor(Math.random() * (pool.length - k));
+        const t = pool[k]; pool[k] = pool[j]; pool[j] = t;
+      }
+      const frag = document.createDocumentFragment();
+      for (let k = 0; k < take; k++) {
+        const i = pool[k], [r, c] = slots[k];
+        const img = document.createElement("img");
+        img.alt = "";
+        img.loading = "lazy";
+        img.src = this.imgBase + i;
+        img.title = this.d.hl[this.d.hi[i]] || "";
+        img.dataset.i = i;
+        img.style.left = (c * cell) + "px";
+        img.style.top = (r * cell) + "px";
+        img.style.width = img.style.height = cell + "px";
+        frag.appendChild(img);
+      }
+      this.gal.appendChild(frag);
+      if (this.galText) this.galText.textContent = take < this.selected.length
+        ? take.toLocaleString("en-US") + " drawn at random of " + this.selected.length.toLocaleString("en-US") : "";
+    }
+
+    setGallery(on) {
+      this.gallery = on;
+      this.hideHover();
+      this.layout();
     }
 
     // ---- what is shown ----
@@ -326,10 +403,16 @@
       if (this.lasso.length) poly = this.lasso;
       else if (this.lassoData) poly = this.lassoData.map(([x, y]) => this.toScreen(x, y));
       if (poly && poly.length > 1) {
-        g.strokeStyle = LASSO_COLOR; g.lineWidth = 1.8;
         g.beginPath(); g.moveTo(poly[0][0], poly[0][1]);
         for (let q = 1; q < poly.length; q++) g.lineTo(poly[q][0], poly[q][1]);
-        if (!this.lasso.length) g.closePath();
+        if (!this.lasso.length) {
+          g.closePath();
+          g.fillStyle = LASSO_FILL; g.fill();
+        }
+        // on the corner map the selection halos crowd the outline: draw it
+        // white under blue so it still reads
+        if (this.galleryOn) { g.strokeStyle = "#ffffff"; g.lineWidth = 5; g.stroke(); }
+        g.strokeStyle = LASSO_COLOR; g.lineWidth = this.galleryOn ? 2.5 : 1.8;
         g.stroke();
       }
       if (this.zoomBox) {
@@ -349,11 +432,14 @@
     syncToolbar() {
       const z = this.scale / this.fitScale;
       if (this.zoomText) this.zoomText.textContent = "×" + z.toFixed(1);
-      if (this.btnReset) this.btnReset.hidden = !(this.scale > this.fitScale * 1.001);
+      if (this.btnReset) this.btnReset.hidden = Math.abs(this.scale / this.fitScale - 1) < 0.001
+        && Math.abs(this.cx - this.base[0]) * this.scale < 1 && Math.abs(this.cy - this.base[1]) * this.scale < 1;
       const has = this.lassoData !== null;
       if (this.selText) this.selText.textContent = has ? this.selected.length.toLocaleString("en-US") + " points selected" : "";
       if (this.btnShow) this.btnShow.hidden = !this.selected.length;
       if (this.btnClear) this.btnClear.hidden = !has;
+      if (this.btnGallery) this.btnGallery.classList.toggle("on", this.gallery);
+      if (this.btnShuffle) this.btnShuffle.hidden = !this.galleryOn;
       this.root.querySelectorAll("[data-pm-mode]").forEach((b) => b.classList.toggle("on", b.getAttribute("data-pm-mode") === this.mode));
     }
 
@@ -407,11 +493,13 @@
         label.textContent = "subcenter " + p.k[q];
         x0 = this.psx[q]; y0 = this.psy[q]; w = 170; h = 46;
       }
+      // the card may spill out of the corner map onto the tiles
+      const room = this.full;
       let x = x0 + HOVER_OFFSET, y = y0 + HOVER_OFFSET;
-      if (x + w > this.size) x = x0 - HOVER_OFFSET - w;
-      if (y + h > this.size) y = y0 - HOVER_OFFSET - h;
-      card.style.left = Math.max(2, Math.min(this.size - w - 2, x)) + "px";
-      card.style.top = Math.max(2, Math.min(this.size - h - 2, y)) + "px";
+      if (x + w > room) x = x0 - HOVER_OFFSET - w;
+      if (y + h > room) y = y0 - HOVER_OFFSET - h;
+      card.style.left = Math.max(2, Math.min(room - w - 2, x)) + "px";
+      card.style.top = Math.max(2, Math.min(room - h - 2, y)) + "px";
       card.style.display = "flex";
       this.drawOverlay();
     }
@@ -480,7 +568,21 @@
       on("[data-pm=out]", () => this.applyZoom(this.scale / ZOOM_STEP));
       on("[data-pm=reset]", () => { this.fit(); this.requestRedraw(); });
       on("[data-pm=show]", () => this.emitSelection());
-      on("[data-pm=clear]", () => { this.selected = []; this.lassoData = null; this.requestRedraw(); });
+      on("[data-pm=clear]", () => { this.selected = []; this.lassoData = null; this.layout(); });
+      on("[data-pm=gallery]", () => this.setGallery(!this.gallery));
+      on("[data-pm=shuffle]", () => this.fillGallery());
+      this.galText = this.root.querySelector(".pm-galtext");
+      // a tile: hovering rings its point on the map, a click opens it
+      this.gal.addEventListener("pointerover", (ev) => {
+        const t = ev.target.closest("img[data-i]");
+        this.current = t ? ["p", +t.dataset.i] : null;
+        this.drawOverlay();
+      });
+      this.gal.addEventListener("pointerleave", () => { this.current = null; this.drawOverlay(); });
+      this.gal.addEventListener("click", (ev) => {
+        const t = ev.target.closest("img[data-i]");
+        if (t) window.lookinAct(this.target, "point", { i: +t.dataset.i });
+      });
       on("[data-pm=full]", () => {
         const view = this.root.closest(".emb");
         if (view) view.classList.toggle("emb-full");
@@ -511,7 +613,7 @@
       const [dx0, dy0] = this.toData(x0, y0), [dx1, dy1] = this.toData(x1, y1);
       const span = Math.max(Math.abs(dx1 - dx0), Math.abs(dy1 - dy0)) || 1e-9;
       this.cx = (dx0 + dx1) / 2; this.cy = (dy0 + dy1) / 2;
-      this.scale = Math.max(this.fitScale, Math.min(ZOOM_MAX * this.fitScale, (this.size - 2 * plotPadding(this.size)) / span));
+      this.scale = Math.max(ZOOM_MIN * this.fitScale, Math.min(ZOOM_MAX * this.fitScale, (this.size - 2 * plotPadding(this.size)) / span));
       this.clampCentre();
       this.requestRedraw();
     }
@@ -521,6 +623,7 @@
       if (v.length < LASSO_MIN_VERTICES) { this.drawOverlay(); return; }
       this.lassoData = v.map(([x, y]) => this.toData(x, y));
       this.reselect();
+      if (this.gallery) { this.layout(); return; }
       this.requestRedraw();
       if (this.selected.length) this.emitSelection();
     }
@@ -573,7 +676,7 @@
     afterShownChange() {
       this.reselect();
       this.hideHover();
-      this.requestRedraw();
+      if (this.gallery) this.layout(); else this.requestRedraw();
     }
   }
 

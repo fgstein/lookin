@@ -260,6 +260,21 @@ def test_reorder_tolerates_a_stale_name_list(loaded_state, results_csv):
     assert list(loaded_state.experiments) == ["c", "exp", "b"], "unlisted ones keep their order at the end"
 
 
+def test_colors_follow_the_experiment_not_its_position(loaded_state, results_csv):
+    from lookin.ui.components import color_for_experiment
+    loaded_state.add_experiment(str(results_csv), "b")
+    loaded_state.add_experiment(str(results_csv), "c")
+    before = {n: color_for_experiment(n, loaded_state.color_slots) for n in loaded_state.experiments}
+    loaded_state.reorder_experiments(["c", "b", "exp"])
+    loaded_state.rename_experiment("b", "b2")
+    after = {n: color_for_experiment(n, loaded_state.color_slots) for n in loaded_state.experiments}
+    assert after == {"exp": before["exp"], "b2": before["b"], "c": before["c"]}
+    # an unloaded experiment frees its color for the next one
+    loaded_state.remove_experiment("b2")
+    loaded_state.add_experiment(str(results_csv), "d")
+    assert color_for_experiment("d", loaded_state.color_slots) == before["b"]
+
+
 def test_uuid_overlap_counts_both_sides_and_duplicates(tmp_path, dataset_csv):
     pd.DataFrame({
         "uuid": ["a", "a", "b", "zz"],

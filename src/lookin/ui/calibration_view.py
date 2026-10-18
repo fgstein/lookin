@@ -209,7 +209,7 @@ class CalibrationView:
             cb = ft.Checkbox(label=name, value=existing.get(name, True), on_change=self._on_selection_change)
             self.experiment_checks[name] = cb
             controls.append(ft.Row([
-                ft.Container(width=10, height=10, bgcolor=color_for_experiment(name, names), border_radius=5),
+                ft.Container(width=10, height=10, bgcolor=color_for_experiment(name, self.ctx.state.color_slots), border_radius=5),
                 cb,
             ], spacing=6, tight=True))
         self.selection_row.controls = controls
@@ -350,7 +350,7 @@ class CalibrationView:
             excess = bundle.curve.aurc - bundle.curve.optimal_aurc
             name_cell = ft.Row([
                 ft.Container(width=10, height=10, border_radius=5,
-                             bgcolor=color_for_experiment(name, all_names)),
+                             bgcolor=color_for_experiment(name, self.ctx.state.color_slots)),
                 ft.Text(name, size=12),
             ], spacing=8)
             rows.append(ft.DataRow(cells=[
@@ -379,7 +379,7 @@ class CalibrationView:
     def _render_reliability(self, bundles: dict) -> None:
         all_names = list(self.ctx.state.experiments)
         self.reliability_area.controls = [
-            self._reliability_card(name, bundle.reliability, color_for_experiment(name, all_names))
+            self._reliability_card(name, bundle.reliability, color_for_experiment(name, self.ctx.state.color_slots))
             for name, bundle in bundles.items()
         ]
 
@@ -435,7 +435,7 @@ class CalibrationView:
     def _render_histograms(self, bundles: dict) -> None:
         all_names = list(self.ctx.state.experiments)
         self.histogram_area.controls = [
-            self._histogram_card(name, bundle, color_for_experiment(name, all_names))
+            self._histogram_card(name, bundle, color_for_experiment(name, self.ctx.state.color_slots))
             for name, bundle in bundles.items()
         ]
 
@@ -472,7 +472,7 @@ class CalibrationView:
             curve = bundle.curve
             if not len(curve.coverage):
                 continue
-            ax.plot(curve.coverage, curve.risk, color=color_for_experiment(name, all_names),
+            ax.plot(curve.coverage, curve.risk, color=color_for_experiment(name, self.ctx.state.color_slots),
                     label=f"{name} (AURC={curve.aurc:.4f})")
         ax.set_xlabel("Coverage -- share of crops the model is allowed to decide")
         ax.set_ylabel("Selective risk -- error rate among those")

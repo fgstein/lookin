@@ -1018,7 +1018,13 @@ class EmbeddingsView(View):
             f'<button type="button" class="btn btn-sm btn-ghost btn-icon" data-pm="reset" title="Reset view" hidden>{h.icon("refresh", 13)}</button>'
             f'<b class="pm-seltext small"></b>'
             f'<button type="button" class="btn btn-sm btn-ghost" data-pm="show" hidden>{h.icon("image", 13)}<span>Show selection</span></button>'
-            f'<button type="button" class="btn btn-sm btn-ghost" data-pm="clear" hidden>{h.icon("x", 13)}<span>Clear</span></button></span>')
+            f'<button type="button" class="btn btn-sm btn-ghost" data-pm="clear" hidden>{h.icon("x", 13)}<span>Clear</span></button>'
+            f'<button type="button" class="btn btn-sm btn-ghost pm-toggle" data-pm="gallery" '
+            f'title="Gallery: a lasso shrinks the map into a corner and fills the rest with crops drawn at random from the selection">'
+            f'{h.icon("grid", 13)}<span>Gallery</span></button>'
+            f'<button type="button" class="btn btn-sm btn-ghost" data-pm="shuffle" title="Draw another random sample" hidden>'
+            f'{h.icon("refresh", 13)}<span>Reshuffle</span></button>'
+            f'<span class="pm-galtext muted small"></span></span>')
         map_html = (f'<div class="pmap" data-map="{dkey}" data-src="{h.e(src)}" data-pimg="{h.e(pimg)}" data-target="{self.name}" '
                     f'data-static="{dkey}" title="">'
                     f'<div class="pm-bar">{toolbar}</div>'

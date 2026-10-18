@@ -445,26 +445,25 @@ def diverging_color(improvement: float, max_abs: float) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
-def color_for_experiment(name: str, all_names: list) -> str:
-    """One color per experiment, assigned by its position in `all_names`.
+def color_for_experiment(name: str, slots) -> str:
+    """One color per experiment, from its palette slot.
 
-    `all_names` is the user's own experiment order (AppState.experiments is
-    ordered, and the Metrics tab lets that order be dragged around), so the
-    palette runs top-to-bottom through the list the user arranged: the
-    first experiment is always the first color, and a legend read in order
-    walks the palette in order. This used to key off `sorted(all_names)`
-    instead, which meant the colors were pinned to alphabetical order no
-    matter how the charts were arranged -- and shuffled anyway the moment a
-    newly loaded experiment sorted into the middle of the list.
+    `slots` is AppState.color_slots (name -> slot): a slot is given when the
+    experiment is loaded and kept while it stays loaded, so reordering the
+    experiments (the Metrics tab lets that order be dragged around) leaves
+    every color where it was. A plain list of names is still accepted and
+    reads the slot from the position, for callers with no AppState.
     """
-    if name not in all_names:
-        all_names = list(all_names) + [name]
+    if isinstance(slots, dict):
+        idx = slots.get(name, len(slots))
+    else:
+        names = list(slots)
+        idx = names.index(name) if name in names else len(names)
     # QUALITATIVE opens with exactly the ten tab10 colors this used to be
     # limited to, then keeps going -- so the first ten experiments look
     # unchanged, and an eleventh no longer silently reuses the first one's
     # color in every legend and confusion-matrix header.
-    idx = list(all_names).index(name) % len(QUALITATIVE)
-    r, g, b = QUALITATIVE[idx]
+    r, g, b = QUALITATIVE[idx % len(QUALITATIVE)]
     return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
 
 

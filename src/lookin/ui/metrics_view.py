@@ -17,8 +17,8 @@ ctx.notify_change), not on pure UI interactions (_on_change).
 Many experiments is the case this tab is arranged around. The picker at the
 top is a drag-to-reorder list rather than a wrapped row of checkboxes, and
 the order set there is the order everything reads: summary rows, bar groups,
-curve legend entries, confusion matrices, slice tables, and the
-per-experiment color (see components.color_for_experiment). The order lives
+curve legend entries, confusion matrices, slice tables -- but not the
+colors, which stay with each experiment (AppState.color_slots). The order lives
 on AppState.experiments, not here, so it is the same order in every view.
 
 Renaming an experiment (Data tab) arrives through ctx.notify_rename rather
@@ -264,7 +264,7 @@ class MetricsView:
         a keyboard, or on a trackpad that makes press-and-drag awkward, and
         they do the exact same thing.
         """
-        color = color_for_experiment(name, all_names)
+        color = color_for_experiment(name, self.ctx.state.color_slots)
         handle = ft.ReorderableDraggable(
             index=position,
             content=ft.Container(
@@ -329,8 +329,7 @@ class MetricsView:
 
     def _apply_order(self, names: list):
         """Commit a new order and redraw. Nothing is recomputed: reordering
-        only changes which cached result is read first (and, through
-        color_for_experiment, which color it gets)."""
+        only changes which cached result is read first; colors stay put."""
         self.ctx.state.reorder_experiments(names)
         self._rebuild_experiment_checks()
         self._render()
@@ -506,7 +505,7 @@ class MetricsView:
         columns = [ft.DataColumn(ft.Text(c, weight=ft.FontWeight.BOLD)) for c in headers]
         rows = []
         for name, m in metrics_by_name.items():
-            color = color_for_experiment(name, all_names)
+            color = color_for_experiment(name, self.ctx.state.color_slots)
             name_cell = ft.Row([ft.Container(width=10, height=10, bgcolor=color, border_radius=5), ft.Text(name)], spacing=8)
             values = [
                 m.accuracy, m.balanced_accuracy, m.macro_f1, m.weighted_f1,
@@ -568,7 +567,7 @@ class MetricsView:
             per_class = per_class_by_name[name]
             values = [per_class[metric_key].get(l, np.nan) for l in labels_union]
             offset = (i - (n_exp - 1) / 2) * width
-            ax.bar(x + offset, values, width, label=name, color=color_for_experiment(name, all_names))
+            ax.bar(x + offset, values, width, label=name, color=color_for_experiment(name, self.ctx.state.color_slots))
         ax.set_xticks(x)
         tick_labels, uneven_support = _class_tick_labels(labels_union, per_class_by_name)
         ax.set_xticklabels(tick_labels, rotation=45, ha="right")
@@ -654,7 +653,7 @@ class MetricsView:
             1, 2, figsize=(11, 4.4 + legend_height_inches(n_curves, legend_cols)))
         ax1.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1)
         for name, curve in drawable.items():
-            color = color_for_experiment(name, all_names)
+            color = color_for_experiment(name, self.ctx.state.color_slots)
             ax1.plot(curve.fpr, curve.tpr, color=color, label=f"{name} (AUC={curve.roc_auc:.3f})")
             ax2.plot(curve.recall, curve.precision, color=color, label=f"{name} (AP={curve.average_precision:.3f})")
         ax1.set_xlabel("False positive rate")
@@ -789,7 +788,7 @@ class MetricsView:
                 ))
             body_rows.append(ft.Row(row_controls, spacing=2))
 
-        color = color_for_experiment(name, all_names)
+        color = color_for_experiment(name, self.ctx.state.color_slots)
         pairs = cf.top_confused_pairs(cm)
         pairs_table = confused_pairs_table(
             pairs.head(PAIRS_SHOWN), len(pairs),

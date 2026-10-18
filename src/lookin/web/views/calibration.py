@@ -303,10 +303,10 @@ class CalibrationView(RebuildView):
                 bundles[name] = self._bundle(name)
             all_names = list(state.experiments)
             self.set_progress("Drawing reliability diagrams...")
-            reliability = {name: self._reliability_chart(name, b.reliability, color_for_experiment(name, all_names))
+            reliability = {name: self._reliability_chart(name, b.reliability, color_for_experiment(name, self.state.color_slots))
                            for name, b in bundles.items()}
             self.set_progress("Drawing confidence distributions...")
-            histograms = {name: self._histogram_chart(name, b, color_for_experiment(name, all_names))
+            histograms = {name: self._histogram_chart(name, b, color_for_experiment(name, self.state.color_slots))
                           for name, b in bundles.items()}
             self.set_progress("Drawing the risk-coverage curve...")
             curve = self._curve_chart(bundles, all_names)
@@ -389,7 +389,7 @@ class CalibrationView(RebuildView):
             curve = bundle.curve
             if not len(curve.coverage):
                 continue
-            ax.plot(curve.coverage, curve.risk, color=color_for_experiment(name, all_names),
+            ax.plot(curve.coverage, curve.risk, color=color_for_experiment(name, self.state.color_slots),
                     label=f"{name} (AURC={curve.aurc:.4f})")
         ax.set_xlabel("Coverage -- share of crops the model is allowed to decide")
         ax.set_ylabel("Selective risk -- error rate among those")
@@ -623,7 +623,7 @@ class CalibrationView(RebuildView):
         state = self.state
         all_names = list(state.experiments)
         ticks = "".join(
-            f'<span class="cal-exp">{h.dot(color_for_experiment(name, all_names), size=10)}'
+            f'<span class="cal-exp">{h.dot(color_for_experiment(name, self.state.color_slots), size=10)}'
             f'{h.checkbox(name, ticked, change=self.c("tick", experiment=name))}</span>'
             for name, ticked in self.checks.items())
         if not ticks:
@@ -686,7 +686,7 @@ class CalibrationView(RebuildView):
             excess = bundle.curve.aurc - bundle.curve.optimal_aurc
             gap_cls = " c-warn" if abs(gap) > 0.05 else ""
             rows.append(
-                f'<tr><td>{h.dot(color_for_experiment(name, all_names), size=10)} {h.e(name)}</td>'
+                f'<tr><td>{h.dot(color_for_experiment(name, self.state.color_slots), size=10)} {h.e(name)}</td>'
                 f'<td class="num">{bundle.n:,}</td>'
                 f'<td class="num">{_fmt(bundle.accuracy)}</td>'
                 f'<td class="num">{_fmt(bundle.mean_confidence)}</td>'

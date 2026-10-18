@@ -2,8 +2,8 @@
 same charts -- the port of lookin.ui.metrics_view.
 
 * the experiment picker is the order every table, legend and chart reads
-  (drag a row by its handle, or use the arrows); the order lives on
-  AppState.experiments, so it is the same in every tab;
+  (the arrows move a row); the order lives on AppState.experiments, so
+  it is the same in every tab -- the colors do not follow it;
 * results are cached per experiment (and per experiment + curve target):
   ticking an experiment, picking another metric or curve class only draws;
 * a data change marks the tab stale, "Update now" recomputes everything;
@@ -120,20 +120,17 @@ class MetricsView(RebuildView):
         names = list(self.state.experiments)
         total = len(names)
         selected = len(self._selected_names())
-        summary = (f"{selected} of {total} experiment(s) shown -- drag, or use the arrows, "
-                   f"to set the order used by every table, legend and chart below.")
+        summary = (f"{selected} of {total} experiment(s) shown -- the arrows set the order used by "
+                   f"every table, legend and chart below.")
         rows = []
         for position, name in enumerate(names):
-            color = color_for_experiment(name, names)
+            color = color_for_experiment(name, self.state.color_slots)
             rows.append(
-                f'<div class="mx-row" data-key="mx-{h.e(name)}" data-drop="metrics:drop" data-drop-kinds="mexp" '
-                f'data-args=\'{{"to": {position}}}\'>'
-                f'<span class="handle" draggable="true" data-drag="{h.e(name)}" data-drag-kind="mexp" '
-                f'data-drag-label="{h.e(name)}" title="Drag to reorder">{h.icon("drag", 14)}</span>'
-                f'{h.dot(color, size=10)}'
-                f'{h.checkbox(name, self.checked.get(name, True), change=self.c("check", name=name), cls="grow")}'
+                f'<div class="mx-row" data-key="mx-{h.e(name)}">'
                 f'{h.button(icon_name="chev-up", act_attr=self.a("move", name=name, delta=-1), small=True, kind="ghost", title="Move up", disabled=position == 0)}'
                 f'{h.button(icon_name="chev-down", act_attr=self.a("move", name=name, delta=1), small=True, kind="ghost", title="Move down", disabled=position == total - 1)}'
+                f'{h.dot(color, size=10)}'
+                f'{h.checkbox(name, self.checked.get(name, True), change=self.c("check", name=name), cls="grow")}'
                 f'</div>')
         head = (f'<div class="row"><span class="muted small grow">{h.e(summary)}</span>'
                 f'{h.button("Select all", act_attr=self.a("select_all"), small=True, kind="ghost", icon_name="check")}'
@@ -159,14 +156,6 @@ class MetricsView(RebuildView):
         if 0 <= new < len(names):
             names.insert(new, names.pop(old))
             self._apply_order(names)
-
-    def on_drop(self, key: str = "", to: int = 0, **_):
-        names = list(self.state.experiments)
-        if key not in names:
-            return
-        names.remove(key)
-        names.insert(max(0, min(int(to), len(names))), key)
-        self._apply_order(names)
 
     def on_select_all(self, **_):
         self.checked = {n: True for n in self.state.experiments}
@@ -290,7 +279,7 @@ class MetricsView(RebuildView):
                       m.log_loss, m.brier_score, m.brier_reliability, m.brier_resolution, m.brier_uncertainty,
                       m.ece, m.mce]
             cells = "".join(f"<td class=num>{f'{v:.3f}' if v == v else '—'}</td>" for v in values)
-            rows.append(f'<tr><td><span class="row-nw">{h.dot(color_for_experiment(name, all_names), size=10)}'
+            rows.append(f'<tr><td><span class="row-nw">{h.dot(color_for_experiment(name, self.state.color_slots), size=10)}'
                         f'{h.e(name)}</span></td><td class=num>{m.n_samples:,}</td>{cells}</tr>')
         table = (f'<div class="tbl-wrap"><table class="tbl compact"><thead><tr>{head}</tr></thead>'
                  f'<tbody>{"".join(rows)}</tbody></table></div>')
@@ -313,7 +302,7 @@ class MetricsView(RebuildView):
             per_class = per_class_by_name[name]
             values = [per_class[metric_key].get(l, np.nan) for l in labels_union]
             offset = (i - (n_exp - 1) / 2) * width
-            ax.bar(x + offset, values, width, label=name, color=color_for_experiment(name, all_names))
+            ax.bar(x + offset, values, width, label=name, color=color_for_experiment(name, self.state.color_slots))
         ax.set_xticks(x)
         tick_labels, uneven_support = _class_tick_labels(labels_union, per_class_by_name)
         ax.set_xticklabels(tick_labels, rotation=45, ha="right")
@@ -365,7 +354,7 @@ class MetricsView(RebuildView):
         fig, (ax1, ax2) = subplots(1, 2, figsize=(11, 4.4 + legend_height_inches(n_curves, legend_cols)))
         ax1.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1)
         for name, curve in drawable.items():
-            color = color_for_experiment(name, all_names)
+            color = color_for_experiment(name, self.state.color_slots)
             ax1.plot(curve.fpr, curve.tpr, color=color, label=f"{name} (AUC={curve.roc_auc:.3f})")
             ax2.plot(curve.recall, curve.precision, color=color, label=f"{name} (AP={curve.average_precision:.3f})")
         ax1.set_xlabel("False positive rate")
@@ -456,7 +445,7 @@ class MetricsView(RebuildView):
                     f' title="true = {h.e(tl)}&#10;predicted = any class not in this grid&#10;n = {count}"'
                     f'{act}{"" if count else " disabled"}><i>{count}</i></button>')
         grid_html = f'<div class="cm-grid" style="grid-template-columns:{cols_css}">{"".join(cells)}</div>'
-        color = color_for_experiment(name, all_names)
+        color = color_for_experiment(name, self.state.color_slots)
         pairs = cf.top_confused_pairs(cm)
         pairs_table = confused_pairs_table(
             pairs.head(PAIRS_SHOWN), len(pairs),

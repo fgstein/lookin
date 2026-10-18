@@ -3,8 +3,6 @@
 .sec-t h2 { font-size: 13px; font-weight: 700; margin: 0; }
 .mx-list { display: flex; flex-direction: column; max-height: calc(7 * 30px); overflow: auto; margin-top: 6px; border-top: 1px solid var(--line-2); }
 .mx-row { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 4px; border-bottom: 1px solid var(--line-3); }
-.mx-row .handle { cursor: grab; color: var(--ghost); display: inline-flex; }
-.mx-row.drop-on { background: var(--acc-soft); }
 .cm-area { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
 .cm-card { max-width: 100%; }
 .cm-scroll { overflow: auto; max-width: 100%; }

@@ -680,6 +680,9 @@ class UuidOverlap:
 class AppState:
     dataset: Optional[Dataset] = None
     experiments: dict = field(default_factory=dict)  # name -> Experiment
+    # name -> palette slot, see color_slots. Kept apart from the order of
+    # `experiments` so that reordering the experiments never recolors them.
+    _color_slots: dict = field(default_factory=dict)
     # name -> InferenceSet: crops with embeddings but no place in the
     # dataset. Kept apart from `dataset`/`experiments` on purpose -- see
     # InferenceSet for why nothing that computes a metric may see them.
@@ -1030,13 +1033,38 @@ class AppState:
             for name, exp in self.experiments.items()
         }
         self.experiments[new_name].name = new_name
+        if old_name in self._color_slots:
+            self._color_slots[new_name] = self._color_slots.pop(old_name)
         if self._merged_cache_name == old_name:
             self._merged_cache_name = new_name
 
+    @property
+    def color_slots(self) -> dict:
+        """name -> palette slot of every loaded experiment.
+
+        A slot is handed out the first time an experiment is seen (the
+        lowest one no loaded experiment holds) and kept until it is
+        unloaded, so the color follows the experiment, not its position:
+        reordering the list, which the Metrics tab lets the user do, must
+        not repaint every chart. A rename carries the slot over.
+        """
+        slots = {n: i for n, i in self._color_slots.items() if n in self.experiments}
+        taken = set(slots.values())
+        free = 0
+        for name in self.experiments:
+            if name not in slots:
+                while free in taken:
+                    free += 1
+                slots[name] = free
+                taken.add(free)
+        self._color_slots = slots
+        return slots
+
     def reorder_experiments(self, names: list) -> None:
         """Set the experiment order to `names`. That order is what every
-        comparison view reads: table rows, chart legends, bar groups, the
-        per-experiment color assignment -- so this is the one place the
+        comparison view reads: table rows, chart legends, bar groups --
+        but not the colors, which stay with each experiment (see
+        color_slots) -- so this is the one place the
         user's preferred reading order is stored.
 
         Names not currently loaded are ignored and loaded experiments

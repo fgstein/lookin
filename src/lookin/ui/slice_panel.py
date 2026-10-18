@@ -555,7 +555,7 @@ class SlicePanel:
                 ax_counts.bar(
                     x + (i - (n_exp - 1) / 2) * bar_width,
                     [rows_by_name[name][v].n for v in values], bar_width,
-                    color=color_for_experiment(name, all_names), alpha=0.28,
+                    color=color_for_experiment(name, self.ctx.state.color_slots), alpha=0.28,
                     label=f"crops in slice ({name})",
                 )
 
@@ -572,7 +572,7 @@ class SlicePanel:
         for name in names:
             rows = [rows_by_name[name][v] for v in values]
             heights = [sl.metric_value(row, metric, class_label) for row in rows]
-            color = color_for_experiment(name, all_names)
+            color = color_for_experiment(name, self.ctx.state.color_slots)
             intervals = [sl.metric_interval(row, metric, class_label) for row in rows]
             if any(low == low for low, _ in intervals):
                 lows = [max(0.0, h - low) if low == low else 0.0
