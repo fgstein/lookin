@@ -238,6 +238,23 @@
     }
   }
 
+  // An <img> kept by the morph but given another src (the gallery after a
+  // shuffle) would show its old picture until the new one arrives, so it
+  // goes black -- as a tile still loading does -- until then.
+  function imgWait(img) {
+    img.classList.add("img-wait");
+    if (img._lkWait) return;          // already waiting: the same listeners cover the new src
+    img._lkWait = true;
+    const done = () => {
+      img._lkWait = false;
+      img.classList.remove("img-wait");
+      img.removeEventListener("load", done);
+      img.removeEventListener("error", done);
+    };
+    img.addEventListener("load", done);
+    img.addEventListener("error", done);
+  }
+
   function sameKind(a, b) {
     if (a.nodeType !== b.nodeType) return false;
     if (a.nodeType === 1) return a.tagName === b.tagName && (a.type || "") === (b.type || "");
@@ -256,10 +273,13 @@
     for (const at of Array.from(a.attributes)) {
       if (!b.hasAttribute(at.name)) a.removeAttribute(at.name);
     }
+    const tag = a.tagName;
+    const newSrc = tag === "IMG" && b.hasAttribute("src") && a.getAttribute("src") !== b.getAttribute("src");
     for (const at of Array.from(b.attributes)) {
       if (a.getAttribute(at.name) !== at.value) a.setAttribute(at.name, at.value);
     }
-    const tag = a.tagName;
+    if (newSrc) imgWait(a);
+    else if (a._lkWait) a.classList.add("img-wait");  // a later morph must not reveal it early
     if (tag === "INPUT") {
       const focused = document.activeElement === a;
       if (a.type === "checkbox" || a.type === "radio") {

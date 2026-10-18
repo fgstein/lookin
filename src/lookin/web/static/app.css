@@ -360,6 +360,8 @@ button.chip:hover { border-color: var(--acc); }
 
 /* ---- images ---- */
 .crop { image-rendering: pixelated; background: #000; display: block; object-fit: contain; }
+/* a picture being replaced (see imgWait in app.js): black, not the old one */
+img.img-wait { filter: brightness(0); }
 .chart { display: block; max-width: 100%; height: auto; cursor: zoom-in; }
 .thumbs { display: grid; gap: 6px; }
 
