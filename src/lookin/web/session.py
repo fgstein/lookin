@@ -123,6 +123,10 @@ class Job:
         self._busy = False
         self._pending = None
         self._cancel = False
+        # views that draw from busy (a banner saying "being updated"): their
+        # work marks them when it ends, but busy is still true then, so they
+        # are marked again once it is not
+        self.watchers: set = set()
 
     @property
     def busy(self) -> bool:
@@ -172,12 +176,17 @@ class Job:
                 self.session.busy.end(entry)
             with self._lock:
                 self._cancel = False
-                if self._pending is None:
+                idle = self._pending is None
+                if idle:
                     self._busy = False
-                    _local.job = None
-                    return
-                work, on_error = self._pending
-                self._pending = None
+                else:
+                    work, on_error = self._pending
+                    self._pending = None
+            if self.watchers:
+                self.session.mark(*self.watchers, "chrome")
+            if idle:
+                _local.job = None
+                return
 
 
 class Session:
@@ -274,8 +283,10 @@ class Session:
     # ------------------------------------------------------------------
 
     def notify_change(self) -> None:
-        """Data changed: every analysis view marks itself stale (they show
-        an "out of date -- update" banner rather than recomputing)."""
+        """Data changed: every analysis view marks itself stale, and updates
+        when it is next shown (views.base.StaleTracking) -- the one on
+        screen right away. A Cancel from before no longer holds: this is
+        new data."""
         for name, v in list(self.views.items()):
             fn = getattr(v, "on_data_change", None)
             if fn is not None:
@@ -283,6 +294,15 @@ class Session:
                     fn()
                 except Exception:  # noqa: BLE001
                     traceback.print_exc()
+            if hasattr(v, "cancelled"):
+                v.cancelled = False
+        current = self.views.get(self.tab) if self.mode == "analysis" else None
+        arrival = getattr(current, "on_arrival", None)
+        if arrival is not None:
+            try:
+                arrival()
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
         self.mark("*")
 
     def notify_rename(self, old: str, new: str) -> None:

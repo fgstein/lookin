@@ -41,7 +41,8 @@ from lookin.ui.embedding_context import (
 )
 from lookin.ui.review_widgets import NO_REASON, record_decision
 from lookin.web import html as h
-from lookin.web.views.base import Dialog, View
+from lookin.web.session import checkpoint
+from lookin.web.views.base import Dialog, StaleTracking, View
 from lookin.web.views.carousel import open_carousel, reason_options
 from lookin.web.views.media import crop_url
 from lookin.web.views.review_panel import ReviewPanel
@@ -110,12 +111,19 @@ class BulkConfirmDialog(Dialog):
         self.close()
 
 
-class CleaningView(View):
+class CleaningView(StaleTracking, View):
     name = "cleaning"
     title = "Cleaning"
+    # candidates found on data that has since changed: search again with the
+    # same settings (StaleTracking)
+    stale_job = "Cleaning: results"
+    stale_message = "Data has changed -- these candidates were found on the previous data."
+    updating_message = "Data has changed -- looking for the candidates again."
+    cancelled_message = "The update was cancelled -- these candidates are from the previous data."
 
     def __init__(self, session):
         super().__init__(session)
+        self.init_stale()
         self.review_panel = ReviewPanel(session, self.name, "rp")
 
         # -- the search --
@@ -256,6 +264,18 @@ class CleaningView(View):
         self._coverage_stale = True
         if self.built and self.s.tab == self.name:
             self._refresh_coverage()
+        if self._candidate_set is not None:
+            self.dirty = True
+
+    def can_update(self) -> bool:
+        return self._candidate_set is not None and self.state.dataset is not None
+
+    def on_update(self, **_):
+        self.on_run()
+
+    def on_cancelling(self) -> None:
+        if "results" in self.busy:
+            self.busy["results"] = self.stopping_message      # cleared by the job when it stops
 
     def on_review_change(self) -> None:
         """A decision was recorded somewhere -- possibly from a carousel in
@@ -355,7 +375,9 @@ class CleaningView(View):
         def work():
             self._search(source, exp_name, limit, margin, percentile, agree, similarity, cross_split,
                          tuple(strategies), class_filter, is_train)
+            self.dirty = False
 
+        self.cancelled = False
         self._bg("results", "Finding candidates...", work)
 
     def _search(self, source, exp_name, limit, margin, percentile, agree, similarity, cross_split,
@@ -402,6 +424,7 @@ class CleaningView(View):
             self._results_msg = (f"Error: {ex}", "error")
             return
 
+        checkpoint()                      # a Cancel during the search lands here
         if candidate_set is None:
             return
         if class_filter is not None:
@@ -708,7 +731,7 @@ class CleaningView(View):
         elif self._coverage_stale and self.s.tab == self.name:
             self._refresh_coverage()
         names = self._sync_params()
-        return (f'<div class="stack cl">{self._header_html()}{self.review_panel.render()}'
+        return (f'<div class="stack cl">{self.stale_html()}{self._header_html()}{self.review_panel.render()}'
                 f'{self._sources_html(names)}{self._results_html(names)}'
                 f'<div class="grid2 cl-bottom">{self._subcenters_html()}{self._reports_html()}</div></div>')
 

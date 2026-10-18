@@ -29,6 +29,8 @@ from __future__ import annotations
 import time
 from typing import Callable
 
+import numpy as np
+
 from lookin.core import embedding_analysis as ea
 from lookin.ui.embedding_context import build_analysis_context
 
@@ -145,16 +147,23 @@ class PrototypeSourceRegistry:
 
     def assignment(self, ctx: dict, name: str, source_key: str, proto_set):
         """(best_class, best_k) per row, computed once per (experiment,
-        source). `proto_set` is compared by identity, not equality: a fresh
-        PrototypeSet object means the source was reloaded or re-estimated,
-        so the cached assignment no longer describes it."""
+        source, rows). `proto_set` is compared by identity, not equality: a
+        fresh PrototypeSet object means the source was reloaded or
+        re-estimated, so the cached assignment no longer describes it. The
+        rows are compared by their uuids: a row filter (or anything else
+        that changes which rows the context holds) used to get back an
+        assignment one entry per row of the *previous* rows, and indexing
+        the new ones with it failed."""
         cache_key = (name, source_key)
         cached = self._assignments.get(cache_key)
-        if cached is None or cached[2] is not proto_set:
+        uuids = ctx.get("uuids")
+        same_rows = (cached is not None and uuids is not None and cached[3] is not None
+                     and len(cached[3]) == len(uuids) and np.array_equal(cached[3], uuids))
+        if cached is None or cached[2] is not proto_set or not same_rows:
             t0 = time.monotonic()
             best_class, best_k, _ = ea.assign_nearest_prototype(ctx["embeddings"], proto_set)
             _log(f"prototype assignment for '{name}'/{source_key} computed in {time.monotonic() - t0:.1f}s")
-            self._assignments[cache_key] = (best_class, best_k, proto_set)
+            self._assignments[cache_key] = (best_class, best_k, proto_set, None if uuids is None else uuids.copy())
             return best_class, best_k
         return cached[0], cached[1]
 

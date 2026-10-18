@@ -186,7 +186,15 @@ class CompareView(RebuildView):
         self._sync_pair()
         self.stale_text = STALE_DATA
 
+    def can_update(self) -> bool:
+        return self._diff is not None and self._pair_is_valid()
+
     def stale_html(self) -> str:
+        # an update running or cancelled: the common banner (with Cancel,
+        # or "Update now" after one); otherwise this tab's own wording,
+        # which also covers a pair changed by hand (no automatic update)
+        if self.running or self.cancelled:
+            return super().stale_html()
         if not self.stale_text or self._diff is None:
             return ""
         return h.banner(self.stale_text, "stale",

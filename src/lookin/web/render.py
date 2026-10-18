@@ -377,9 +377,14 @@ class AppActions(Handler):
         self.s.mode = "analysis"
         previous = self.s.tab
         self.s.tab = tab
-        shown = getattr(self.s.view(tab), "on_shown", None)
+        view = self.s.view(tab)
+        shown = getattr(view, "on_shown", None)
         if shown is not None:
             shown()
+        # data changed since this tab was drawn: update it now (StaleTracking)
+        arrival = getattr(view, "on_arrival", None)
+        if arrival is not None:
+            arrival()
         self.s.mark("page" if previous != tab else tab)
 
     def on_home(self, **_):

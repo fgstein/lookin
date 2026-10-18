@@ -184,6 +184,9 @@ class CalibrationView(RebuildView):
         self.dirty = True
         self._cache_stale = True
 
+    def can_update(self) -> bool:
+        return self.built and self.state.dataset is not None and bool(self.state.experiments)
+
     def on_update(self, **_):
         self._cache.clear()
         self._class_rows.clear()
@@ -631,7 +634,8 @@ class CalibrationView(RebuildView):
             manual="calibration-error",
             sub="Computed from the same merged rows the Metrics tab reads, so the review "
                 "overlay, the row filter and the split all apply here too.",
-            right=h.button("Update now", act_attr=self.a("update"), icon_name="refresh", small=True, kind="ghost"))
+            right=h.button("Update now", act_attr=self.a("update"), icon_name="refresh", small=True, kind="ghost",
+                           disabled=self.running, title="Already updating" if self.running else ""))
         parts = [self.stale_html(), head]
 
         # The two cheap placeholders are decided here; the rest by the last rebuild.

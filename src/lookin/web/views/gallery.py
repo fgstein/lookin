@@ -401,6 +401,9 @@ class GalleryView(RebuildView):
             return NO_RENDER
         return self.carousel.handle(op, args)
 
+    def can_update(self) -> bool:
+        return self.built and self.state.dataset is not None
+
     def on_update(self, **_):
         self.rebuild(self._refresh_now)
 

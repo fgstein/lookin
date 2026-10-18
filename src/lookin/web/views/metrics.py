@@ -6,7 +6,8 @@ same charts -- the port of lookin.ui.metrics_view.
   it is the same in every tab -- the colors do not follow it;
 * results are cached per experiment (and per experiment + curve target):
   ticking an experiment, picking another metric or curve class only draws;
-* a data change marks the tab stale, "Update now" recomputes everything;
+* a data change marks the tab stale, and it recomputes everything when
+  it is next shown (views.base.StaleTracking);
 * a confusion cell (or a confused pair) opens its crops in the carousel,
   with "Open in Gallery" for the same filter there;
 * past FOCUS_MAX classes, 'Classes shown' picks which ones the grids and
@@ -670,6 +671,9 @@ class MetricsView(RebuildView):
         if not self.built and self.state.dataset is not None and self.state.experiments:
             self.built = True
             self.rebuild(self._refresh_now)
+
+    def can_update(self) -> bool:
+        return self.built and self.state.dataset is not None and bool(self.state.experiments)
 
     def on_update(self, **_):
         self._metrics_cache.clear()

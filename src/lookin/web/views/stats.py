@@ -131,6 +131,13 @@ class StatsView(RebuildView):
             self.charts = {**self.charts, col: charts[col]}
         self.charts = charts
 
+    def on_data_change(self) -> None:
+        # out of date only when there are charts to redraw
+        self.dirty = bool(self.active_columns)
+
+    def can_update(self) -> bool:
+        return bool(self.active_columns) and self.state.dataset is not None
+
     # ---- actions ----
 
     def on_choose(self, value: str = "", **_):

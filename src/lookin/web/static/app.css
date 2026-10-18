@@ -223,7 +223,7 @@ button.chip:hover { border-color: var(--acc); }
 .banner-error { background: var(--err-soft); color: var(--err-ink); }
 .banner-ok { background: var(--ok-soft); color: var(--ok); }
 .banner-stale { background: var(--err); color: #fff; font-weight: 600; align-items: center; }
-.banner-stale .btn { color: var(--err); border-color: #fff; }
+.banner-stale .btn, .banner-stale .btn-ghost { color: var(--err); background: #fff; border-color: #fff; }
 .status { font-size: 12px; padding: 4px 0; }
 .status-ok { color: var(--ok); }
 .status-error { color: var(--err); }

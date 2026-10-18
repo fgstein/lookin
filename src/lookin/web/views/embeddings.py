@@ -44,7 +44,8 @@ from lookin.ui.projection_view import (
 )
 from lookin.ui.prototype_source import KMEANS_COLOR, MODEL_COLOR
 from lookin.web import html as h
-from lookin.web.views.base import View
+from lookin.web.session import checkpoint
+from lookin.web.views.base import StaleTracking, View
 from lookin.web.views.carousel import open_carousel
 from lookin.web.views.files import menu
 from lookin.web.views.media import fig_html
@@ -58,12 +59,20 @@ def _log(msg: str) -> None:
     print(f"[lookin] {msg}", flush=True)
 
 
-class EmbeddingsView(View):
+class EmbeddingsView(StaleTracking, View):
     name = "embeddings"
     title = "Embeddings"
+    # a map drawn from data that has since changed: run the same projection
+    # again (StaleTracking); the controls follow the data by themselves
+    stale_job = "Projection"
+    stale_message = "Data has changed -- this map is out of date."
+    updating_message = "Data has changed -- the map is being computed again."
+    cancelled_message = "The update was cancelled -- this map is from the previous data."
 
     def __init__(self, session):
         super().__init__(session)
+        self.init_stale()
+        self._results_before = ""     # what the map area showed before a run, for a Cancel
         self._projection_generation = 0
         self._has_result = False
         self._last_result = None
@@ -133,6 +142,21 @@ class EmbeddingsView(View):
     def on_data_change(self) -> None:
         if self.built:
             self.refresh_controls()
+        if self._has_result or self._last_result is not None:
+            # every cached projection came from the old rows
+            self._clear_runs()
+            self.dirty = True
+
+    def can_update(self) -> bool:
+        return bool(self.experiment) and (self._has_result or self._last_result is not None)
+
+    def on_update(self, **_):
+        self.on_run()
+
+    def on_cancelling(self) -> None:
+        # the map that was there, under the "cancelled" banner
+        self.results_html = self._results_before
+        self._computing = False
 
     def refresh_controls(self) -> None:
         """The original's refresh(): the experiment list, then everything
@@ -584,6 +608,9 @@ class EmbeddingsView(View):
         generation = self._projection_generation
         method = self.method
         n_sample = self._sample_size()
+        if not self._computing:
+            self._results_before = self.results_html
+        self.cancelled = False
         self.results_html = h.spinner(f"Computing {method}...")
         self._computing = True
         class_filter = list(self._class_filter)
@@ -593,17 +620,21 @@ class EmbeddingsView(View):
         proto_filter = None if self._proto_filter is None else list(self._proto_filter)
 
         def work():
-            ctx = self._analysis_context(exp_name)
-            if ctx is None:
-                self._computing = False
-                self.results_html = h.banner(f"'{exp_name}' has no embeddings attached.", "info")
-                return
-            proto_source = self._proto_source_for(exp_name, sorted(set(ctx["labels"].tolist())))
-            self._run_projection(ctx, exp_name, method, n_sample, generation, class_filter, epoch,
-                                 overlays, refit, proto_filter, proto_source)
+            try:
+                ctx = self._analysis_context(exp_name)
+                if ctx is None:
+                    self._computing = False
+                    self.results_html = h.banner(f"'{exp_name}' has no embeddings attached.", "info")
+                    return
+                checkpoint()
+                proto_source = self._proto_source_for(exp_name, sorted(set(ctx["labels"].tolist())))
+                self._run_projection(ctx, exp_name, method, n_sample, generation, class_filter, epoch,
+                                     overlays, refit, proto_filter, proto_source)
+                self.dirty = False
+            finally:
+                self.refresh()                # a Cancel included
 
-        self.s.job("Projection").run(lambda: (work(), self.refresh()),
-                                     on_error=lambda ex: self._fail(ex, generation))
+        self.s.job("Projection").run(work, on_error=lambda ex: self._fail(ex, generation))
 
     def _fail(self, ex, generation) -> None:
         traceback.print_exc()
@@ -673,10 +704,12 @@ class EmbeddingsView(View):
                     overlay_rows[name] = rows
                     parts.append(inference.embeddings[rows])
                 fit_input = np.concatenate(parts, axis=0)
+            checkpoint()                  # a Cancel lands here, or once the fit is done
             t0 = time.monotonic()
             fit = ea.fit_projection(fit_input, method=method, proto_vectors=proto_vecs if len(proto_vecs) else None)
             _log(f"projection ({method}) for '{exp_name}' computed in {time.monotonic() - t0:.1f}s "
                  f"over {len(fit_input):,} vectors")
+            checkpoint()
             proj, proto_proj = fit.points[: len(embs)], fit.proto_points
             overlay_proj: dict = {}
             cursor = len(embs)
@@ -1270,7 +1303,7 @@ class EmbeddingsView(View):
                               sub="mean cosine similarity within and between classes"))
         split = ('<div class="emb-split" title="Drag to resize the map; drag it to the left edge, or double-click, '
                  'for a full-width map"></div>')
-        right = f'{split}<div class="emb-right">{self.results_html}</div>'
+        right = f'{split}<div class="emb-right stack">{self.stale_html()}{self.results_html}</div>'
         return f'<div class="emb"><div class="emb-left stack">{"".join(p for p in left if p)}</div>{right}</div>'
 
     def _filters_card(self) -> str:

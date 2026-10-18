@@ -112,6 +112,9 @@ class ConfidenceView(RebuildView):
             self.built = True
             self._refresh_in_background()
 
+    def can_update(self) -> bool:
+        return self.built
+
     def on_update(self, **_):
         self._confidence_cache.clear()
         self._refresh_in_background()

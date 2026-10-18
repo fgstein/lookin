@@ -332,3 +332,121 @@ def test_a_rebuild_goes_on_when_the_tab_is_left_and_stops_on_cancel(example):
     wait_idle()
     assert steps == ["done"] and view.cancelled and view.dirty
     assert "resume" in view.stale_html() and "cancelled" in view.stale_html()
+
+
+def test_every_tab_updates_by_itself_after_a_data_change(example):
+    """Data changes while the user is elsewhere: every tab that shows
+    something computed from it is marked out of date, and updates as soon
+    as it is shown again -- no "Update now" to press."""
+    import time
+
+    app = WebApp()
+    s = _session(app, "u" * 24)
+    _load(s, example, [("baseline", str(example / "baseline_cnn_results.csv")),
+                       ("resnet", str(example / "finetuned_resnet_results.csv"))])
+    s.state.experiments["baseline"].load_embeddings(str(example / "baseline_cnn_embeddings.npz"))
+    ok, message = s.prototype_source.load_prototypes_for("baseline", str(example / "baseline_cnn_prototypes.npz"))
+    assert ok, message
+
+    def idle():
+        for _ in range(1500):
+            if not any(j.busy for j in list(s._jobs.values())):
+                return
+            time.sleep(0.02)
+        raise AssertionError(f"still running: {[n for n, j in s._jobs.items() if j.busy]}")
+
+    def act(fn):
+        with RequestScope(s):
+            fn()
+        idle()
+
+    tabs = ["statistics", "gallery", "metrics", "calibration", "confidence", "compare",
+            "prototypes", "embeddings", "cleaning"]
+    # show something on every tab
+    for tab in tabs:
+        act(lambda: render.AppActions(s).on_tab(tab=tab))
+    stats = s.view("statistics")
+    act(lambda: (stats.on_choose(value=s.state.dataset.columns.label_col), stats.on_add()))
+    compare = s.view("compare")
+    act(lambda: (setattr(compare, "baseline_value", "baseline"), setattr(compare, "candidate_value", "resnet"),
+                 compare.on_compare()))
+    emb = s.view("embeddings")
+    act(lambda: (setattr(emb, "experiment", "baseline"), emb.on_run()))
+    cleaning = s.view("cleaning")
+    act(cleaning.on_run)
+    assert compare._diff is not None and emb._has_result and cleaning._candidate_set is not None
+
+    assert "role_html" in s.view("prototypes").result         # prototypes drawn, not just "none yet"
+
+    # a real data change: a row filter, so every cache keyed on the old rows is caught out
+    act(lambda: render.AppActions(s).on_tab(tab="filter"))
+    act(lambda: s.view("filter").on_query_enter(value="is_blurry == 0"))
+    assert 0 < len(s.state.dataset.df) < 800
+    act(lambda: render.AppActions(s).on_tab(tab="sources"))
+    for tab in tabs:
+        assert s.view(tab).dirty, f"{tab} was not marked out of date"
+        assert "out of date" in s.view(tab).stale_html() or "previous data" in s.view(tab).stale_html(), tab
+
+    for tab in tabs:
+        act(lambda: render.AppActions(s).on_tab(tab=tab))
+        view = s.view(tab)
+        assert not view.dirty, f"{tab} did not update when shown"
+        assert view.stale_html() == "", tab
+        assert not getattr(view, "error", ""), (tab, view.error)
+    assert "error" not in s.view("prototypes").result, s.view("prototypes").result.get("error")
+
+
+def test_a_cancelled_update_waits_for_the_user_or_new_data(example):
+    import threading
+    import time
+
+    app = WebApp()
+    s = _session(app, "w" * 24)
+    _load(s, example, [("baseline", str(example / "baseline_cnn_results.csv"))])
+    stats = s.view("statistics")
+    with RequestScope(s):
+        render.AppActions(s).on_tab(tab="statistics")
+        stats.on_choose(value=s.state.dataset.columns.label_col)
+        stats.on_add()
+    started, release, runs = threading.Event(), threading.Event(), []
+
+    def slow():
+        runs.append(1)
+        started.set()
+        release.wait(5)
+        stats.set_progress("next")
+
+    def idle():
+        for _ in range(500):
+            if not stats.running:
+                return
+            time.sleep(0.02)
+        raise AssertionError("still running")
+
+    idle()
+    stats.compute = slow
+    with RequestScope(s):
+        render.AppActions(s).on_tab(tab="sources")
+        s.notify_change()
+        render.AppActions(s).on_tab(tab="statistics")        # arriving starts the update
+    assert started.wait(5)
+    banner = stats.stale_html()
+    assert "being updated" in banner and "Cancel" in banner and "Update now" not in banner
+    with RequestScope(s):
+        stats.on_cancel()
+    release.set()
+    idle()
+    assert stats.cancelled and stats.dirty and "Update now" in stats.stale_html()
+
+    with RequestScope(s):                                     # away and back: still waits
+        render.AppActions(s).on_tab(tab="sources")
+        render.AppActions(s).on_tab(tab="statistics")
+    assert len(runs) == 1 and not stats.running
+
+    started.clear(); release.clear()
+    with RequestScope(s):                                     # new data: updates again
+        s.notify_change()
+    assert started.wait(5) and len(runs) == 2 and not stats.cancelled
+    release.set()
+    idle()
+    assert not stats.dirty

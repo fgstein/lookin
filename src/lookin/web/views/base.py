@@ -78,65 +78,115 @@ class View(Handler):
         self.s.mark(self.name)
 
 
-class RebuildView(View):
-    """A view whose content is expensive to rebuild (charts over the whole
-    dataset): a data change only marks it stale and shows the red "Data has
-    changed -- this view is out of date" banner; the rebuild runs when the
-    user asks, on the session's job queue for this view, with its progress
-    shown in the view and in the top bar (see components.StaleBanner and
-    BackgroundRebuild in the original UI).
+class StaleTracking:
+    """What a tab does when the data under it changes -- the same in every
+    tab that shows something computed from the data:
 
-    While the rebuild runs, the banner loses its "Update now" (asking again
-    would only queue the same work a second time, from scratch, behind the
-    first) and gets a "Cancel" instead -- on the progress line when there is
-    no banner (a redraw). Leaving the tab does not stop anything: only the
-    user's Cancel does. Cancelling stops the work at its next progress step
-    (session.checkpoint); the banner then offers to run it again."""
+    * on_data_change() marks it `dirty` (when it shows something the change
+      makes out of date);
+    * arriving on the tab (AppActions.on_tab), or the data changing while it
+      is the tab on screen (Session.notify_change), calls on_arrival(),
+      which starts the update by itself;
+    * while that runs, the red banner says so and offers "Cancel" -- never
+      "Update now", which would only queue the same work again behind it;
+    * Cancel stops the work at its next checkpoint (session.checkpoint);
+      the banner then offers "Update now". A cancelled tab is not updated
+      by itself again until the data changes again.
+
+    Leaving the tab does not stop anything. A class using this sets
+    `stale_job` (the session job its update runs on), keeps `dirty` and
+    `cancelled`, and implements on_update(); can_update() says when there is
+    something to update at all."""
 
     stale_message = "Data has changed -- this view is out of date."
+    updating_message = "Data has changed -- this view is being updated."
     stopping_message = "Stopping at the next step..."
     cancelled_message = "The update was cancelled -- this view may be incomplete."
+    stale_job = ""
 
-    def __init__(self, session):
-        super().__init__(session)
+    def init_stale(self) -> None:
         self.dirty = False
-        self.progress_text = ""
-        self.error = ""
-        self.cancelled = False       # the user pressed Cancel: offer to run it again
-        self._last = None            # (work, clear_stale) of the latest rebuild()
-
-    def on_data_change(self) -> None:
-        self.dirty = True
+        self.cancelled = False       # the user pressed Cancel: wait for them, or for new data
 
     def job(self):
-        return self.s.job(self.title or self.name)
+        job = self.s.job(self.stale_job or self.title or self.name)
+        job.watchers.add(self.name)
+        return job
 
     @property
     def running(self) -> bool:
         return self.job().busy
 
-    def _cancel_button(self) -> str:
-        return h.button("Cancel", act_attr=self.a("cancel"), small=True, kind="ghost", icon_name="x",
+    def can_update(self) -> bool:
+        return True
+
+    def on_arrival(self) -> None:
+        if self.dirty and not self.cancelled and not self.running and self.can_update():
+            self.on_update()
+
+    def cancel_button(self) -> str:
+        # not "ghost": the banner's buttons are white on its red
+        return h.button("Cancel", act_attr=self.a("cancel"), small=True, icon_name="x",
                         title="Stop this computation")
 
     def stale_html(self) -> str:
         if self.running:
             if not self.dirty or self.job().cancelling:
                 return ""
-            return h.banner("Data has changed -- this view is being updated.", "stale",
-                            actions=self._cancel_button())
+            return h.banner(self.updating_message, "stale", actions=self.cancel_button())
         if self.cancelled:
             return h.banner(self.cancelled_message, "stale",
                             actions=h.button("Update now", act_attr=self.a("resume"), icon_name="refresh", small=True))
-        if not self.dirty:
+        if not self.dirty or not self.can_update():
             return ""
         return h.banner(self.stale_message, "stale",
                         actions=h.button("Update now", act_attr=self.a("update"), icon_name="refresh", small=True))
 
+    def cancel_work(self) -> None:
+        """The user's Cancel: stop the update; the banner then offers to run
+        it again."""
+        if not self.job().cancel():
+            return
+        self.cancelled = True
+        self.on_cancelling()
+        self.s.mark(self.name, "chrome")
+
+    def on_cancelling(self) -> None:
+        """Hook: what to show until the work reaches its next checkpoint."""
+
+    def resume(self) -> None:
+        self.cancelled = False
+        self.on_update()
+
+    def on_cancel(self, **_):
+        self.cancel_work()
+
+    def on_resume(self, **_):
+        self.resume()
+
+
+class RebuildView(StaleTracking, View):
+    """A view whose content is expensive to rebuild (charts over the whole
+    dataset), on the session's job queue for this view, with its progress
+    shown in the view and in the top bar (see components.StaleBanner and
+    BackgroundRebuild in the original UI). What a data change does is
+    StaleTracking's; a redraw that is not a data update (a dropdown) gets
+    its Cancel on the progress line."""
+
+    def __init__(self, session):
+        super().__init__(session)
+        self.init_stale()
+        self.progress_text = ""
+        self.error = ""
+        self._last = None            # (work, clear_stale) of the latest rebuild()
+
+    def on_data_change(self) -> None:
+        self.dirty = True
+
     def progress_html(self) -> str:
         if self.progress_text:
             # the red banner carries the Cancel while it is up
-            cancel = (self._cancel_button()
+            cancel = (self.cancel_button()
                       if self.running and not self.dirty and not self.job().cancelling else "")
             return f'<div class="row-nw">{h.spinner(self.progress_text)}{cancel}</div>'
         if self.error:
@@ -184,30 +234,17 @@ class RebuildView(View):
     def on_update(self, **_):
         self.rebuild()
 
-    # ---- cancelling ----
-
-    def cancel_work(self) -> None:
-        """Stop this view's rebuild (the user's Cancel); the banner then
-        offers to run it again."""
-        if not self.job().cancel():
-            return
-        self.cancelled = True
+    def on_cancelling(self) -> None:
         self.progress_text = self.stopping_message      # cleared by the job when it stops
-        self.s.mark(self.name, "chrome")
 
     def resume(self) -> None:
-        """Run again what was cancelled."""
+        """Run again what was cancelled: the data update when the data is
+        what changed, else the redraw that was stopped."""
         self.cancelled = False
-        if self._last is not None:
-            self.rebuild(*self._last)
-        else:
+        if self.dirty or self._last is None:
             self.on_update()
-
-    def on_cancel(self, **_):
-        self.cancel_work()
-
-    def on_resume(self, **_):
-        self.resume()
+        else:
+            self.rebuild(*self._last)
 
 
 class Dialog(Handler):

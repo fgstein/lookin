@@ -133,6 +133,9 @@ class PrototypesView(RebuildView):
         else:
             self.dirty = True
 
+    def can_update(self) -> bool:
+        return self.built and self.state.dataset is not None
+
     def _on_source_changed(self) -> None:
         if self._own_source_change or not self.built:
             return
@@ -181,7 +184,7 @@ class PrototypesView(RebuildView):
             self.set_progress("Drawing compactness & separation...")
             self._compute_compactness(res, ctx, exp_name)
         except Exception as ex:  # noqa: BLE001
-            _log(f"error rendering embeddings tab: {ex}")
+            _log(f"error rendering prototypes tab: {ex}")
             traceback.print_exc()
             res["error"] = f"Error: {ex}"
         self.result = res
