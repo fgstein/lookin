@@ -450,3 +450,52 @@ def test_a_cancelled_update_waits_for_the_user_or_new_data(example):
     release.set()
     idle()
     assert not stats.dirty
+
+
+def test_a_hidden_tab_gets_its_commands_when_it_comes_back():
+    """A hidden tab drops its event stream (app.js): what was pushed to it
+    meanwhile is kept -- a toast, a download -- and handed to the stream it
+    opens again; what only needed redrawing is not (the page redraws on
+    reconnect)."""
+    import asyncio
+
+    app = WebApp()
+    s = app.store.get("h" * 24, create=True)
+    s.push({"dirty": ["home"]})
+    s.toast("Report ready")
+    s.cmd(download="/dl/x", filename="report.pptx")
+
+    async def reconnect():
+        q = asyncio.Queue()
+        s.subscribe(asyncio.get_running_loop(), q)
+        return [q.get_nowait() for _ in range(q.qsize())]
+
+    got = asyncio.run(reconnect())
+    assert len(got) == 2 and "Report ready" in got[0] and "report.pptx" in got[1]
+    assert asyncio.run(reconnect()) == []        # handed over once
+
+
+def test_a_hidden_tab_pinging_is_not_reaped_and_needs_no_lock():
+    import threading
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from lookin.web.server import create_app
+
+    app = WebApp()
+    client = TestClient(create_app(app))
+    s = app.store.get("p" * 24, create=True)
+    s.last_seen = 0.0
+    s.lock.acquire()               # an action running in that tab
+    try:
+        result = {}
+        t = threading.Thread(target=lambda: result.setdefault(
+            "r", client.post("/api/ping", json={"sid": "p" * 24})))
+        t.start()
+        t.join(5)
+        assert result["r"].status_code == 200
+    finally:
+        s.lock.release()
+    assert time.time() - s.last_seen < 60
+    assert client.post("/api/ping", json={"sid": "q" * 24}).status_code == 410

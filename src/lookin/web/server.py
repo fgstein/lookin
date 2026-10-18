@@ -22,6 +22,7 @@ import json
 import mimetypes
 import queue
 import threading
+import time
 import traceback
 from collections import OrderedDict
 from pathlib import Path
@@ -281,6 +282,18 @@ def create_app(webapp: WebApp, enable_mcp: bool = False) -> FastAPI:
         with RequestScope(session):
             session._pending_dirty.update(n for n in names.split(",") if n)
             return JSONResponse(render.collect(session))
+
+    @app.post("/api/ping")
+    async def ping(request: Request):
+        """A hidden tab's "still here": it holds no event stream (see
+        app.js), and a session nobody is connected to is otherwise reaped
+        once idle. Takes no lock -- it must answer while an action runs."""
+        body = await json_body(request)
+        session = store.get(str((body or {}).get("sid", "")), create=False)
+        if session is None:
+            return no_session()
+        session.last_seen = time.time()
+        return JSONResponse({"ok": True})
 
     @app.get("/api/events")
     async def events(sid: str):

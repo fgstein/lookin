@@ -115,7 +115,7 @@
 
   let booted = false;
   async function boot() {
-    connectEvents();
+    if (!document.hidden) connectEvents();
     const resp = await post("/api/boot", { sid, search: location.search });
     if (resp) apply(resp);
     booted = true;
@@ -338,6 +338,29 @@
       if (booted) { pendingNames.add("*"); if (!renderTimer) renderTimer = setTimeout(flushRender, 60); }
     };
   }
+
+  // A browser opens at most six connections to one server, and an open
+  // event stream holds one for good: with six Lookin tabs open (every
+  // workspace opens in a tab of its own) the seventh never even loaded. So
+  // only a tab on screen keeps its stream; a hidden one lets it go, and
+  // reconnecting redraws whatever changed meanwhile (onopen above). What
+  // the server had to say to it meanwhile -- a toast, a download -- waits
+  // for it there (Session.push).
+  // ...and says it is still there now and then, or its session -- holding
+  // a loaded workspace -- would be dropped as abandoned (server.py).
+  const PING_MS = 10 * 60 * 1000;
+  setInterval(() => {
+    if (!document.hidden || !sid || !booted) return;
+    fetch("/api/ping", { method: "POST", headers: { "Content-Type": "application/json" },
+                         body: JSON.stringify({ sid }) }).catch(() => { /* the next one will do */ });
+  }, PING_MS);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      if (es) { es.close(); es = null; }
+    } else if (!es && sid) {
+      connectEvents();
+    }
+  });
 
   async function flushRender() {
     renderTimer = null;
