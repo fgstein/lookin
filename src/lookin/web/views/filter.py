@@ -329,43 +329,12 @@ class FilterView(View):
             status = f'<div class="flt-qs err">{h.icon("warn", 13)}<span>{h.e(error)}</span></div>'
         elif info:
             status = f'<div class="flt-qs ok">{h.icon("check", 13)}<span>{h.e(info)}{"" if self.query_on else " (turned off)"}</span></div>'
-        examples = self._examples(full)
-        example_html = ""
-        if examples:
-            example_html = ('<div class="row-wrap flt-ex"><span class="muted small">Examples:</span>' + "".join(
-                f'<button type="button" class="chip mono"{self.a("example", text=ex)} title="Put this in the query">{h.e(ex)}</button>'
-                for ex in examples) + "</div>")
         cols = ", ".join(dsf.quote_column(c) for c in self._columns())
-        convert = h.button("Write the conditions as a query", act_attr=self.a("to_query"), small=True,
-                           disabled=not any(dsf.condition_is_active(c) for c in self.conditions),
-                           title="Replace the conditions with one query that says the same, to take it further by hand")
         right = h.checkbox("On", self.query_on, change=self.c("query_on"), title="Turn the query off without erasing it")
-        body = (f'{area}{status}<div class="row" style="margin-top:6px">{convert}'
-                f'<span class="muted small">Enter applies the filter.</span></div>{example_html}'
+        body = (f'{area}{status}'
                 f'<div class="muted small flt-cols">Columns: <span class="mono">{h.e(cols)}</span></div>')
         return h.section("Query", body, manual="dataset-filter-query", right=right,
                          sub="a formula, pandas-style: and / or / not, comparisons, isin, between, str.contains")
-
-    def _examples(self, full) -> list:
-        out = []
-        label_col = self.state.dataset.columns.label_col
-        if label_col in full.columns:
-            labels = self._value_counts(label_col).index[:2].tolist()
-            if labels:
-                out.append(f"{dsf.quote_column(label_col)} in {labels!r}")
-        numeric = [c for c in full.columns if _is_numeric(full[c])]
-        if numeric:
-            col = numeric[0]
-            median = full[col].median()
-            if pd.notna(median):
-                out.append(f"{dsf.quote_column(str(col))} > {float(median):g}")
-        text = [c for c in full.columns if full[c].dtype == object and c != label_col]
-        crop_col = self.state.dataset.columns.crop_col
-        if crop_col in text:
-            out.append(f"{dsf.quote_column(crop_col)}.str.contains('png') == False")
-        elif text:
-            out.append(f"{dsf.quote_column(str(text[0]))}.notna()")
-        return out[:4]
 
     def _preview_html(self) -> str:
         full = self._full()
@@ -507,16 +476,6 @@ class FilterView(View):
 
     def on_query_on(self, value=None, **_):
         self.query_on = bool(value)
-        self._changed()
-
-    def on_example(self, text: str = "", **_):
-        self.query = _query_text(text)
-        self._changed()
-
-    def on_to_query(self, **_):
-        self.query = dsf.query_from_conditions(self.draft_spec())
-        self.query_on = True
-        self.conditions = []
         self._changed()
 
     def on_preview(self, which: str = PREVIEW_KEPT, **_):

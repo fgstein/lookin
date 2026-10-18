@@ -207,15 +207,15 @@ class HomeView(View):
                    f'{h.button("New group", act_attr=self.a("new_group"), small=True, icon_name="plus") if self.group_by == "group" else ""}'
                    f'</div>')
         head = ('<thead><tr><th style="width:22px"></th><th>Name</th><th>Dataset</th><th>Experiments</th>'
-                '<th class="num">Snap.</th><th>Files</th><th style="text-align:right">Opened</th><th style="width:30px"></th></tr></thead>')
+                '<th class="num">Snap.</th><th>Files</th><th style="text-align:right">Opened</th><th style="width:60px"></th></tr></thead>')
         bodies = []
         for gid, name, color, items, gtotal, is_column in groups:
             bodies.append(self._group_tbody(gid, name, color, items, gtotal, is_column))
         if not self.workspaces:
             bodies.append('<tbody><tr><td colspan="8">' + h.empty(
                 "No workspace yet. Create one with New workspace, then drag runs onto it.") + '</td></tr></tbody>')
-        note = ('<div class="lst-foot">Drag a run from the right onto a workspace row to add it; drag a workspace '
-                '(by its handle) onto a group header to move it.</div>')
+        note = ('<div class="lst-foot">Drag a run or a dataset from the right onto a workspace row to add it; drag a '
+                'workspace (by its handle) onto a group header to move it.</div>')
         return (f'{toolbar}<div class="tbl-wrap"><table class="tbl sticky">{head}{"".join(bodies)}</table></div>'
                 f'{note}{self._id_hint()}')
 
@@ -311,6 +311,12 @@ class HomeView(View):
         else:
             name_link = (f'<a class="ws-name" href="/?workspace={h.e(quote(w.id, safe=""))}" target="_blank" rel="noopener" '
                          f'title="{h.e(w.description or "Open in a new tab")}">{h.e(w.label())}</a>')
+        if missing:
+            open_btn = h.button(icon_name="external", act_attr=self.a("open_ws", id=w.id), small=True, kind="ghost",
+                                title="Open in a new tab")
+        else:
+            open_btn = h.link_button("", f"/?workspace={quote(w.id, safe='')}", icon_name="external", small=True,
+                                     kind="ghost", title="Open in a new tab")
         is_open = current is not None and current.id == w.id
         star = h.icon("star", 12, "c-warn") if lib.is_favorite(w.id) else ""
         open_badge = '<span class="badge" style="background:var(--acc);color:#fff">open</span>' if is_open else ""
@@ -323,7 +329,7 @@ class HomeView(View):
             "hr",
             ("Delete…", self.a("delete", id=w.id), "trash", True),
         ], title="Workspace actions")
-        tr = (f'<tr data-drop="home:drop_on_ws" data-drop-kinds="run csv"{h.data_args(id=w.id)}'
+        tr = (f'<tr data-drop="home:drop_on_ws" data-drop-kinds="run csv dataset"{h.data_args(id=w.id)}'
               f'{" class=sel" if expanded else ""}>'
               f'<td><span class="row-nw" style="gap:2px"><span class="handle" draggable="true" data-drag="{h.e(w.id)}" data-drag-kind="ws" '
               f'data-drag-label="{h.e(w.label())}" title="Drag to move this workspace to another group">{h.icon("drag", 13)}</span>'
@@ -335,7 +341,7 @@ class HomeView(View):
               f'<td class="num small">{_snapshot_count(w)}</td>'
               f'<td class="nowrap">{files}</td>'
               f'<td class="small muted nowrap" style="text-align:right">{h.e(opened)}</td>'
-              f'<td>{ws_menu}</td></tr>')
+              f'<td><span class="row-nw" style="gap:0">{open_btn}{ws_menu}</span></td></tr>')
         detail = ""
         if expanded:
             detail = f'<tr class="ws-detail"><td colspan="8">{self._ws_detail(w)}</td></tr>'
@@ -450,8 +456,14 @@ class HomeView(View):
         rows = []
         for d in entries[:SIDE_DATASETS]:
             facts = d.facts()
+            # Only a file on this machine can be dropped on a workspace: one
+            # named by a run's parameters alone would give it a dataset it
+            # cannot load.
+            drag = (f' draggable="true" data-drag="{h.e(d.path)}" data-drag-kind="dataset" data-drag-label="{h.e(d.name)}"'
+                    if d.here else "")
+            tip = f"{d.path} · drag onto a workspace to make it its dataset" if d.here else d.path
             rows.append(
-                f'<div class="lst-row" title="{h.e(d.path)}">'
+                f'<div class="lst-row"{drag} title="{h.e(tip)}">'
                 f'<span class="mono ell grow" style="font-size:12px;{"color:var(--ghost)" if not d.here else ""}">{h.e(d.name)}</span>'
                 f'<span class="mono small muted" style="width:62px;text-align:right">{h.e(f"{facts.rows:,}" if facts and facts.rows is not None else (h.human_size(d.size) if d.here else "—"))}</span>'
                 f'<span class="mono small muted" style="width:36px;text-align:right">{len(d.used_by)}</span>'
@@ -464,7 +476,8 @@ class HomeView(View):
                 f'<div class="colhead"><span class="grow">Name</span><span style="width:62px;text-align:right">Rows</span>'
                 f'<span style="width:36px;text-align:right">Used</span><span style="width:72px;text-align:right">Modified</span></div>')
         return (f'<section class="card">{head}<div>{"".join(rows)}</div>'
-                f'<div class="lst-foot">Greyed: only named by a run\'s parameters, not on this machine yet.</div></section>')
+                f'<div class="lst-foot">Drag a dataset onto a workspace row to make it its dataset. Greyed: only '
+                f'named by a run\'s parameters, not on this machine yet.</div></section>')
 
     # ------------------------------------------------------------------
     # filters and layout
@@ -697,10 +710,44 @@ class HomeView(View):
 
     def on_drop_on_ws(self, id: str = "", kind: str = "", key: str = "", **_):  # noqa: A002
         ws = self._ws(id)
-        if ws is None or kind not in ("run", "csv") or not key:
+        if ws is None or not key:
+            return
+        if kind == "dataset":
+            self.drop_dataset(ws, key)
+            return
+        if kind not in ("run", "csv"):
             return
         keys = [k for k in key.split("\n") if k]
         self.add_keys(ws, keys)
+
+    def drop_dataset(self, ws, path: str) -> None:
+        """A dataset dropped on a workspace becomes its dataset -- after a
+        question when that replaces another one, since every experiment of
+        the workspace is then scored against the new file."""
+        if ws.mount.dataset_path == path:
+            self.s.toast(f"{ws.label()} already uses {Path(path).name}.", "neutral")
+            return
+        if not ws.mount.dataset_path:
+            self.set_dataset(ws, path)
+            return
+        self.s.open_dialog(ConfirmDialog(
+            f"Replace the dataset of {ws.label()}?",
+            f"It uses {Path(ws.mount.dataset_path).name}; its experiments would be scored against "
+            f"{Path(path).name} instead.",
+            lambda: self.set_dataset(ws, path), yes_label="Replace", danger=False))
+
+    def set_dataset(self, ws, path: str) -> None:
+        digest = lib.hash_file(path) if path and Path(path).is_file() else ""
+
+        def change(fresh):
+            fresh.mount.dataset_path, fresh.dataset_hash = path, digest
+            return True
+        fresh = lib.update_workspace(ws.path, change)
+        if fresh is None:
+            self.s.toast(f"Could not write {ws.label()} -- was it deleted?", "error")
+            return
+        self.after_workspace_change(fresh)
+        self.s.toast(f"{fresh.label()} now uses {Path(path).name or 'no dataset'}.", "ok")
 
     def add_keys(self, ws, keys: list, on_done=None) -> None:
         """Add runs and CSVs to `ws`. A run's CSVs have to be known first, so
@@ -934,17 +981,8 @@ class SetDatasetDialog(Dialog):
         self.session.open_dialog(DatasetsDialog(self.session, on_pick=picked, pick_label="Use this dataset"))
 
     def on_save(self, **_):
-        path = self.dataset
-        digest = lib.hash_file(path) if path and Path(path).is_file() else ""
         self.close()
-
-        def change(fresh):
-            fresh.mount.dataset_path, fresh.dataset_hash = path, digest
-            return True
-        fresh = lib.update_workspace(self.ws.path, change)
-        if fresh is not None:
-            self.home.after_workspace_change(fresh)
-            self.session.toast(f"{fresh.label()} now uses {Path(path).name or 'no dataset'}.", "ok")
+        self.home.set_dataset(self.ws, self.dataset)
 
 
 class MissingFilesDialog(Dialog):

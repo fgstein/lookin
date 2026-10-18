@@ -119,26 +119,33 @@ def test_an_open_workspace_follows_its_manifest(example, tmp_path):
 def test_gallery_loads_as_it_is_scrolled(example):
     """No pages: a first batch, then appends asked for by the page -- each
     only the new crops, and a request from a grid that has since started
-    over is ignored."""
+    over is ignored. The mosaic is the carousel, drawn in the tab."""
     from lookin.web.views.base import NO_RENDER
 
     s = _session(WebApp(), "h" * 24)
     _load(s, example, [])
     gallery = s.view("gallery")
     gallery._refresh_now()
-    first = len(gallery._records)
+    gallery.built = True
+    car = gallery.carousel
+    with RequestScope(s):
+        html = render.render_view(s, "gallery")
+    first = car.loaded
     assert 0 < first < 800
+    assert html.count('<div class="ctile') == first
+    assert "scroll for more" not in html
     with RequestScope(s):
-        assert gallery.on_more(gen=gallery.gen, loaded=first) is NO_RENDER
+        assert gallery.on_car(op="more", gen=car.gen, loaded=first) is NO_RENDER
         cmd = s._pending_cmds[-1]["append"]
-    assert cmd["start"] == first and len(gallery._records) > first
-    assert cmd["html"].count('class="gcell') == len(gallery._records) - first
-    stale = gallery.gen
+    assert cmd["start"] == first and car.loaded > first
+    assert cmd["html"].count('<div class="ctile') == car.loaded - first
+    assert cmd["count"] == f"{car.total:,} image(s)"
+    stale = car.gen
+    car.zoom_index = 0
     gallery._set_shuffle(7)
+    assert gallery.carousel is not car and gallery.carousel.zoom_index == 0
     with RequestScope(s):
-        before = len(gallery._records)
-        assert gallery.on_more(gen=stale, loaded=before) is NO_RENDER
-    assert len(gallery._records) == before
+        assert gallery.on_car(op="more", gen=stale, loaded=gallery.carousel.loaded) is NO_RENDER
     state = gallery.view_state()
     assert "page" not in state and "rows" not in state
     # A snapshot written before the mosaic scrolled still restores.
@@ -193,3 +200,78 @@ def test_the_filter_reaches_every_tab_and_is_saved(example, tmp_path):
         t.view("sources").restore_mount(mount)
     assert len(t.state.dataset.df) == kept
     assert t.view("filter").conditions[0]["values"] == ["cat"]
+
+
+def test_lookin_toml_fills_the_columns_and_the_root(example):
+    """Picked: lookin.toml wins over the guess. Restored: only the fields
+    still at their default take it; a column it names that the file lacks
+    is a warning, not a choice."""
+    import pandas as pd
+
+    from lookin.core import library as lib
+
+    df = pd.read_csv(example / "dataset.csv").rename(columns={"uuid": "id", "label": "cls"})
+    df.to_csv(example / "renamed.csv", index=False)
+    (example / "lookin.toml").write_text(
+        '[defaults]\nroot = "imgs"\n\n["renamed.csv"]\nid = "id"\nlabel = "cls"\n\n'
+        '["*.csv"]\nlabel = "nope"\n', encoding="utf-8")
+    s = _session(WebApp(), "t" * 24)
+    sources = s.view("sources")
+    sources.set_dataset_path(str(example / "renamed.csv"))
+    assert (sources.uuid_value, sources.label_value) == ("id", "cls")
+    assert sources.image_root == str(example / "imgs")
+    assert "lookin.toml" in sources.config_note[0]
+
+    sources.set_dataset_path(str(example / "dataset.csv"))   # matched by "*.csv" only
+    assert sources.label_value == "label" and sources.config_note[1] == "warning"
+
+    sources.dataset_path, sources.label_value = str(example / "renamed.csv"), "subset"
+    sources.image_root = ""
+    sources._sniff()                                          # as a restore does
+    assert sources.label_value == "subset"                    # chosen by the workspace: kept
+    assert sources.image_root == str(example / "imgs")        # empty: filled in
+
+    (example / "lookin.toml").write_text("not = [toml", encoding="utf-8")
+    sources.set_dataset_path(str(example / "renamed.csv"))
+    assert sources.config_note[1] == "warning" and "not valid TOML" in sources.config_note[0]
+    assert lib.Mount().uuid_col == "uuid"
+
+
+def test_relabel_fields_keep_the_csv_class_names(example):
+    s = _session(WebApp(), "u" * 24)
+    _load(s, example, [("baseline", str(example / "baseline_cnn_results.csv"))])
+    sources = s.view("sources")
+    sources.relabel_open = True
+    with RequestScope(s):
+        html = render.render_view(s, "sources")
+        shown = sources._relabel_shown
+        i = shown.index("cat")
+        sources.on_apply_relabel(**{f"r{i}": "feline"})
+        html = render.render_view(s, "sources")
+    assert "feline" in s.state.dataset.labels() and "cat" not in s.state.dataset.labels()
+    assert sources._relabel_shown == shown                    # titled by the CSV's names still
+    assert 'data-orig="cat"' in html and 'value="feline"' in html
+    assert "feline" in s.state.experiments["baseline"].class_labels
+
+
+def test_a_dataset_dropped_on_a_workspace_becomes_its_dataset(example, tmp_path):
+    from lookin.core import library as lib
+    from lookin.web.views.base import ConfirmDialog
+
+    lib.set_library_root(tmp_path / "lib")
+    try:
+        empty = lib.create_workspace("empty", lib.Mount(dataset_path=""))
+        used = lib.create_workspace("used", lib.Mount(dataset_path=str(example / "dataset.csv")))
+        s = _session(WebApp(), "v" * 24)
+        home = s.view("home")
+        home.reload()
+        other = str(example / "dataset_reviewed.csv")
+        with RequestScope(s):
+            home.on_drop_on_ws(id=empty.id, kind="dataset", key=other)
+            home.on_drop_on_ws(id=used.id, kind="dataset", key=other)
+        assert lib.load_workspace(empty.path).mount.dataset_path == other
+        # Replacing one asks first.
+        assert lib.load_workspace(used.path).mount.dataset_path == str(example / "dataset.csv")
+        assert isinstance(s.dialogs[-1], ConfirmDialog)
+    finally:
+        lib.set_library_root(None)
