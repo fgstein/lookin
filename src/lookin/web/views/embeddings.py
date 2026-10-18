@@ -1001,44 +1001,64 @@ class EmbeddingsView(View):
             lut, turns = crop_display(session, rec)
             return path, lut, turns
 
-        mkey = self.s.put_point_map(resolve)
+        def describe(i: int):
+            if not 0 <= i < len(records) or not records[i]:
+                return None
+            uid = uuids[i] if i < len(uuids) else None
+            missing = uid is None or uid != uid or str(uid) == ""     # None, NaN or empty
+            return (None if missing else str(uid)), records[i].get(crop_col)
+
+        mkey = self.s.put_point_map(resolve, describe)
         src = f"/dl/{self.s.sid}/{dkey}?inline=1"
         pimg = f"/pimg/{self.s.sid}/{mkey}/"
-        modes = "".join(
-            f'<button type="button" class="seg-b{" on" if m == "pan" else ""}" data-pm-mode="{m}" title="{lbl}">'
-            f'{h.icon(ic, 13)}</button>'
-            for m, ic, lbl in (("pan", "pan", "Pan: drag to move the map"),
-                               ("lasso", "lasso", "Lasso: draw around points to select them"),
-                               ("zoom", "zoom", "Zoom: drag a box to zoom into it")))
-        # One row that never wraps: everything is an icon with its tooltip,
-        # so a button appearing (a selection, Reshuffle) never pushes the map
-        # down; the least needed group folds away when the map is narrow
-        # (embeddings.css).
-        def icon_btn(key: str, icon_name: str, title: str, *, hidden: bool = False, cls: str = "") -> str:
-            return (f'<button type="button" class="btn btn-sm btn-ghost btn-icon {cls}" data-pm="{key}" '
-                    f'title="{h.e(title)}"{" hidden" if hidden else ""}>{h.icon(icon_name, 14)}</button>')
+        pinfo = f"/pinfo/{self.s.sid}/{mkey}/"
+        # One row that never wraps (a button appearing never pushes the map
+        # down), in groups that say what they act on: the view (how the map
+        # is drawn and moved), the lasso selection, the gallery, the export.
+        # Labels show when the map is wide enough, the least needed parts
+        # fold away when it is narrow (embeddings.css).
+        def icon_btn(key: str, icon_name: str, title: str, *, hidden: bool = False, cls: str = "",
+                     label: str = "", attr: str = "") -> str:
+            text = f'<span class="lbl">{h.e(label)}</span>' if label else ""
+            return (f'<button type="button" class="btn btn-sm btn-ghost {"btn-icon " if not label else ""}{cls}" '
+                    f'{attr or f"data-pm={chr(34)}{key}{chr(34)}"} title="{h.e(title)}"{" hidden" if hidden else ""}>'
+                    f'{h.icon(icon_name, 14)}{text}</button>')
 
-        toolbar = (
-            f'<div class="pm-row">'
+        def group(cls: str, title: str, body: str) -> str:
+            return f'<span class="pm-grp {cls}" title="{h.e(title)}">{body}</span>'
+
+        view = (
             f'<div class="seg pm-render"><button type="button" class="seg-b on" data-pm-render="interactive" title="Interactive map">{h.icon("target", 13)}</button>'
             f'<button type="button" class="seg-b" data-pm-render="static" title="Static matplotlib figure">{h.icon("image", 13)}</button></div>'
-            f'<span class="pm-tools pm-in"><span class="seg">{modes}</span>'
-            f'<span class="pm-zoom">'
-            f'<button type="button" class="btn btn-sm btn-ghost btn-icon" data-pm="out" title="Zoom out">-</button>'
-            f'<span class="pm-zoomtext muted small">x1.0</span>'
-            f'<button type="button" class="btn btn-sm btn-ghost btn-icon" data-pm="in" title="Zoom in">+</button></span>'
-            f'{icon_btn("reset", "refresh", "Reset view", hidden=True)}'
-            f'<span class="grow"></span>'
-            f'<b class="pm-seltext small"></b>'
-            f'{icon_btn("show", "image", "Open the selection in the carousel", hidden=True)}'
-            f'{icon_btn("clear", "x", "Clear the selection", hidden=True)}'
-            f'<span class="vsep"></span>'
-            f'{icon_btn("gallery", "grid", "Gallery: the map moves to a corner, and a lasso fills the rest with crops drawn at random from the selection", cls="pm-toggle")}'
-            f'{icon_btn("shuffle", "refresh", "Draw another random sample of crops", hidden=True)}'
-            f'{icon_btn("copy", "copy", "Copy what is shown as a picture -- always the same size and framing for the same view")}'
-            f'{icon_btn("save", "download", "Save what is shown as a PNG -- always the same size and framing for the same view")}'
-            f'</span></div>')
-        map_html = (f'<div class="pmap" data-map="{dkey}" data-src="{h.e(src)}" data-pimg="{h.e(pimg)}" data-target="{self.name}" '
+            f'<span class="pm-tools pm-in">'
+            + group("pm-g-view", "Move around the map",
+                    f'<span class="seg">'
+                    f'<button type="button" class="seg-b on" data-pm-mode="pan" title="Pan: drag to move the map">{h.icon("pan", 13)}</button>'
+                    f'<button type="button" class="seg-b" data-pm-mode="zoom" title="Zoom: drag a box to zoom into it">{h.icon("zoom", 13)}</button></span>'
+                    f'<span class="pm-zoom">'
+                    f'<button type="button" class="btn btn-sm btn-ghost btn-icon" data-pm="out" title="Zoom out">-</button>'
+                    f'<span class="pm-zoomtext muted small">x1.0</span>'
+                    f'<button type="button" class="btn btn-sm btn-ghost btn-icon" data-pm="in" title="Zoom in">+</button></span>'
+                    + icon_btn("reset", "refresh", "Reset the view: the whole cloud, centred", hidden=True))
+            + group("pm-g-sel", "Selection",
+                    icon_btn("", "lasso", "Lasso: draw around points to select them", label="Lasso",
+                             attr='data-pm-mode="lasso"')
+                    + '<b class="pm-seltext small"></b>'
+                    + icon_btn("show", "external", "Open the selected points in the carousel", hidden=True)
+                    + icon_btn("clear", "x", "Clear the selection", hidden=True))
+            + group("pm-g-gal", "Gallery",
+                    icon_btn("gallery", "grid", "Gallery: the map moves to a corner, and a lasso fills the rest "
+                             "with crops drawn at random from the selection", cls="pm-toggle", label="Gallery")
+                    + icon_btn("crop-smaller", "minus", "Smaller crops (more of them)", cls="pm-gal-x")
+                    + icon_btn("crop-larger", "plus", "Larger crops (fewer of them)", cls="pm-gal-x")
+                    + icon_btn("shuffle", "refresh", "Draw another random sample of crops", hidden=True, cls="pm-gal-x"))
+            + '<span class="grow"></span>'
+            + group("pm-g-out", "Export what is shown",
+                    icon_btn("copy", "copy", "Copy what is shown as a picture -- always the same size and framing for the same view")
+                    + icon_btn("save", "download", "Save what is shown as a PNG -- always the same size and framing for the same view"))
+            + '</span>')
+        toolbar = f'<div class="pm-row">{view}</div>'
+        map_html = (f'<div class="pmap" data-map="{dkey}" data-src="{h.e(src)}" data-pimg="{h.e(pimg)}" data-pinfo="{h.e(pinfo)}" data-target="{self.name}" '
                     f'data-static="{dkey}" title="">'
                     f'<div class="pm-bar">{toolbar}</div>'
                     f'<div class="pm-inter"><div class="pmap-box"></div></div>'

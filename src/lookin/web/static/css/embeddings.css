@@ -14,23 +14,43 @@
 .emb-folded .emb-right { flex: 1 1 auto; width: auto; }
 .emb-proto { border-top: 1px solid var(--line-2); padding-top: 6px; display: flex; flex-direction: column; gap: 4px; }
 .pmap { display: flex; flex-direction: column; gap: 6px; }
-/* the map's toolbar: one row of icons that never wraps, so nothing
-   appearing in it moves the map; the zoom buttons (the wheel zooms too) and
-   then the render switch fold away when the map is narrow */
+/* the map's toolbar: one row that never wraps, so nothing appearing in it
+   moves the map, in groups that say what they act on -- the view, the
+   lasso selection, the gallery, the export. Labels show when the map is
+   wide; when it is narrow the zoom buttons (the wheel zooms too) and then
+   the render switch fold away. */
 .pmap { container-type: inline-size; }
 .pm-bar { display: flex; }
-.pm-row { display: flex; align-items: center; gap: 2px; height: 28px; flex: 1 1 auto; flex-wrap: nowrap; min-width: 0; overflow: hidden; }
-.pm-row > *, .pm-in > *, .pm-zoom > * { flex: none; }
+.pm-row { display: flex; align-items: center; gap: 4px; height: 28px; flex: 1 1 auto; flex-wrap: nowrap; min-width: 0; overflow: hidden; }
+.pm-row > *, .pm-in > *, .pm-zoom > *, .pm-grp > * { flex: none; }
 .pm-in, .pm-zoom { display: flex; align-items: center; gap: 2px; }
-.pm-in { flex: 1 1 auto; min-width: 0; }
+.pm-in { flex: 1 1 auto; min-width: 0; gap: 4px; }
 .pm-row .grow { flex: 1 1 auto; }
-.pm-bar .seg-b { padding: 0 7px; }
-.pm-bar .btn-icon { width: 26px; padding: 0; justify-content: center; }
-.pm-bar .vsep { margin: 0 3px; }
+.pm-grp { display: flex; align-items: center; gap: 1px; height: 28px; padding: 0 2px; box-sizing: border-box;
+  border: 1px solid var(--line-2); border-radius: var(--r-s); background: var(--surface); }
+.pm-bar .seg { border: 0; }
+.pm-bar .seg-b { padding: 0 7px; height: 24px; border-radius: 4px; border-left: 0; }
+.pm-bar .btn { height: 24px; }
+.pm-bar .btn-icon { width: 24px; padding: 0; justify-content: center; }
+.pm-bar .btn:not(.btn-icon) { padding: 0 6px; gap: 4px; }
+.pm-bar .btn.on, .pm-toggle.on { color: var(--acc); background: var(--acc-soft); }
 .pm-zoomtext { min-width: 30px; text-align: center; }
-.pm-seltext { margin-right: 2px; white-space: nowrap; }
-@container (max-width: 520px) { .pm-zoom { display: none; } }
+.pm-seltext { padding: 0 3px; white-space: nowrap; }
+.pm-seltext:empty { display: none; }
+/* a group in use is tinted: the lasso while it draws or holds a selection,
+   the gallery while it is on */
+.pm-g-sel.live, .pmap.pm-gallery-on .pm-g-gal { border-color: color-mix(in srgb, var(--acc) 35%, var(--line-2)); }
+.pmap:not(.pm-gallery-on) .pm-gal-x { display: none; }
+.pmap.pm-gallery-on .pm-render { display: none; }   /* the static figure has no gallery */
+@container (max-width: 640px) { .pm-bar .lbl { display: none; } .pm-bar .btn:not(.btn-icon) { width: 24px; padding: 0; justify-content: center; } }
+@container (max-width: 540px) { .pm-zoom { display: none; } }
 @container (max-width: 420px) { .pmap:not(.pm-static) .pm-render { display: none; } }
+/* the corner map's grip, in gallery mode: drag to resize it by whole tiles */
+.pmap-grip { position: absolute; z-index: 2; width: 18px; height: 18px; margin: -15px 0 0 -15px; cursor: nwse-resize;
+  border-radius: 4px; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); touch-action: none; }
+.pmap-grip::before { content: ""; position: absolute; inset: 4px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); }
+.pmap-grip:hover { border-color: var(--acc); }
+.pmap-grip[hidden] { display: none; }
 .pmap-box { position: relative; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fff; }
 .pmap-c, .pmap-o { position: absolute; left: 0; top: 0; }
 /* gallery mode: the map in the top-left corner, crop tiles around it */
@@ -40,7 +60,6 @@
 .pmap-gal-hint { position: absolute; display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box; text-align: center; color: var(--muted); font-size: 13px; }
 .pm-gallery .pmap-c { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); box-sizing: content-box; }
 .pm-gallery .pmap-gal { background: var(--surface-2); }
-.pm-toggle.on { color: var(--acc); background: var(--acc-soft); }
 .pmap-o { cursor: crosshair; touch-action: none; }
 .pmap-card { position: absolute; z-index: 3; display: none; flex-direction: column; gap: 3px; padding: 6px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); pointer-events: none; max-width: 260px; }
 .pmap-card img { width: 240px; height: 240px; object-fit: contain; image-rendering: pixelated; background: #000; border-radius: 4px; }

@@ -163,7 +163,7 @@ class Session:
         self._images: dict = {}              # key -> Path (only paths a view registered)
         self._charts: "OrderedDict[str, bytes]" = OrderedDict()
         self._downloads: "OrderedDict[str, tuple]" = OrderedDict()
-        self._point_maps: "OrderedDict[str, Callable]" = OrderedDict()
+        self._point_maps: "OrderedDict[str, tuple]" = OrderedDict()   # key -> (resolve, describe)
         self._blob_lock = threading.Lock()
 
         # ---- push channel ----
@@ -352,20 +352,28 @@ class Session:
         with self._blob_lock:
             return self._images.get(key)
 
-    def put_point_map(self, resolve: Callable[[int], Optional[tuple]]) -> str:
+    def put_point_map(self, resolve: Callable[[int], Optional[tuple]],
+                      describe: Optional[Callable[[int], Optional[tuple]]] = None) -> str:
         """Register an interactive map's point -> (path, lut, turns)
-        resolver; /pimg/<sid>/<key>/<i> serves through it. Only the last
-        few maps are kept."""
+        resolver; /pimg/<sid>/<key>/<i> serves through it. `describe`,
+        point -> (uuid, crop), lets /pinfo/<sid>/<key>/<i> answer the
+        full-size view's details panel. Only the last few maps are kept."""
         key = secrets.token_hex(6)
         with self._blob_lock:
-            self._point_maps[key] = resolve
+            self._point_maps[key] = (resolve, describe)
             while len(self._point_maps) > 4:
                 self._point_maps.popitem(last=False)
         return key
 
     def point_map(self, key: str):
         with self._blob_lock:
-            return self._point_maps.get(key)
+            entry = self._point_maps.get(key)
+        return entry[0] if entry else None
+
+    def point_describer(self, key: str):
+        with self._blob_lock:
+            entry = self._point_maps.get(key)
+        return entry[1] if entry else None
 
     def put_chart(self, png: bytes, key: Optional[str] = None) -> str:
         key = key or secrets.token_hex(8)

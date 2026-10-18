@@ -651,7 +651,8 @@
   // remembered from one crop to the next; "i" toggles it.
   //
   // A crop opened from a list (the Gallery's carousel: an element with
-  // data-gen) gets < > in the middle of the bar, and the arrow keys: they
+  // data-gen; the Embeddings gallery's tiles: data-zoom-list) gets < > in
+  // the middle of the bar, and the arrow keys: they
   // step through the crops of that list, loading its next page when the
   // last loaded crop is reached.
   let zoomState = null;
@@ -663,7 +664,7 @@
     const src = img.getAttribute("data-zoom-src") || img.currentSrc || img.src;
     const title = img.getAttribute("data-title") || img.alt || "image";
     const info = img.getAttribute("data-info") || "";
-    const list = img.closest(".car-list[data-gen]");
+    const list = img.closest(".car-list[data-gen], [data-zoom-list]");
     const z = document.getElementById("zoom");
     const fname = "lookin_" + title.replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 60) + ".png";
     z.innerHTML =
@@ -772,6 +773,7 @@
   }
 
   function zoomMoreSentinel(st) {
+    if (!st.list.id) return null;                 // a list with no further pages (the map's tiles)
     const s = document.querySelector('[data-list="' + st.list.id + '"]');
     return s && !s.hidden ? s : null;
   }

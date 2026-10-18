@@ -333,6 +333,27 @@ def create_app(webapp: WebApp, enable_mcp: bool = False) -> FastAPI:
         data, mime = crop_bytes(str(path), lut, int(turns) % 4)
         return Response(data, media_type=mime, headers={"Cache-Control": "private, max-age=600"})
 
+    @app.get("/pinfo/{sid}/{mkey}/{i}")
+    def point_info(sid: str, mkey: str, i: int):
+        """The details panel for point `i` of an interactive map: the map's
+        tiles open the full-size view directly, and know only their point."""
+        from lookin.web import html as h
+        from lookin.web.views.details import details_html
+
+        session = store.get(sid, create=False)
+        describe = session.point_describer(mkey) if session is not None else None
+        found = describe(int(i)) if describe is not None else None
+        if not found:
+            return Response(status_code=404)
+        uid, crop = found
+        with session.lock:
+            try:
+                body = details_html(session, uid=uid, crop=None if uid is not None else crop)
+            except Exception as ex:  # noqa: BLE001
+                traceback.print_exc()
+                body = h.banner(f"Could not read this crop: {type(ex).__name__}: {ex}", "error")
+        return HTMLResponse(body, headers={"Cache-Control": "no-store"})
+
     @app.get("/info/{sid}")
     def crop_info(sid: str, u: Optional[str] = None, c: Optional[str] = None):
         """The details panel of the full-size view (views/details.py),

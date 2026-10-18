@@ -53,8 +53,12 @@
   // how far a drag may push the cloud off the canvas: its bounding box
   // keeps at least this fraction of the view's half-width on screen
   const PAN_KEEP = 0.1;
-  const GALLERY_COLS = 7;               // tiles along the panel's shorter side
-  const GALLERY_MAP_CELLS = 3;          // the corner map spans 3 x 3 tiles
+  const GALLERY_COLS = 7;               // tiles along the panel's shorter side, by default ...
+  const GALLERY_COLS_MIN = 3;           // ... and as the -/+ buttons may set it
+  const GALLERY_COLS_MAX = 16;
+  const GALLERY_MAP_CELLS = 3;          // the corner map spans 3 x 3 tiles by default
+  const GALLERY_MAP_CELLS_MIN = 2;      // ... and its grip snaps it to whole tiles
+  const GALLERY_KEY = "lookin.embGallery";
   const GALLERY_SAMPLE_MAX = 2000;      // crops drawn per selection
   const EXPORT_SIZE = 800;              // capture side, CSS px ...
   const EXPORT_RATIO = 2;               // ... drawn at 2x: a 1600 x 1600 PNG
@@ -67,7 +71,15 @@
   const MIN_PLOT_SIZE = 420;
 
   function plotPadding(size) { return Math.max(PLOT_PADDING_MIN, size * PLOT_PADDING_FRAC); }
-  function galleryMapSide(cell) { return Math.floor(GALLERY_MAP_CELLS * cell); }
+  function galleryMapSide(cell, cells) { return Math.floor(cells * cell); }
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+  // tile density and map size: kept in this browser, like the splitter
+  function loadGalleryPrefs() {
+    try { return JSON.parse(localStorage.getItem(GALLERY_KEY) || "{}") || {}; } catch (e) { return {}; }
+  }
+  function saveGalleryPrefs(p) {
+    try { localStorage.setItem(GALLERY_KEY, JSON.stringify(p)); } catch (e) { /* private mode */ }
+  }
 
   function markerPolygon(kind, cx, cy, r) {
     const ring = (n, start, radius) => {
@@ -133,6 +145,10 @@
       this.current = null;
       this.sprites = {};
       this.gallery = false;             // gallery layout: map in the corner, crops around
+      const gp = loadGalleryPrefs();
+      this.density = clamp(+gp.density || GALLERY_COLS, GALLERY_COLS_MIN, GALLERY_COLS_MAX);
+      this.wantCells = Math.max(GALLERY_MAP_CELLS_MIN, +gp.cells || GALLERY_MAP_CELLS);
+      this.pinfoBase = root.getAttribute("data-pinfo") || "";
       this.buildDom();
       this.room = this.measure();       // [w, h] the panel leaves for the box
       this.boxW = this.boxH = Math.min(this.room[0], this.room[1]);
@@ -160,8 +176,13 @@
       this.card.innerHTML = '<img alt=""><b></b><span></span>';
       this.gal = document.createElement("div");
       this.gal.className = "pmap-gal";
+      this.gal.setAttribute("data-zoom-list", "");
+      this.grip = document.createElement("div");
+      this.grip.className = "pmap-grip";
+      this.grip.title = "Drag to make the map bigger or smaller";
+      this.grip.hidden = true;
       this.box.innerHTML = "";
-      this.box.append(this.gal, this.canvas, this.overlay, this.card);
+      this.box.append(this.gal, this.canvas, this.overlay, this.grip, this.card);
       this.zoomText = r.querySelector(".pm-zoomtext");
       this.selText = r.querySelector(".pm-seltext");
       this.btnReset = r.querySelector("[data-pm=reset]");
@@ -274,17 +295,18 @@
       let size = square;
       this.boxW = this.boxH = square;
       if (this.gallery) {
-        // tiles of about a seventh of the shorter side, as many whole
+        // tiles of about 1/density of the shorter side, as many whole
         // columns and rows as fit, sized so the grid fills both the width
-        // and the height to within a fraction of a tile
-        const m = GALLERY_MAP_CELLS, c0 = square / GALLERY_COLS;
-        this.mapCells = m;
-        this.cols = Math.max(m + 1, Math.round(W / c0));
-        this.rows = Math.max(m + 1, Math.round(H / c0));
+        // and the height to within a fraction of a tile; the map spans the
+        // number of tiles asked for, as long as a column of crops is left
+        const c0 = square / this.density;
+        this.cols = Math.max(GALLERY_MAP_CELLS_MIN + 1, Math.round(W / c0));
+        this.rows = Math.max(GALLERY_MAP_CELLS_MIN, Math.round(H / c0));
+        this.mapCells = clamp(this.wantCells, GALLERY_MAP_CELLS_MIN, Math.min(this.rows, this.cols - 1));
         this.cell = Math.min(W / this.cols, H / this.rows);
         this.boxW = Math.floor(this.cols * this.cell);
         this.boxH = Math.floor(this.rows * this.cell);
-        size = galleryMapSide(this.cell);
+        size = galleryMapSide(this.cell, this.mapCells);
       }
       const ratio = this.scale / this.fitScale;
       this.size = size;
@@ -293,8 +315,38 @@
       this.scale = this.fitScale * ratio;
       this.clampCentre();
       this.box.classList.toggle("pm-gallery", this.gallery);
+      this.root.classList.toggle("pm-gallery-on", this.gallery);
+      this.placeGrip();
       this.fillGallery();
       this.requestRedraw();
+    }
+
+    // the corner map's grip: drag it to give the map more or fewer tiles
+    placeGrip() {
+      this.grip.hidden = !this.gallery;
+      if (!this.gallery) return;
+      this.grip.style.left = this.size + "px";
+      this.grip.style.top = this.size + "px";
+    }
+
+    setMapCells(n) {
+      n = clamp(n, GALLERY_MAP_CELLS_MIN, Math.min(this.rows, this.cols - 1));
+      this.wantCells = n;
+      if (n === this.mapCells) return;
+      this.hideHover();
+      this.layout();
+    }
+
+    setDensity(d) {
+      d = clamp(d, GALLERY_COLS_MIN, GALLERY_COLS_MAX);
+      if (d === this.density) return;
+      // the map keeps about the same size on screen: more tiles, more of them under it
+      const side = this.mapCells * this.cell;
+      this.density = d;
+      this.layout();
+      this.wantCells = Math.max(GALLERY_MAP_CELLS_MIN, Math.round(side / this.cell));
+      this.layout();
+      saveGalleryPrefs({ density: this.density, cells: this.wantCells });
     }
 
     // ---- gallery ----
@@ -340,8 +392,15 @@
         const img = document.createElement("img");
         img.alt = "";
         img.src = this.imgBase + i;
-        img.title = this.d.hl[this.d.hi[i]] || "";
+        const label = this.d.hl[this.d.hi[i]] || "";
+        img.title = label;
         img.dataset.i = i;
+        // a click opens the full-size view (app.js), with < > through the
+        // tiles and the (i) details of this point
+        img.setAttribute("data-zoom", "");
+        img.setAttribute("data-pixelated", "");
+        img.setAttribute("data-title", label || "crop");
+        if (this.pinfoBase) img.setAttribute("data-info", this.pinfoBase + i);
         img.dataset.r = r; img.dataset.c = c;
         img.style.left = (c * cell) + "px";
         img.style.top = (r * cell) + "px";
@@ -511,7 +570,12 @@
       if (this.btnClear) this.btnClear.hidden = !has;
       if (this.btnGallery) this.btnGallery.classList.toggle("on", this.gallery);
       if (this.btnShuffle) this.btnShuffle.hidden = !(this.gallery && this.selected.length);
+      const less = this.root.querySelector("[data-pm=crop-larger]"), more = this.root.querySelector("[data-pm=crop-smaller]");
+      if (less) less.disabled = this.density <= GALLERY_COLS_MIN;
+      if (more) more.disabled = this.density >= GALLERY_COLS_MAX;
       this.root.querySelectorAll("[data-pm-mode]").forEach((b) => b.classList.toggle("on", b.getAttribute("data-pm-mode") === this.mode));
+      const sel = this.root.querySelector(".pm-g-sel");
+      if (sel) sel.classList.toggle("live", this.mode === "lasso" || has);
     }
 
     // ---- picking ----
@@ -646,23 +710,48 @@
       on("[data-pm=save]", () => this.saveImage());
       const copyBtn = this.root.querySelector("[data-pm=copy]");
       if (copyBtn && !this.canCopy()) copyBtn.hidden = true;
-      // a tile: hovering rings its point on the map, a click opens it
+      // a tile: hovering rings its point on the map; a click opens the
+      // full-size view (its data-zoom, handled by app.js)
       this.gal.addEventListener("pointerover", (ev) => {
         const t = ev.target.closest("img[data-i]");
         this.current = t ? ["p", +t.dataset.i] : null;
         this.drawOverlay();
       });
       this.gal.addEventListener("pointerleave", () => { this.current = null; this.drawOverlay(); });
-      this.gal.addEventListener("click", (ev) => {
-        const t = ev.target.closest("img[data-i]");
-        if (t) window.lookinAct(this.target, "point", { i: +t.dataset.i });
-      });
+      on("[data-pm=crop-larger]", () => this.setDensity(this.density - 1));
+      on("[data-pm=crop-smaller]", () => this.setDensity(this.density + 1));
+      this.wireGrip();
       this.root.querySelectorAll("[data-pm-render]").forEach((b) => b.addEventListener("click", () => {
         const which = b.getAttribute("data-pm-render");
         this.root.classList.toggle("pm-static", which === "static");
         this.root.querySelectorAll("[data-pm-render]").forEach((x) => x.classList.toggle("on", x === b));
       }));
       this.wireLegend();
+    }
+
+    wireGrip() {
+      const g = this.grip;
+      g.addEventListener("pointerdown", (ev) => {
+        if (ev.button !== 0) return;
+        ev.preventDefault(); ev.stopPropagation();
+        try { g.setPointerCapture(ev.pointerId); } catch (e) { /* a pointer already gone */ }
+        this.hideHover();
+        const box = this.box.getBoundingClientRect();
+        const move = (e) => {
+          // the corner follows the pointer, snapped to whole tiles
+          const reach = Math.max(e.clientX - box.left, e.clientY - box.top);
+          this.setMapCells(Math.round(reach / this.cell));
+        };
+        const up = () => {
+          g.removeEventListener("pointermove", move);
+          g.removeEventListener("pointerup", up);
+          g.removeEventListener("pointercancel", up);
+          saveGalleryPrefs({ density: this.density, cells: this.wantCells });
+        };
+        g.addEventListener("pointermove", move);
+        g.addEventListener("pointerup", up);
+        g.addEventListener("pointercancel", up);
+      });
     }
 
     tap(px, py) {
@@ -757,7 +846,7 @@
         return out;
       }
       // the grid shown (its columns and rows), at a fixed tile size
-      const cell = W / GALLERY_COLS, side = galleryMapSide(cell);
+      const cell = W / GALLERY_COLS, side = galleryMapSide(cell, this.mapCells);
       out.width = Math.round(this.cols * cell * R);
       out.height = Math.round(this.rows * cell * R);
       g.fillStyle = "#f7f8fa";                      // the tiles' backdrop (--surface-2)
