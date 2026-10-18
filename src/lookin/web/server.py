@@ -418,6 +418,8 @@ def run_web(host: str = "127.0.0.1", port: int = 8560, dataset: Optional[str] = 
         library.set_library_root(library_dir)
     webapp = WebApp(dataset=dataset, experiments=experiments)
     app = create_app(webapp, enable_mcp=enable_mcp)
+    from lookin.web.render import warm_up
+    warm_up()
     url = f"http://{'127.0.0.1' if host in ('', '0.0.0.0', '*') else host}:{port}"
     print(f"[lookin] web interface on {url}", flush=True)
     if enable_mcp:

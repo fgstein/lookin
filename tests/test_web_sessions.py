@@ -264,7 +264,7 @@ def test_a_dataset_dropped_on_a_workspace_becomes_its_dataset(example, tmp_path)
         used = lib.create_workspace("used", lib.Mount(dataset_path=str(example / "dataset.csv")))
         s = _session(WebApp(), "v" * 24)
         home = s.view("home")
-        home.reload()
+        home.reload(wait=True)
         other = str(example / "dataset_reviewed.csv")
         with RequestScope(s):
             home.on_drop_on_ws(id=empty.id, kind="dataset", key=other)
@@ -499,3 +499,73 @@ def test_a_hidden_tab_pinging_is_not_reaped_and_needs_no_lock():
         s.lock.release()
     assert time.time() - s.last_seen < 60
     assert client.post("/api/ping", json={"sid": "q" * 24}).status_code == 410
+
+
+def test_home_shows_at_once_and_fills_in_from_the_library(tmp_path):
+    """Home draws from an index read off the request path: no analysis view
+    is built (their imports take seconds), and a workspace saved on disk
+    appears once the library is read again -- not on every redraw."""
+    from lookin.core import library as lib
+    from lookin.web.home_index import HomeIndex
+
+    lib.set_library_root(tmp_path / "lib")
+    try:
+        first = lib.create_workspace("first", lib.Mount(dataset_path=""))
+        s = _session(WebApp(), "w" * 24)
+        assert not {"metrics", "embeddings", "gallery", "cleaning"} & set(s.views)
+        home = s.view("home")
+        home.reload(wait=True)
+        with RequestScope(s):
+            assert "first" in render.render_view(s, "home")
+        second = lib.create_workspace("second", lib.Mount(dataset_path=""))
+        with RequestScope(s):
+            assert "second" not in render.render_view(s, "home")      # nothing read on a redraw
+        home.reload(wait=True)
+        with RequestScope(s):
+            html = render.render_view(s, "home")
+        assert "first" in html and "second" in html
+        assert HomeIndex.get() is home.index                            # one per library
+        assert {first.id, second.id} <= {w.id for w in home.workspaces}
+    finally:
+        lib.set_library_root(None)
+
+
+def test_a_dropped_dataset_is_set_at_once_and_hashed_behind(example, tmp_path):
+    import time
+
+    from lookin.core import library as lib
+
+    lib.set_library_root(tmp_path / "lib")
+    try:
+        ws = lib.create_workspace("w", lib.Mount(dataset_path=""))
+        s = _session(WebApp(), "x" * 24)
+        home = s.view("home")
+        home.reload(wait=True)
+        path = str(example / "dataset.csv")
+        with RequestScope(s):
+            home.on_drop_on_ws(id=ws.id, kind="dataset", key=path)
+        assert lib.load_workspace(ws.path).mount.dataset_path == path
+        for _ in range(200):
+            if lib.load_workspace(ws.path).dataset_hash:
+                break
+            time.sleep(0.02)
+        assert lib.load_workspace(ws.path).dataset_hash == lib.hash_file(path)
+    finally:
+        lib.set_library_root(None)
+
+
+def test_home_redraws_at_most_once_a_second_on_its_own():
+    """An MLflow listing moves several times a second: Home is marked for
+    redrawing once, then once more when the second is up."""
+    import time
+
+    s = _session(WebApp(), "y" * 24)
+    home = s.view("home")
+    pushed = []
+    s.push = lambda message: pushed.append(message)
+    home._last_mark = 0.0
+    for _ in range(10):
+        home._hub_changed()
+    assert len(pushed) == 1
+    time.sleep(1.3)
+    assert len(pushed) == 2

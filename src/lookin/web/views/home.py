@@ -30,12 +30,15 @@ from lookin.core import mlflow_client as mlf
 from lookin.core import workspace_sources as wss
 from lookin.ui.home_view import csv_key, parse_key, run_key, workspace_color
 from lookin.web import html as h
-from lookin.web.datasets import catalog
+from lookin.web.home_index import HomeIndex, hash_dataset_later
 from lookin.web.mlflow_hub import MlflowHub
 from lookin.web.views.base import ConfirmDialog, Dialog, PromptDialog, View
 from lookin.web.views.files import FileBrowserDialog, menu
 
 GROUP_PAGE = 25
+# Home is redrawn at most this often by what happens elsewhere (an MLflow
+# listing, the library read again) -- a click still redraws it at once.
+REDRAW_S = 1.0
 RECENT_RUNS = 14
 SIDE_DATASETS = 12
 STATUS_DOT = {"FINISHED": "var(--ok)", "RUNNING": "var(--acc)", "SCHEDULED": "var(--ghost)",
@@ -83,13 +86,6 @@ def _ms_when(ms) -> str:
         return ""
 
 
-def _snapshot_count(ws) -> int:
-    try:
-        return sum(1 for e in ws.snapshots_dir().iterdir() if e.suffix == ".json")
-    except OSError:
-        return 0
-
-
 def _mlflow_link(uri: str) -> str:
     """A server chip's "Open in MLflow" -- only for an http(s) address (see
     h.safe_href): the address comes from the Home settings file."""
@@ -107,7 +103,7 @@ class HomeView(View):
     def __init__(self, session):
         super().__init__(session)
         self.hub = MlflowHub.get()
-        self.workspaces: list = []
+        self.index = HomeIndex.get()
         self.query = ""
         self.ws_filter = ""
         self.quick: set = set()
@@ -117,16 +113,52 @@ class HomeView(View):
         self.expanded: set = set()
         self.ds_filter = ""
         self._last_mark = 0.0
+        self._mark_timer = None
+        self._mark_lock = threading.Lock()
         self.hub.subscribe(session.sid, self._hub_changed)
-        session.on_close(lambda: self.hub.unsubscribe(session.sid))
-        self.reload()
+        self.index.subscribe(session.sid, self._index_changed)
+        session.on_close(lambda: (self.hub.unsubscribe(session.sid), self.index.unsubscribe(session.sid)))
+        self.index.ensure(self.hub)
+
+    @property
+    def workspaces(self) -> list:
+        """The library as the index last read it (see web/home_index.py)."""
+        return self.index.workspaces
 
     def _hub_changed(self) -> None:
-        if self.s.mode == "home":
-            self.s.mark("home")
+        # The catalogue names the datasets of the runs just listed.
+        self.index.refresh_soon(self.hub)
+        self._redraw()
 
-    def reload(self) -> None:
-        self.workspaces = lib.list_workspaces()
+    def _index_changed(self) -> None:
+        self._redraw()
+
+    def _redraw(self) -> None:
+        """Mark Home for redrawing, at most once every REDRAW_S: an MLflow
+        listing moves several times a second, and redrawing the page (and
+        sending it) each time kept the tab busy for nothing."""
+        if self.s.mode != "home":
+            return
+        with self._mark_lock:
+            wait = self._last_mark + REDRAW_S - time.monotonic()
+            if wait <= 0:
+                self._last_mark = time.monotonic()
+                self.s.mark("home")
+                return
+            if self._mark_timer is None:
+                def fire():
+                    with self._mark_lock:
+                        self._mark_timer = None
+                        self._last_mark = time.monotonic()
+                    if self.s.mode == "home":
+                        self.s.mark("home")
+                self._mark_timer = threading.Timer(wait, fire)
+                self._mark_timer.daemon = True
+                self._mark_timer.start()
+
+    def reload(self, wait: bool = False) -> None:
+        """Read the library again -- in the background unless `wait`."""
+        self.index.refresh(wait=wait, hub=self.hub)
 
     def on_shown(self) -> None:
         self.reload()
@@ -154,24 +186,24 @@ class HomeView(View):
                         " ".join(e.name for e in w.mount.experiments)]).lower()
         if q and not all(word in hay for word in q.split()):
             return False
-        if "pinned" in self.quick and not lib.is_favorite(w.id):
+        if "pinned" in self.quick and not self.index.is_favorite(w.id):
             return False
         if "week" in self.quick:
-            stamp = lib.last_opened(w.id) or w.updated_at
+            stamp = self.index.last_opened(w.id) or w.updated_at
             try:
                 t = datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).replace(tzinfo=None)
                 if datetime.now() - t > timedelta(days=7):
                     return False
             except ValueError:
                 return False
-        if "download" in self.quick and wss.download_state(w) not in (wss.DOWNLOAD_PARTIAL, wss.DOWNLOAD_NONE):
+        if "download" in self.quick and self.index.info_of(w).summary.state not in (wss.DOWNLOAD_PARTIAL, wss.DOWNLOAD_NONE):
             return False
         return True
 
     def _groups(self) -> list:
         """[(group id, name, color, [workspaces], total, is_board_column)]"""
         if self.group_by == "group":
-            board = bd.load()
+            board = self.index.board
             out = []
             for index, (column, items) in enumerate(bd.layout(board, self.workspaces)):
                 out.append((column["id"], column["name"], workspace_color(column["id"]),
@@ -211,7 +243,9 @@ class HomeView(View):
         bodies = []
         for gid, name, color, items, gtotal, is_column in groups:
             bodies.append(self._group_tbody(gid, name, color, items, gtotal, is_column))
-        if not self.workspaces:
+        if not self.index.ready:
+            bodies = ['<tbody><tr><td colspan="8">' + h.spinner("Reading the library...") + '</td></tr></tbody>']
+        elif not self.workspaces:
             bodies.append('<tbody><tr><td colspan="8">' + h.empty(
                 "No workspace yet. Create one with New workspace, then drag runs onto it.") + '</td></tr></tbody>')
         note = ('<div class="lst-foot">Drag a run or a dataset from the right onto a workspace row to add it; drag a '
@@ -242,14 +276,14 @@ class HomeView(View):
         if collapsed:
             recent = pending = 0
             for w in items:
-                stamp = lib.last_opened(w.id) or w.updated_at
+                stamp = self.index.last_opened(w.id) or w.updated_at
                 try:
                     t = datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).replace(tzinfo=None)
                     if datetime.now() - t <= timedelta(days=7):
                         recent += 1
                 except ValueError:
                     pass
-                if wss.download_state(w) in (wss.DOWNLOAD_PARTIAL, wss.DOWNLOAD_NONE):
+                if self.index.info_of(w).summary.state in (wss.DOWNLOAD_PARTIAL, wss.DOWNLOAD_NONE):
                     pending += 1
             bits = []
             if recent:
@@ -289,7 +323,8 @@ class HomeView(View):
         expanded = w.id in self.expanded
         current = self.s.current_workspace
         progress = self.hub.downloading.get(w.id)
-        summary = wss.download_summary(w)
+        info = self.index.info_of(w)
+        summary = info.summary
         color, label = DOWNLOAD_STATE.get(summary.state, ("var(--ghost)", ""))
         if progress is not None:
             files = f'<span class="row-nw small" style="color:var(--acc-ink)"><span class="spinner"></span>{h.e(progress)}</span>'
@@ -303,8 +338,8 @@ class HomeView(View):
             files = f'<span class="row-nw small" style="color:var(--muted)">{h.dot(color, size=6)}{h.e(label)}{dl}</span>'
         dataset = Path(w.mount.dataset_path).name if w.mount.dataset_path else "no dataset yet"
         exps = ", ".join(e.name for e in w.mount.experiments) or "—"
-        opened = _when(lib.last_opened(w.id) or w.updated_at)
-        missing = wss.missing_files(w)
+        opened = _when(self.index.last_opened(w.id) or w.updated_at)
+        missing = info.missing
         if missing:
             name_link = (f'<button type="button" class="ws-name btn-link" style="border:0;background:none;padding:0;font:inherit;font-weight:500;cursor:pointer;color:var(--ink)"'
                          f'{self.a("open_ws", id=w.id)} title="{h.e(w.description or w.label())}">{h.e(w.label())}</button>')
@@ -318,13 +353,13 @@ class HomeView(View):
             open_btn = h.link_button("", f"/?workspace={quote(w.id, safe='')}", icon_name="external", small=True,
                                      kind="ghost", title="Open in a new tab")
         is_open = current is not None and current.id == w.id
-        star = h.icon("star", 12, "c-warn") if lib.is_favorite(w.id) else ""
+        star = h.icon("star", 12, "c-warn") if self.index.is_favorite(w.id) else ""
         open_badge = '<span class="badge" style="background:var(--acc);color:#fff">open</span>' if is_open else ""
         ws_menu = menu([
             ("Open in a new tab", self.a("open_ws", id=w.id), "external", False),
             ("Dataset…", self.a("set_dataset", id=w.id), "table", False),
             ("Rename…", self.a("rename", id=w.id), "edit", False),
-            ("Unfavourite" if lib.is_favorite(w.id) else "Favourite", self.a("fav", id=w.id), "star", False),
+            ("Unfavourite" if self.index.is_favorite(w.id) else "Favourite", self.a("fav", id=w.id), "star", False),
             ("Details, export, snapshots…", self.a("details", id=w.id), "save", False),
             "hr",
             ("Delete…", self.a("delete", id=w.id), "trash", True),
@@ -338,7 +373,7 @@ class HomeView(View):
               f'<td class="nowrap"><span class="row-nw">{star}{name_link}{open_badge}</span></td>'
               f'<td class="mono small muted nowrap" title="{h.e(w.mount.dataset_path)}">{h.e(dataset)}</td>'
               f'<td class="mono small" style="max-width:280px"><span class="ell" style="display:block" title="{h.e(exps)}">{h.e(exps)}</span></td>'
-              f'<td class="num small">{_snapshot_count(w)}</td>'
+              f'<td class="num small">{info.snapshots}</td>'
               f'<td class="nowrap">{files}</td>'
               f'<td class="small muted nowrap" style="text-align:right">{h.e(opened)}</td>'
               f'<td><span class="row-nw" style="gap:0">{open_btn}{ws_menu}</span></td></tr>')
@@ -348,12 +383,13 @@ class HomeView(View):
         return tr + detail
 
     def _ws_detail(self, w) -> str:
+        present = self.index.info_of(w).present
         rows = []
         if not w.mount.experiments:
             rows.append('<div class="small muted" style="font-style:italic">Empty -- drop runs or CSVs here.</div>')
         for e in w.mount.experiments:
             if e.from_mlflow():
-                downloaded = wss.is_downloaded(e)
+                downloaded = present.get(e.name, False)
                 server = self.hub.servers.get(wss.normalize_uri(e.mlflow_uri))
                 where = f"{e.mlflow_run_name or e.mlflow_run_id[:8]} / {e.artifact_path}"
                 if server is None:
@@ -364,14 +400,14 @@ class HomeView(View):
                 lead = h.icon("cloud", 13)
             else:
                 where = e.path
-                present = Path(e.path).is_file()
-                state = h.dot("var(--ok)" if present else "var(--err)", "On disk" if present else "Missing from disk", 7)
+                here = present.get(e.name, False)
+                state = h.dot("var(--ok)" if here else "var(--err)", "On disk" if here else "Missing from disk", 7)
                 link = ""
                 lead = h.icon("file", 13)
             rows.append(f'<div class="row-nw" style="min-height:24px">{lead}<span class="mono small">{h.e(e.name)}</span>'
                         f'<span class="small muted ell grow" title="{h.e(where)}">{h.e(where)}</span>{state}{link}'
                         f'{h.button(icon_name="x", act_attr=self.a("remove_exp", id=w.id, name=e.name), small=True, kind="ghost", title="Remove from this workspace (the run and its files are not touched)")}</div>')
-        snaps = lib.list_snapshots(w)
+        snaps = self.index.snapshots(w)
         snap_html = ""
         if snaps:
             items = "".join(
@@ -449,13 +485,13 @@ class HomeView(View):
     # ---- datasets ----
 
     def _datasets_panel(self) -> str:
-        entries = catalog(self.workspaces, self.hub)
+        entries = list(self.index.datasets)
         q = (self.ds_filter + " " + self.query).strip().lower()
         if q:
             entries = [d for d in entries if all(w in (d.path + " " + d.name).lower() for w in q.split())]
         rows = []
         for d in entries[:SIDE_DATASETS]:
-            facts = d.facts()
+            facts = getattr(d, "cached", None)
             # Only a file on this machine can be dropped on a workspace: one
             # named by a run's parameters alone would give it a dataset it
             # cannot load.
@@ -469,7 +505,8 @@ class HomeView(View):
                 f'<span class="mono small muted" style="width:36px;text-align:right">{len(d.used_by)}</span>'
                 f'<span class="small muted nowrap" style="width:72px;text-align:right">{h.e(_when(datetime.fromtimestamp(d.mtime).isoformat()) if d.mtime else "not here")}</span></div>')
         if not rows:
-            rows.append(h.empty("No dataset known yet. Watch a folder, or set a workspace's dataset."))
+            rows.append(h.spinner("Reading the datasets...") if not self.index.ready else
+                        h.empty("No dataset known yet. Watch a folder, or set a workspace's dataset."))
         head = (f'<div class="toolbar"><h2>Datasets</h2>'
                 f'{h.text_input(self.ds_filter, input_=self.i("ds_filter"), type_="search", placeholder="Filter…", cls="grow")}'
                 f'{h.button(f"All datasets ({len(entries):,})", act_attr=self.a("all_datasets"), small=True, cls="btn-acc")}</div>'
@@ -531,11 +568,13 @@ class HomeView(View):
     def on_move_ws(self, group: str = "", key: str = "", kind: str = "", **_):
         if kind == "ws" and key:
             bd.move(key, group, known_ids=[w.id for w in self.workspaces])
+            self.index.reload_board()
         self.refresh()
 
     def on_new_group(self, **_):
         def add(values):
             bd.add_column(values.get("name", "") or "")
+            self.index.reload_board()
             self.refresh()
         self.s.open_dialog(PromptDialog("Add a group", [("name", "Group name", bd.next_default_name(bd.load()))],
                                         add, submit_label="Add"))
@@ -547,6 +586,7 @@ class HomeView(View):
 
         def save(values):
             bd.rename_column(group, values.get("name", "") or "")
+            self.index.reload_board()
             self.refresh()
         self.s.open_dialog(PromptDialog("Rename group", [("name", "Group name", column["name"])], save))
 
@@ -564,6 +604,7 @@ class HomeView(View):
 
         def yes():
             bd.remove_column(group, workspaces=self.workspaces)
+            self.index.reload_board()
             self.s.toast(f"Removed \"{column['name']}\"." + (f" {count} workspace(s) moved to \"{target['name']}\"." if count else ""), "neutral")
             self.refresh()
         self.s.open_dialog(ConfirmDialog(f"Remove the group \"{column['name']}\"?", body, yes, yes_label="Remove"))
@@ -573,10 +614,10 @@ class HomeView(View):
     # ------------------------------------------------------------------
 
     def _ws(self, wid):
-        return next((w for w in self.workspaces if w.id == wid), None)
+        return self.index.workspace(wid)
 
     def on_fav(self, id: str = "", **_):  # noqa: A002
-        lib.set_favorite(id, not lib.is_favorite(id))
+        self.index.set_favorite(id, not lib.is_favorite(id))
         self.refresh()
 
     def on_details(self, id: str = "", **_):  # noqa: A002
@@ -618,7 +659,7 @@ class HomeView(View):
 
         def yes():
             if lib.delete_workspace(ws):
-                self.reload()
+                self.index.remove(ws.id)
                 self.s.toast(f"Deleted {ws.label()}.", "neutral")
             else:
                 self.s.toast("Could not delete the workspace.", "error")
@@ -643,7 +684,7 @@ class HomeView(View):
         if current is not None and current.id == ws.id:
             self.s.current_workspace = ws
             self.s.mark("chrome")
-        self.reload()
+        self.index.put(ws)
         self.s.mark("home", "dialogs")
 
     # ---- opening and downloading ----
@@ -737,16 +778,18 @@ class HomeView(View):
             lambda: self.set_dataset(ws, path), yes_label="Replace", danger=False))
 
     def set_dataset(self, ws, path: str) -> None:
-        digest = lib.hash_file(path) if path and Path(path).is_file() else ""
-
+        """The dataset is set now; its fingerprint (a hash of the whole
+        file -- seconds for a large CSV on a network share) is computed
+        behind, see hash_dataset_later."""
         def change(fresh):
-            fresh.mount.dataset_path, fresh.dataset_hash = path, digest
+            fresh.mount.dataset_path, fresh.dataset_hash = path, ""
             return True
         fresh = lib.update_workspace(ws.path, change)
         if fresh is None:
             self.s.toast(f"Could not write {ws.label()} -- was it deleted?", "error")
             return
         self.after_workspace_change(fresh)
+        hash_dataset_later(fresh, path, self.index.put)
         self.s.toast(f"{fresh.label()} now uses {Path(path).name or 'no dataset'}.", "ok")
 
     def add_keys(self, ws, keys: list, on_done=None) -> None:
@@ -871,7 +914,7 @@ class NewWorkspaceDialog(Dialog):
         param = self.home.hub.config.dataset_param
         add = (h.checkbox(f"Add the {len(self.keys)} selected item(s)", self.add_keys, change=self.c("add_keys"))
                if self.keys else "")
-        columns = bd.load()["columns"]
+        columns = self.home.index.board["columns"]
         group = (h.select([(c["id"], c["name"]) for c in columns], self.group, change=self.c("group"), label="Group")
                  if len(columns) > 1 else "")
         return (f'<div class="form-col">{h.text_input(self.name, change=self.c("name"), enter=h.on_enter(self.target, "create_enter"), label="Name", autofocus=True)}'
@@ -924,17 +967,18 @@ class NewWorkspaceDialog(Dialog):
             self.refresh()
             return
         path = self.dataset
-        ws = lib.create_workspace(self.name.strip(), lib.Mount(dataset_path=path),
-                                  hash_dataset=bool(path) and Path(path).is_file())
+        ws = lib.create_workspace(self.name.strip(), lib.Mount(dataset_path=path), hash_dataset=False)
         self.close()
         home = self.home
         if ws is None:
             self.session.toast("Could not create the workspace.", "error")
             return
         if self.group:
-            bd.move(ws.id, self.group, known_ids=[w.id for w in lib.list_workspaces()])
+            bd.move(ws.id, self.group, known_ids=[w.id for w in home.workspaces] + [ws.id])
+            home.index.reload_board()
         home.expanded.add(ws.id)
-        home.reload()
+        home.index.put(ws)
+        hash_dataset_later(ws, path, home.index.put)
         home.s.mark("home")
         self.session.toast(f"Created {ws.label()} ({ws.id}).", "ok")
         if self.add_keys and self.keys:

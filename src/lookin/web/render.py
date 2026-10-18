@@ -62,20 +62,52 @@ def current_view_name(session) -> str:
 
 # ---- boot -------------------------------------------------------------------
 
+class _LazyView:
+    """A view in the snapshot registry, built the first time its state is
+    asked for: building the analysis views imports scikit-learn and scipy
+    (seconds), which a tab that only shows Home never needs."""
+
+    def __init__(self, session, name: str):
+        self.session, self.name = session, name
+
+    def view_state(self) -> dict:
+        return self.session.view(self.name).view_state()
+
+    def restore_view_state(self, state) -> list:
+        return self.session.view(self.name).restore_view_state(state)
+
+
 def _wire(session) -> None:
     """Register every view's state with the snapshot registry -- the same
     keys and the same order as the original UI (see app.py there)."""
     from lookin.ui import view_state as vs
 
-    # First: it changes which rows every view below restores against.
-    session.view_state.register(vs.DATASET_FILTER, session.view("filter"))
-    session.view_state.register(vs.GALLERY, session.view("gallery"))
-    session.view_state.register(vs.METRICS, session.view("metrics"))
-    session.view_state.register(vs.CALIBRATION, session.view("calibration"))
-    session.view_state.register(vs.COMPARE, session.view("compare"))
-    session.view_state.register(vs.EMBEDDINGS, session.view("embeddings"))
-    session.view_state.register(vs.CLEANING, session.view("cleaning"))
+    from lookin.web.session import SNAPSHOT_VIEWS
+
+    keys = {"filter": vs.DATASET_FILTER, "gallery": vs.GALLERY, "metrics": vs.METRICS,
+            "calibration": vs.CALIBRATION, "compare": vs.COMPARE, "embeddings": vs.EMBEDDINGS,
+            "cleaning": vs.CLEANING}
+    for name in SNAPSHOT_VIEWS:
+        session.view_state.register(keys[name], _LazyView(session, name))
     session.view_state.set_tab_accessors(lambda: tab_index(session), lambda i: set_tab_index(session, i))
+
+
+def warm_up() -> None:
+    """Import every view's module, on a worker thread at start-up: the
+    first tab to open an analysis view would otherwise wait for scikit-learn,
+    scipy and matplotlib to load (a few seconds), and Home -- the first page
+    -- needs none of them."""
+    import threading
+
+    def work():
+        from lookin.web.views import VIEW_CLASSES, _SPECS
+        for name in _SPECS:
+            try:
+                VIEW_CLASSES[name]
+            except Exception:  # noqa: BLE001 -- the tab that needs it reports it
+                traceback.print_exc()
+
+    threading.Thread(target=work, daemon=True, name="lookin-warm-up").start()
 
 
 def boot(session, query: dict) -> None:
@@ -241,7 +273,11 @@ def render_nav(session) -> str:
     if ws is not None:
         group = ""
         try:
-            column = bd.column_of(bd.load(), ws.id)
+            # The board as Home last read it: this bar is drawn on every
+            # request, and the board may sit on a network share.
+            from lookin.web.home_index import HomeIndex
+            index = HomeIndex.get()
+            column = bd.column_of(index.board if index.ready else bd.load(), ws.id)
             group = column["name"] if column else ""
         except Exception:  # noqa: BLE001
             group = ""

@@ -41,6 +41,9 @@ CHART_CACHE_MAX = 400
 DOWNLOAD_CACHE_MAX = 40
 # Commands kept for a page that is not listening (a hidden tab), oldest dropped.
 UNDELIVERED_MAX = 50
+# The views whose state a snapshot holds, in the order they restore (the
+# filter first: it changes which rows the others restore against).
+SNAPSHOT_VIEWS = ("filter", "gallery", "metrics", "calibration", "compare", "embeddings", "cleaning")
 
 _local = threading.local()
 
@@ -290,6 +293,11 @@ class Session:
         when it is next shown (views.base.StaleTracking) -- the one on
         screen right away. A Cancel from before no longer holds: this is
         new data."""
+        # The snapshot views are built once there is data to show, not when
+        # the tab opens (render._wire): they pick their defaults from it here,
+        # as they did when they were built at boot.
+        for name in SNAPSHOT_VIEWS:
+            self.view(name)
         for name, v in list(self.views.items()):
             fn = getattr(v, "on_data_change", None)
             if fn is not None:

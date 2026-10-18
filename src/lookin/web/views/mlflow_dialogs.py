@@ -983,15 +983,8 @@ class DatasetsDialog(Dialog):
         path = self.selected
         if ws is None or not path:
             return
-        digest = lib.hash_file(path) if Path(path).is_file() else ""
-
-        def change(fresh):
-            fresh.mount.dataset_path, fresh.dataset_hash = path, digest
-            return True
-        fresh = lib.update_workspace(ws.path, change)
-        if fresh is not None:
-            self.s.view("home").after_workspace_change(fresh)
-            self.s.toast(f"{fresh.label()} now uses {Path(path).name}.", "ok")
+        home = self.s.view("home")
+        home.set_dataset(ws, path)
 
     def on_new_ws(self, **_):
         from lookin.web.views.home import NewWorkspaceDialog
