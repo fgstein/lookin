@@ -149,9 +149,6 @@ class CleaningView(View):
         self.busy: dict = {}              # area -> progress text
         self.built = False
 
-    def subtitle(self) -> str:
-        return "Find suspicious crops, decide on them, and export a versioned dataset you can train on."
-
     # ---- shared helpers ----
     def _store(self):
         return getattr(self.state, "review", None)

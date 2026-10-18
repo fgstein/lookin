@@ -84,20 +84,50 @@ class RebuildView(View):
     changed -- this view is out of date" banner; the rebuild runs when the
     user asks, on the session's job queue for this view, with its progress
     shown in the view and in the top bar (see components.StaleBanner and
-    BackgroundRebuild in the original UI)."""
+    BackgroundRebuild in the original UI).
+
+    While the rebuild runs, the banner loses its "Update now" (asking again
+    would only queue the same work a second time, from scratch, behind the
+    first) and gets a "Cancel" instead -- on the progress line when there is
+    no banner (a redraw). Leaving the tab does not stop anything: only the
+    user's Cancel does. Cancelling stops the work at its next progress step
+    (session.checkpoint); the banner then offers to run it again."""
 
     stale_message = "Data has changed -- this view is out of date."
+    stopping_message = "Stopping at the next step..."
+    cancelled_message = "The update was cancelled -- this view may be incomplete."
 
     def __init__(self, session):
         super().__init__(session)
         self.dirty = False
         self.progress_text = ""
         self.error = ""
+        self.cancelled = False       # the user pressed Cancel: offer to run it again
+        self._last = None            # (work, clear_stale) of the latest rebuild()
 
     def on_data_change(self) -> None:
         self.dirty = True
 
+    def job(self):
+        return self.s.job(self.title or self.name)
+
+    @property
+    def running(self) -> bool:
+        return self.job().busy
+
+    def _cancel_button(self) -> str:
+        return h.button("Cancel", act_attr=self.a("cancel"), small=True, kind="ghost", icon_name="x",
+                        title="Stop this computation")
+
     def stale_html(self) -> str:
+        if self.running:
+            if not self.dirty or self.job().cancelling:
+                return ""
+            return h.banner("Data has changed -- this view is being updated.", "stale",
+                            actions=self._cancel_button())
+        if self.cancelled:
+            return h.banner(self.cancelled_message, "stale",
+                            actions=h.button("Update now", act_attr=self.a("resume"), icon_name="refresh", small=True))
         if not self.dirty:
             return ""
         return h.banner(self.stale_message, "stale",
@@ -105,12 +135,17 @@ class RebuildView(View):
 
     def progress_html(self) -> str:
         if self.progress_text:
-            return h.spinner(self.progress_text)
+            # the red banner carries the Cancel while it is up
+            cancel = (self._cancel_button()
+                      if self.running and not self.dirty and not self.job().cancelling else "")
+            return f'<div class="row-nw">{h.spinner(self.progress_text)}{cancel}</div>'
         if self.error:
             return h.banner(self.error, "error")
         return ""
 
     def set_progress(self, text: str) -> None:
+        from lookin.web.session import checkpoint
+        checkpoint()
         self.progress_text = text
         self.s.mark(self.name)
 
@@ -120,8 +155,11 @@ class RebuildView(View):
         dropdown change): it must not hide the stale banner, since the data
         behind it was not refreshed."""
         work = work or self.compute
-        self.progress_text = self.progress_text or "Updating..."
+        self._last = (work, clear_stale)
+        if not self.progress_text or self.progress_text == self.stopping_message:
+            self.progress_text = "Updating..."
         self.error = ""
+        self.cancelled = False
 
         def run():
             try:
@@ -137,7 +175,7 @@ class RebuildView(View):
             self.progress_text = ""
             self.s.mark(self.name)
 
-        self.s.job(self.title or self.name).run(run, on_error=failed)
+        self.job().run(run, on_error=failed)
         self.s.mark(self.name)
 
     def compute(self) -> None:
@@ -145,6 +183,31 @@ class RebuildView(View):
 
     def on_update(self, **_):
         self.rebuild()
+
+    # ---- cancelling ----
+
+    def cancel_work(self) -> None:
+        """Stop this view's rebuild (the user's Cancel); the banner then
+        offers to run it again."""
+        if not self.job().cancel():
+            return
+        self.cancelled = True
+        self.progress_text = self.stopping_message      # cleared by the job when it stops
+        self.s.mark(self.name, "chrome")
+
+    def resume(self) -> None:
+        """Run again what was cancelled."""
+        self.cancelled = False
+        if self._last is not None:
+            self.rebuild(*self._last)
+        else:
+            self.on_update()
+
+    def on_cancel(self, **_):
+        self.cancel_work()
+
+    def on_resume(self, **_):
+        self.resume()
 
 
 class Dialog(Handler):

@@ -123,9 +123,6 @@ class EmbeddingsView(View):
         self.built = False
         session.prototype_source.subscribe(self.on_prototype_source_changed)
 
-    def subtitle(self) -> str:
-        return "Hover a point for its crop, click to open it, lasso a group to browse it with the review controls."
-
     # ---- lifecycle ----
 
     def on_shown(self) -> None:

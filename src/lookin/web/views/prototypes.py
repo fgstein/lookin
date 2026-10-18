@@ -118,9 +118,6 @@ class PrototypesView(RebuildView):
         # an attach, a source selection or an estimate redraws every panel.
         self.s.prototype_source.subscribe(self._on_source_changed)
 
-    def subtitle(self) -> str:
-        return "Prototype role, neighbor explorer, compactness and separation."
-
     # ---- lifecycle -------------------------------------------------------
 
     def on_shown(self) -> None:

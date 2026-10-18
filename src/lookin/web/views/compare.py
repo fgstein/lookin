@@ -138,9 +138,6 @@ class CompareView(RebuildView):
         self.showing_results = False       # False: the placeholder instead of the results
         self.compare_error = ""
 
-    def subtitle(self) -> str:
-        return "What did the candidate break, and what did it fix?"
-
     # ---- experiment pickers ---------------------------------------------
 
     def _sync_pair(self) -> None:
@@ -347,7 +344,7 @@ class CompareView(RebuildView):
                   f'{h.select(options, self.candidate_value or "", change=self.c("candidate"), label="Candidate (B)", cls="cmp-sel")}'
                   f'{_icon_button("Compare", "compare", self.a("compare"), kind="primary", disabled=not self._pair_is_valid())}'
                   f'</div>')
-        progress = h.spinner(self.progress_text) if self.progress_text else ""
+        progress = self.progress_html() if self.progress_text else ""
         return h.section("Compare two experiments", picker + progress + self._summary_html(),
                          manual="fixes-regressions")
 

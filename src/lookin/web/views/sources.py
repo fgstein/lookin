@@ -143,9 +143,6 @@ class SourcesView(View):
     # small helpers
     # ------------------------------------------------------------------
 
-    def subtitle(self) -> str:
-        return "What this workspace is made of: one dataset, the experiments scored on it, and optional extra crops."
-
     def _row(self, rid) -> Optional[ExpRow]:
         return next((r for r in self.rows if r.id == int(rid)), None)
 

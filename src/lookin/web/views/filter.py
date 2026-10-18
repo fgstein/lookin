@@ -70,9 +70,6 @@ class FilterView(View):
         self._counts_cache: dict = {}       # (frame id, column) -> value counts
         self._draft_cache = None            # (key, mask, steps, error)
 
-    def subtitle(self) -> str:
-        return "Remove rows from the dataset: every tab then works on the rows kept."
-
     # ---- draft <-> applied ----
 
     def draft_spec(self) -> dict:

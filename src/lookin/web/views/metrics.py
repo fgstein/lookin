@@ -100,9 +100,6 @@ class MetricsView(RebuildView):
         self.report_busy = False
         self.report_status = ("", "")
 
-    def subtitle(self) -> str:
-        return "Toggle which loaded experiments to include; all charts overlay them for direct comparison."
-
     # ---- experiment picker ----
 
     def _sync_checks(self) -> None:

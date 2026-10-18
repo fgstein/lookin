@@ -105,11 +105,6 @@ class ConfidenceView(RebuildView):
         self.wrong_html = ""
         self._pending: set = set()
 
-    def subtitle(self) -> str:
-        return ("How sure the model was about each prediction for the selected experiment -- margin "
-                "between its top two scores and the entropy of its softmax-normalized distribution -- "
-                "independent of whether the prediction was actually correct.")
-
     # ---- lifecycle ---------------------------------------------------
 
     def on_shown(self) -> None:
@@ -119,6 +114,12 @@ class ConfidenceView(RebuildView):
 
     def on_update(self, **_):
         self._confidence_cache.clear()
+        self._refresh_in_background()
+
+    def resume(self) -> None:
+        # its job runs pending parts, not a rebuild() closure: what was
+        # cancelled is gone with the parts it had taken, so redraw it all
+        self.cancelled = False
         self._refresh_in_background()
 
     def _refresh_in_background(self) -> None:

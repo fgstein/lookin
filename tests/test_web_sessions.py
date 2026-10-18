@@ -275,3 +275,60 @@ def test_a_dataset_dropped_on_a_workspace_becomes_its_dataset(example, tmp_path)
         assert isinstance(s.dialogs[-1], ConfirmDialog)
     finally:
         lib.set_library_root(None)
+
+
+def test_a_rebuild_goes_on_when_the_tab_is_left_and_stops_on_cancel(example):
+    """Leaving a tab leaves its computation running; the banner's Cancel
+    stops it (at its next progress step) and then offers to run it again;
+    while it runs, there is no "Update now" to queue it twice."""
+    import threading
+    import time
+
+    from lookin.web.views.base import RebuildView
+
+    app = WebApp()
+    s = _session(app, "k" * 24)
+    with RequestScope(s):
+        render.AppActions(s).on_tab(tab="statistics")
+    view = s.view("statistics")
+    assert isinstance(view, RebuildView)
+    started, release, steps = threading.Event(), threading.Event(), []
+
+    def slow():
+        started.set()
+        release.wait(5)
+        view.set_progress("step 2")        # a checkpoint: a cancelled job stops here
+        steps.append("done")
+
+    def wait_idle():
+        for _ in range(200):
+            if not view.running:
+                return
+            time.sleep(0.02)
+        raise AssertionError("the job never stopped")
+
+    view.dirty = True
+    with RequestScope(s):
+        view.rebuild(slow)
+    assert started.wait(5)
+    banner = view.stale_html()
+    assert "Update now" not in banner and "Cancel" in banner      # already running
+    assert "Cancel" not in view.progress_html()                   # one Cancel, in the banner
+
+    with RequestScope(s):
+        render.AppActions(s).on_tab(tab="metrics")                # leave the tab: it goes on
+    release.set()
+    wait_idle()
+    assert steps == ["done"] and not view.dirty and not view.cancelled
+
+    started.clear(); release.clear()
+    view.dirty = True
+    with RequestScope(s):
+        view.rebuild(slow)
+    assert started.wait(5)
+    with RequestScope(s):
+        view.on_cancel()
+    release.set()
+    wait_idle()
+    assert steps == ["done"] and view.cancelled and view.dirty
+    assert "resume" in view.stale_html() and "cancelled" in view.stale_html()

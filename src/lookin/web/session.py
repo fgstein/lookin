@@ -56,10 +56,13 @@ class Busy:
         self._jobs: list = []
         self._lock = threading.Lock()
 
-    def begin(self, what: str) -> None:
+    def begin(self, what: str) -> list:
+        """Returns the entry, for end(): jobs on other threads end in any order."""
+        entry = [what, ""]
         with self._lock:
-            self._jobs.append([what, ""])
+            self._jobs.append(entry)
         self.session.mark("chrome")
+        return entry
 
     def detail_text(self, detail: str) -> None:
         with self._lock:
@@ -67,9 +70,15 @@ class Busy:
                 self._jobs[-1][1] = detail
         self.session.mark("chrome")
 
-    def end(self) -> None:
+    def end(self, entry: Optional[list] = None) -> None:
+        """Remove `entry` (what begin() returned), or the latest one. A job
+        that ended while another had begun after it used to remove that
+        other one, and the top bar went on naming the job that was over."""
         with self._lock:
-            if self._jobs:
+            if entry is not None:
+                if any(e is entry for e in self._jobs):
+                    self._jobs = [e for e in self._jobs if e is not entry]
+            elif self._jobs:
                 self._jobs.pop()
         self.session.mark("chrome")
 
@@ -79,12 +88,33 @@ class Busy:
             return [what for what, _ in self._jobs]
 
 
+class Cancelled(BaseException):
+    """Raised by checkpoint() inside a job that was asked to stop. A
+    BaseException, like KeyboardInterrupt: the views' rebuilds catch
+    Exception to show an error, and a cancellation is not one."""
+
+
+def checkpoint() -> None:
+    """Stop here if the job running on this thread was cancelled. A thread
+    cannot be killed, so a cancelled job stops at its next checkpoint:
+    RebuildView.set_progress calls this, so every progress step of a
+    rebuild is one; a single long step (one experiment's metrics) still
+    runs to its end."""
+    job = getattr(_local, "job", None)
+    if job is not None and job._cancel:
+        raise Cancelled()
+
+
 class Job:
     """One view's expensive rebuild, off the request thread -- the web twin
     of components.BackgroundRebuild: one job per view at a time, the
     *latest* request coalesced behind the running one rather than dropped,
     and every job behind the process-wide heavy-work lock (matplotlib and
-    the CPU-bound rebuilds must not run three at once)."""
+    the CPU-bound rebuilds must not run three at once).
+
+    cancel() drops the request waiting behind the running one and stops the
+    running one at its next checkpoint(); a request made after cancel()
+    still runs, once the cancelled one has stopped."""
 
     def __init__(self, session: "Session", name: str):
         self.session = session
@@ -92,10 +122,24 @@ class Job:
         self._lock = threading.Lock()
         self._busy = False
         self._pending = None
+        self._cancel = False
 
     @property
     def busy(self) -> bool:
         return self._busy
+
+    @property
+    def cancelling(self) -> bool:
+        """Cancelled, and not stopped yet (it has not reached a checkpoint)."""
+        return self._busy and self._cancel
+
+    def cancel(self) -> bool:
+        """True when there was something running to stop."""
+        with self._lock:
+            self._pending = None
+            if self._busy:
+                self._cancel = True
+            return self._busy
 
     def run(self, work: Callable[[], None], on_error: Optional[Callable] = None) -> bool:
         with self._lock:
@@ -107,11 +151,15 @@ class Job:
         return True
 
     def _runner(self, work, on_error):
+        _local.job = self
         while True:
-            self.session.busy.begin(self.name)
+            entry = self.session.busy.begin(self.name)
             try:
                 with _HEAVY_WORK_LOCK:
+                    checkpoint()            # cancelled while it waited for the lock
                     work()
+            except Cancelled:
+                _log(f"{self.name}: cancelled")
             except Exception as ex:  # noqa: BLE001
                 _log(f"{self.name}: rebuild failed: {ex}")
                 traceback.print_exc()
@@ -121,10 +169,12 @@ class Job:
                     except Exception:  # noqa: BLE001
                         traceback.print_exc()
             finally:
-                self.session.busy.end()
+                self.session.busy.end(entry)
             with self._lock:
+                self._cancel = False
                 if self._pending is None:
                     self._busy = False
+                    _local.job = None
                     return
                 work, on_error = self._pending
                 self._pending = None

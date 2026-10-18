@@ -287,12 +287,7 @@ def render_top(session) -> str:
                 f'{h.button("Manual", act_attr=h.act("app", "manual", page=""), icon_name="book", small=True)}'
                 f'{h.button("New workspace", act_attr=h.act("home", "new_workspace"), kind="primary", small=True)}</div>')
     title = TAB_TITLES.get(session.tab, "")
-    sub = ""
-    try:
-        sub = session.view(session.tab).subtitle()
-    except Exception:  # noqa: BLE001
-        sub = ""
-    return (f'<h1>{h.e(title)}</h1>{f"<span class=top-sub>{h.e(sub)}</span>" if sub else ""}'
+    return (f'<h1>{h.e(title)}</h1>'
             f'<div class="top-r">{busy_html}{filter_chip(session)}{save_chips(session)}'
             f'{h.button("Save snapshot", act_attr=h.act("app", "save_snapshot"), small=True, icon_name="bookmark")}</div>')
 

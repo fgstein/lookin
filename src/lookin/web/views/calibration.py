@@ -170,9 +170,6 @@ class CalibrationView(RebuildView):
     def _selected_names(self) -> list:
         return [name for name, ticked in self.checks.items() if ticked]
 
-    def subtitle(self) -> str:
-        return "Is the confidence believable, and what does abstaining buy?"
-
     # ---- lifecycle -------------------------------------------------------
 
     def on_shown(self) -> None:
@@ -657,7 +654,7 @@ class CalibrationView(RebuildView):
             if banner:
                 parts.append(banner)
         if self.progress_text:
-            parts.append(h.spinner(self.progress_text))
+            parts.append(self.progress_html())
         if not bundles:
             return f'<div class="stack cal">{"".join(parts)}</div>'
 

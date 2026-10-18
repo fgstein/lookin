@@ -70,9 +70,6 @@ class GalleryView(RebuildView):
         self.grid_error = ""
         self.built = False
 
-    def subtitle(self) -> str:
-        return "Filter the dataset and browse its crops as a mosaic."
-
     def on_shown(self) -> None:
         if not self.built and self.state.dataset is not None:
             self.built = True

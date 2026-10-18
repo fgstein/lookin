@@ -29,9 +29,6 @@ class StatsView(RebuildView):
         self.charts: dict = {}          # column -> (html, notes)
         self.add_choice = ""
 
-    def subtitle(self) -> str:
-        return "A chart per column you pick; nothing shows until you add one."
-
     def _available(self):
         state = self.state
         if state.dataset is None:
