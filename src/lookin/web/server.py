@@ -22,6 +22,7 @@ import json
 import mimetypes
 import queue
 import threading
+import time
 import traceback
 from collections import OrderedDict
 from pathlib import Path
@@ -282,6 +283,18 @@ def create_app(webapp: WebApp, enable_mcp: bool = False) -> FastAPI:
             session._pending_dirty.update(n for n in names.split(",") if n)
             return JSONResponse(render.collect(session))
 
+    @app.post("/api/ping")
+    async def ping(request: Request):
+        """A hidden tab's "still here": it holds no event stream (see
+        app.js), and a session nobody is connected to is otherwise reaped
+        once idle. Takes no lock -- it must answer while an action runs."""
+        body = await json_body(request)
+        session = store.get(str((body or {}).get("sid", "")), create=False)
+        if session is None:
+            return no_session()
+        session.last_seen = time.time()
+        return JSONResponse({"ok": True})
+
     @app.get("/api/events")
     async def events(sid: str):
         # Created if need be: the page opens its stream *before* booting,
@@ -405,6 +418,8 @@ def run_web(host: str = "127.0.0.1", port: int = 8560, dataset: Optional[str] = 
         library.set_library_root(library_dir)
     webapp = WebApp(dataset=dataset, experiments=experiments)
     app = create_app(webapp, enable_mcp=enable_mcp)
+    from lookin.web.render import warm_up
+    warm_up()
     url = f"http://{'127.0.0.1' if host in ('', '0.0.0.0', '*') else host}:{port}"
     print(f"[lookin] web interface on {url}", flush=True)
     if enable_mcp:

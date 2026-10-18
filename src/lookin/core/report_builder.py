@@ -21,7 +21,7 @@ from lookin.core import comparison as cmp
 from lookin.core import chart_style  # noqa: F401
 from lookin.core.metrics import PER_CLASS_COLUMNS, compute_metrics
 from lookin.core.report import Report
-from lookin.core.chart_style import subplots
+from lookin.core.chart_style import short_name, subplots
 
 # Rows of the most-confused-pairs table in a many-class report.
 REPORT_PAIRS = 25
@@ -222,7 +222,7 @@ def _add_confusion(report: Report, metrics_by_name: dict, focus: list | None) ->
         ax.set_yticks(range(len(confusion.index)), confusion.index, fontsize=8)
         ax.set_xlabel("predicted")
         ax.set_ylabel("true")
-        ax.set_title(f"{name} -- accuracy {metrics.accuracy:.4f}", fontsize=10)
+        ax.set_title(f"{short_name(name)} -- accuracy {metrics.accuracy:.4f}", fontsize=10)
         maximum = confusion.to_numpy().max() or 1
         for i in range(len(confusion.index)):
             for j in range(len(confusion.columns)):
@@ -250,7 +250,7 @@ def _add_focus_confusion(report: Report, section, name: str, metrics, focus: lis
     ax.set_yticks(range(n), list(shown.index), fontsize=8)
     ax.set_xlabel("predicted")
     ax.set_ylabel("true")
-    ax.set_title(f"{name} -- accuracy {metrics.accuracy:.4f}", fontsize=10)
+    ax.set_title(f"{short_name(name)} -- accuracy {metrics.accuracy:.4f}", fontsize=10)
     maximum = grid.to_numpy().max() or 1
     for i in range(n):
         for j in range(n + 1):

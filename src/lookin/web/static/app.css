@@ -24,6 +24,7 @@
   --faint: #626979;
   --ghost: #8A93A6;
   --acc: #2550C8;
+  --logo: #FC6D26;
   --acc-ink: #1A3C9E;
   --acc-soft: #E8EEFB;
   --acc-soft-2: #EEF3FD;
@@ -48,6 +49,9 @@ body {
   margin: 0; background: var(--bg); color: var(--ink);
   font-family: var(--sans); font-size: 13px; line-height: 1.4;
   -webkit-font-smoothing: antialiased;
+  /* a sentence quoting a long name with no space in it wraps instead of
+   * running out of its card */
+  overflow-wrap: break-word;
 }
 body.req { cursor: progress; }
 a { color: var(--acc); text-decoration: none; }
@@ -58,6 +62,7 @@ p { margin: 0 0 8px; }
 .muted { color: var(--faint); }
 .small { font-size: 11px; }
 .c-acc { color: var(--acc); }
+.c-logo { color: var(--logo); }
 .c-ok { color: var(--ok); }
 .c-warn { color: var(--warn-dot); }
 .c-err { color: var(--err); }
@@ -65,6 +70,10 @@ p { margin: 0 0 8px; }
 .boot { padding: 40px; color: var(--faint); }
 .nowrap { white-space: nowrap; }
 .ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A name the user chose (an experiment, a run): it can be any length, so it
+ * is cut with an ellipsis and the full name is in its tooltip (h.name). */
+.xname { display: inline-block; min-width: 0; max-width: min(100%, 40em); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.tbl .xname { max-width: 32em; }
 .grow { flex: 1 1 auto; min-width: 0; }
 .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .row-nw { display: flex; align-items: center; gap: 8px; }
@@ -167,14 +176,16 @@ p { margin: 0 0 8px; }
 .inp[type=search] { background: var(--surface-2); }
 .inp.mono, .sel.mono { font-family: var(--mono); }
 .ta { width: 100%; height: auto; padding: 8px; line-height: 1.45; resize: vertical; font-size: 12px; }
-.sel { padding-right: 4px; }
-.fld { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.sel { padding-right: 4px; max-width: min(100%, 32em); text-overflow: ellipsis; }
+.fld { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); max-width: 100%; min-width: 0; }
 .fld-l { white-space: nowrap; }
 .form-col .fld { display: flex; flex-direction: column; align-items: stretch; gap: 3px; }
 .form-col .fld .inp, .form-col .fld .sel { width: 100%; height: 30px; }
 .form-col { display: flex; flex-direction: column; gap: 10px; }
 .chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); cursor: pointer; }
 .chk input { margin: 0; accent-color: var(--acc); }
+.chk.ell { min-width: 0; max-width: 100%; }
+.chk.ell > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip {
   display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border: 1px solid var(--line);
   border-radius: 999px; background: var(--surface); font: inherit; font-size: 11px; color: var(--ink); cursor: default;
@@ -196,7 +207,8 @@ button.chip:hover { border-color: var(--acc); }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); min-width: 0; }
 .card + .card { margin-top: 10px; }
 .card-h { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--line-2); min-height: 38px; }
-.card-h h2 { font-size: 14px; font-weight: 700; }
+.card-h h2 { font-size: 14px; font-weight: 700; min-width: 0; max-width: 100%; }
+.card-h h2.ell { display: flex; gap: 4px; flex: 1 1 0; }
 .card-sub { font-size: 12px; color: var(--faint); }
 .card-r { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .card-b { padding: 10px 12px; }
@@ -348,6 +360,8 @@ button.chip:hover { border-color: var(--acc); }
 
 /* ---- images ---- */
 .crop { image-rendering: pixelated; background: #000; display: block; object-fit: contain; }
+/* a picture being replaced (see imgWait in app.js): black, not the old one */
+img.img-wait { filter: brightness(0); }
 .chart { display: block; max-width: 100%; height: auto; cursor: zoom-in; }
 .thumbs { display: grid; gap: 6px; }
 

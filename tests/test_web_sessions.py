@@ -264,7 +264,7 @@ def test_a_dataset_dropped_on_a_workspace_becomes_its_dataset(example, tmp_path)
         used = lib.create_workspace("used", lib.Mount(dataset_path=str(example / "dataset.csv")))
         s = _session(WebApp(), "v" * 24)
         home = s.view("home")
-        home.reload()
+        home.reload(wait=True)
         other = str(example / "dataset_reviewed.csv")
         with RequestScope(s):
             home.on_drop_on_ws(id=empty.id, kind="dataset", key=other)
@@ -450,3 +450,122 @@ def test_a_cancelled_update_waits_for_the_user_or_new_data(example):
     release.set()
     idle()
     assert not stats.dirty
+
+
+def test_a_hidden_tab_gets_its_commands_when_it_comes_back():
+    """A hidden tab drops its event stream (app.js): what was pushed to it
+    meanwhile is kept -- a toast, a download -- and handed to the stream it
+    opens again; what only needed redrawing is not (the page redraws on
+    reconnect)."""
+    import asyncio
+
+    app = WebApp()
+    s = app.store.get("h" * 24, create=True)
+    s.push({"dirty": ["home"]})
+    s.toast("Report ready")
+    s.cmd(download="/dl/x", filename="report.pptx")
+
+    async def reconnect():
+        q = asyncio.Queue()
+        s.subscribe(asyncio.get_running_loop(), q)
+        return [q.get_nowait() for _ in range(q.qsize())]
+
+    got = asyncio.run(reconnect())
+    assert len(got) == 2 and "Report ready" in got[0] and "report.pptx" in got[1]
+    assert asyncio.run(reconnect()) == []        # handed over once
+
+
+def test_a_hidden_tab_pinging_is_not_reaped_and_needs_no_lock():
+    import threading
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from lookin.web.server import create_app
+
+    app = WebApp()
+    client = TestClient(create_app(app))
+    s = app.store.get("p" * 24, create=True)
+    s.last_seen = 0.0
+    s.lock.acquire()               # an action running in that tab
+    try:
+        result = {}
+        t = threading.Thread(target=lambda: result.setdefault(
+            "r", client.post("/api/ping", json={"sid": "p" * 24})))
+        t.start()
+        t.join(5)
+        assert result["r"].status_code == 200
+    finally:
+        s.lock.release()
+    assert time.time() - s.last_seen < 60
+    assert client.post("/api/ping", json={"sid": "q" * 24}).status_code == 410
+
+
+def test_home_shows_at_once_and_fills_in_from_the_library(tmp_path):
+    """Home draws from an index read off the request path: no analysis view
+    is built (their imports take seconds), and a workspace saved on disk
+    appears once the library is read again -- not on every redraw."""
+    from lookin.core import library as lib
+    from lookin.web.home_index import HomeIndex
+
+    lib.set_library_root(tmp_path / "lib")
+    try:
+        first = lib.create_workspace("first", lib.Mount(dataset_path=""))
+        s = _session(WebApp(), "w" * 24)
+        assert not {"metrics", "embeddings", "gallery", "cleaning"} & set(s.views)
+        home = s.view("home")
+        home.reload(wait=True)
+        with RequestScope(s):
+            assert "first" in render.render_view(s, "home")
+        second = lib.create_workspace("second", lib.Mount(dataset_path=""))
+        with RequestScope(s):
+            assert "second" not in render.render_view(s, "home")      # nothing read on a redraw
+        home.reload(wait=True)
+        with RequestScope(s):
+            html = render.render_view(s, "home")
+        assert "first" in html and "second" in html
+        assert HomeIndex.get() is home.index                            # one per library
+        assert {first.id, second.id} <= {w.id for w in home.workspaces}
+    finally:
+        lib.set_library_root(None)
+
+
+def test_a_dropped_dataset_is_set_at_once_and_hashed_behind(example, tmp_path):
+    import time
+
+    from lookin.core import library as lib
+
+    lib.set_library_root(tmp_path / "lib")
+    try:
+        ws = lib.create_workspace("w", lib.Mount(dataset_path=""))
+        s = _session(WebApp(), "x" * 24)
+        home = s.view("home")
+        home.reload(wait=True)
+        path = str(example / "dataset.csv")
+        with RequestScope(s):
+            home.on_drop_on_ws(id=ws.id, kind="dataset", key=path)
+        assert lib.load_workspace(ws.path).mount.dataset_path == path
+        for _ in range(200):
+            if lib.load_workspace(ws.path).dataset_hash:
+                break
+            time.sleep(0.02)
+        assert lib.load_workspace(ws.path).dataset_hash == lib.hash_file(path)
+    finally:
+        lib.set_library_root(None)
+
+
+def test_home_redraws_at_most_once_a_second_on_its_own():
+    """An MLflow listing moves several times a second: Home is marked for
+    redrawing once, then once more when the second is up."""
+    import time
+
+    s = _session(WebApp(), "y" * 24)
+    home = s.view("home")
+    pushed = []
+    s.push = lambda message: pushed.append(message)
+    home._last_mark = 0.0
+    for _ in range(10):
+        home._hub_changed()
+    assert len(pushed) == 1
+    time.sleep(1.3)
+    assert len(pushed) == 2

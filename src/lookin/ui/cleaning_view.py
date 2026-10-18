@@ -34,7 +34,7 @@ from lookin.core.data_manager import SPLIT_TRAIN
 from lookin.core.review import STATUS_EXCLUDE, STATUS_RELABEL, STATUS_UNCERTAIN
 from lookin.ui.carousel import build_carousel_from_list
 from lookin.ui.class_matrix import searchable_dropdown_kwargs
-from lookin.ui.components import ACCENT, card, diverging_color, info_banner, section_title
+from lookin.ui.components import ACCENT, card, diverging_color, info_banner, section_title, name_option
 from lookin.ui.embedding_context import (
     build_analysis_context, coverage_note, experiments_with_embeddings, experiments_with_model_prototypes,
 )
@@ -340,7 +340,7 @@ class CleaningView:
     def _render_params(self) -> None:
         source = self.source_dropdown.value
         names = self._available_experiments(source)
-        self.experiment_dropdown.options = [ft.dropdown.Option(n) for n in names]
+        self.experiment_dropdown.options = [name_option(n) for n in names]
         if self.experiment_dropdown.value not in names:
             self.experiment_dropdown.value = names[0] if names else None
         self._render_class_picker()

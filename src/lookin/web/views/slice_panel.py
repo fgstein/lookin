@@ -13,7 +13,7 @@ import traceback
 import numpy as np
 
 from lookin.core import slices as sl
-from lookin.core.chart_style import subplots
+from lookin.core.chart_style import short_name, subplots
 from lookin.ui.components import (
     GRID_MAJOR, GRID_NONE, color_for_experiment, legend_below, legend_columns,
     legend_height_inches, reserve_legend_space, style_axes,
@@ -251,7 +251,7 @@ class SlicePanel:
             for i, name in enumerate(names):
                 ax_counts.bar(x + (i - (n_exp - 1) / 2) * bar_width, [rows_by_name[name][v].n for v in values],
                               bar_width, color=color_for_experiment(name, self.s.state.color_slots), alpha=0.28,
-                              label=f"crops in slice ({name})")
+                              label=f"crops in slice ({short_name(name)})")
         ax_counts.set_ylabel("crops in slice", color=COUNT_AXIS_COLOR, fontsize=9)
         ax_counts.tick_params(axis="y", colors=COUNT_AXIS_COLOR, labelsize=8)
         ax_counts.set_ylim(0, max([rows_by_name[name][v].n for name in names for v in values] or [1]) * 1.15)
@@ -263,10 +263,10 @@ class SlicePanel:
             if any(low == low for low, _ in intervals):
                 lows = [max(0.0, hh - low) if low == low else 0.0 for hh, (low, _) in zip(heights, intervals)]
                 highs = [max(0.0, high - hh) if high == high else 0.0 for hh, (_, high) in zip(heights, intervals)]
-                ax_metric.errorbar(x, heights, yerr=[lows, highs], label=name, color=color, marker="o",
+                ax_metric.errorbar(x, heights, yerr=[lows, highs], label=short_name(name), color=color, marker="o",
                                    markersize=5, linewidth=1.8, capsize=3, elinewidth=0.9, ecolor=color, alpha=0.95)
             else:
-                ax_metric.plot(x, heights, label=name, color=color, marker="o", markersize=5, linewidth=1.8)
+                ax_metric.plot(x, heights, label=short_name(name), color=color, marker="o", markersize=5, linewidth=1.8)
             overall = sl.metric_value(reports[name].overall, metric, class_label)
             if overall == overall:
                 ax_metric.axhline(overall, color=color, linestyle="--", linewidth=1, alpha=0.6)

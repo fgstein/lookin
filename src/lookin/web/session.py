@@ -25,7 +25,7 @@ import secrets
 import threading
 import time
 import traceback
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from typing import Callable, Optional
 
 from lookin.core.data_manager import AppState
@@ -39,6 +39,11 @@ IDLE_TIMEOUT_S = 3 * 3600.0
 REAP_EVERY_S = 300.0
 CHART_CACHE_MAX = 400
 DOWNLOAD_CACHE_MAX = 40
+# Commands kept for a page that is not listening (a hidden tab), oldest dropped.
+UNDELIVERED_MAX = 50
+# The views whose state a snapshot holds, in the order they restore (the
+# filter first: it changes which rows the others restore against).
+SNAPSHOT_VIEWS = ("filter", "gallery", "metrics", "calibration", "compare", "embeddings", "cleaning")
 
 _local = threading.local()
 
@@ -228,6 +233,7 @@ class Session:
         # ---- push channel ----
         self._subscribers: list = []
         self._sub_lock = threading.Lock()
+        self._undelivered: deque = deque(maxlen=UNDELIVERED_MAX)
         self._pending_dirty: set = set()
         self._pending_cmds: list = []
         self._dialogs_dirty = False
@@ -287,6 +293,11 @@ class Session:
         when it is next shown (views.base.StaleTracking) -- the one on
         screen right away. A Cancel from before no longer holds: this is
         new data."""
+        # The snapshot views are built once there is data to show, not when
+        # the tab opens (render._wire): they pick their defaults from it here,
+        # as they did when they were built at boot.
+        for name in SNAPSHOT_VIEWS:
+            self.view(name)
         for name, v in list(self.views.items()):
             fn = getattr(v, "on_data_change", None)
             if fn is not None:
@@ -364,6 +375,13 @@ class Session:
         data = json.dumps(message)
         with self._sub_lock:
             subs = list(self._subscribers)
+            if not subs:
+                # No page listening -- a hidden tab lets its stream go (see
+                # app.js). What needs redrawing is redrawn when it comes back;
+                # a command (a toast, a download) would be lost, so it waits.
+                if message.get("cmds"):
+                    self._undelivered.append(json.dumps({"cmds": message["cmds"]}))
+                return
         for loop, q in subs:
             try:
                 loop.call_soon_threadsafe(q.put_nowait, data)
@@ -372,10 +390,18 @@ class Session:
 
     def subscribe(self, loop, q) -> tuple:
         """Register an event-stream reader: an asyncio queue on `loop`,
-        fed from any thread."""
+        fed from any thread. It starts with what was pushed while no page
+        was listening."""
         sub = (loop, q)
         with self._sub_lock:
             self._subscribers.append(sub)
+            waiting = list(self._undelivered)
+            self._undelivered.clear()
+        for data in waiting:
+            try:
+                q.put_nowait(data)
+            except Exception:  # noqa: BLE001 -- a full queue: the page redraws anyway
+                break
         return sub
 
     def unsubscribe(self, q) -> None:

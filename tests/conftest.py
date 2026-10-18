@@ -73,3 +73,35 @@ def embeddings_npz(tmp_path):
         embeddings=np.eye(4, 3, dtype=np.float32),
     )
     return path
+
+
+@pytest.fixture(autouse=True)
+def _stop_web_jobs():
+    """Stop the background rebuilds a web test started before the next test.
+
+    Every web job runs behind the process-wide heavy-work lock (see
+    session.Job), and a test that opens every tab leaves a projection or a
+    chart still computing when it returns: the next test's own job then
+    waited behind it, and a test giving its job a few seconds to start
+    failed now and then. Each job is asked to stop, then waited for."""
+    import time
+
+    from lookin.web import session as web_session
+
+    jobs = []
+    original = web_session.Job.__init__
+
+    def tracking_init(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        jobs.append(self)
+
+    web_session.Job.__init__ = tracking_init
+    try:
+        yield
+    finally:
+        web_session.Job.__init__ = original
+        for job in jobs:
+            job.cancel()
+        deadline = time.monotonic() + 60
+        while any(job.busy for job in jobs) and time.monotonic() < deadline:
+            time.sleep(0.05)

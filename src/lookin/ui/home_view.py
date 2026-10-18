@@ -48,7 +48,7 @@ from lookin.core.home_config import (
 )
 from lookin.ui import browser_panel as bp
 from lookin.ui.browser_panel import TEXT_HEADING, TEXT_ROW, TEXT_SMALL, TEXT_SUB, TEXT_TITLE
-from lookin.ui.components import ACCENT, info_banner, status_row
+from lookin.ui.components import ACCENT, info_banner, status_row, name_text
 from lookin.ui.mlflow_panel import (
     STATUS_COLORS, UNSUCCESSFUL_STATUSES, _default_tracking_uri, _format_time, _human_size,
 )
@@ -930,7 +930,7 @@ class HomeView:
             padding=ft.padding.only(left=10, top=8, bottom=2, right=8),
             content=ft.Row([
                 ft.Icon(ft.Icons.SCIENCE_OUTLINED, size=14, color=ft.Colors.ON_SURFACE_VARIANT),
-                ft.Text(name, size=TEXT_SMALL, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE_VARIANT),
+                name_text(name, size=TEXT_SMALL, weight=ft.FontWeight.BOLD, color=ft.Colors.ON_SURFACE_VARIANT),
                 ft.IconButton(ft.Icons.OPEN_IN_NEW, icon_size=13, tooltip="Open this experiment in MLflow",
                               style=ft.ButtonStyle(padding=0), width=22, height=22,
                               on_click=lambda e: self._open_url(mlf.experiment_ui_url(server.uri, experiment_id))),

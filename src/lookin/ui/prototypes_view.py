@@ -34,7 +34,7 @@ from lookin.core import embedding_analysis as ea
 from lookin.ui.carousel import build_carousel_from_list
 from lookin.core import class_focus as cf
 from lookin.ui.class_matrix import ClassFocus
-from lookin.ui.components import info_button, fig_to_zoomable_image, section_title, info_banner, card, crop_display, file_to_full_base64, blues_color, style_axes, GRID_NONE
+from lookin.ui.components import info_button, fig_to_zoomable_image, section_title, info_banner, card, crop_display, file_to_full_base64, blues_color, style_axes, GRID_NONE, name_option, name_text
 from lookin.ui.embedding_context import build_analysis_context, coverage_note, experiments_with_embeddings
 from lookin.core.chart_style import subplots
 
@@ -186,7 +186,7 @@ class PrototypesView:
             self._source_status_texts[name] = source_status
 
             self.sidecars_column.controls.append(card(ft.Column([
-                ft.Text(name, weight=ft.FontWeight.BOLD),
+                name_text(name, weight=ft.FontWeight.BOLD),
                 ft.Text(embed_line, size=11, color=ft.Colors.ON_SURFACE_VARIANT),
                 ft.Text(proto_line, size=11, color=ft.Colors.ON_SURFACE_VARIANT),
                 ft.Text("Prototype source -- pick one, whichever you use last is the active one:", size=11, color=ft.Colors.ON_SURFACE_VARIANT),
@@ -214,7 +214,7 @@ class PrototypesView:
 
     def _refresh_experiment_dropdown(self):
         names = experiments_with_embeddings(self.ctx.state)
-        self.experiment_dropdown.options = [ft.dropdown.Option(n) for n in names]
+        self.experiment_dropdown.options = [name_option(n) for n in names]
         if self.experiment_dropdown.value not in names:
             self.experiment_dropdown.value = names[0] if names else None
 

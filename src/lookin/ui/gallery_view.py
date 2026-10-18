@@ -18,7 +18,7 @@ import pandas as pd
 
 from lookin.core.class_focus import FOCUS_MAX
 from lookin.ui.class_matrix import ClassPicker, picker_checks
-from lookin.ui.components import crop_display, file_to_full_base64, section_title, info_banner, card, ACCENT, BackgroundRebuild, StaleBanner
+from lookin.ui.components import crop_display, file_to_full_base64, section_title, info_banner, card, ACCENT, BackgroundRebuild, StaleBanner, name_option
 from lookin.ui.carousel import build_carousel_from_list
 
 MAX_ROWS = 12
@@ -227,7 +227,7 @@ class GalleryView:
         self._rebuild_add_filter_dropdown()
 
         self.experiment_dropdown.options = [ft.dropdown.Option(key=NONE_EXPERIMENT, text="(none)")] + [
-            ft.dropdown.Option(name) for name in state.experiments
+            name_option(name) for name in state.experiments
         ]
         self.experiment_dropdown.value = NONE_EXPERIMENT
         self._rebuild_predicted_filter()
@@ -293,9 +293,25 @@ class GalleryView:
         self.shuffle_switch.value = bool(seed)
         self.reshuffle_btn.visible = bool(seed)
         self.page_index = 0
+        # Encoding the new page takes a moment, during which the old pictures
+        # would stay up as if they were the new order: black them out first.
+        if self.root.page:
+            self._blank_grid()
+            self.root.update()
         self._render_grid()
         if self.root.page:
             self.root.update()
+
+    def _blank_grid(self) -> None:
+        """Every thumbnail of the grid turned into a black square of its size."""
+        for row in self.grid_area.controls:
+            for cell in getattr(row, "controls", None) or []:
+                column = getattr(cell, "content", None)
+                pictures = getattr(column, "controls", None) or []
+                if pictures and isinstance(pictures[0], ft.Image):
+                    image = pictures[0]
+                    pictures[0] = ft.Container(width=image.width, height=image.height,
+                                               bgcolor=ft.Colors.BLACK, border_radius=6)
 
     def _on_prev(self, e):
         if self.page_index > 0:

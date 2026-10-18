@@ -199,15 +199,25 @@ def info_btn(page_id: Optional[str], title: str = "Open the reference manual") -
             f'title="{e(title)}" aria-label="{e(title)}">i</button>')
 
 
+# Past this many characters a select's chosen label may be cut by the
+# select's width cap (see .sel in app.css), so it gets a tooltip.
+LONG_LABEL = 30
+
+
 def select(options: Iterable, value, *, change: str = "", name: str = "", label: str = "",
            cls: str = "", disabled: bool = False, title: str = "", id_: str = "") -> str:
     """options: (key, label) pairs. The key is what code compares; only the
     label is display text (see CLAUDE.md)."""
     opts = []
+    chosen = ""
     for opt in options:
         key, text = (opt if isinstance(opt, (tuple, list)) else (opt, opt))[:2]
         sel = " selected" if str(key) == str(value) else ""
+        if sel:
+            chosen = str(text)
         opts.append(f'<option value="{e(key)}"{sel}>{e(text)}</option>')
+    if not title and len(chosen) > LONG_LABEL:
+        title = chosen
     sel_attrs = attrs(name=name or None, disabled=disabled, title=title or None, id=id_ or None,
                       aria_label=label or None)
     sel_html = f'<select class="sel {e(cls)}"{change}{sel_attrs}>{"".join(opts)}</select>'
@@ -217,7 +227,12 @@ def select(options: Iterable, value, *, change: str = "", name: str = "", label:
 
 
 def checkbox(label: str, checked: bool, *, change: str = "", name: str = "", title: str = "",
-             disabled: bool = False, cls: str = "") -> str:
+             disabled: bool = False, cls: str = "", ellipsis: bool = False) -> str:
+    """ellipsis: the label is a name of any length (an experiment): kept on
+    one line, cut with an ellipsis, the full text in the tooltip."""
+    if ellipsis:
+        cls = f"{cls} ell".strip()
+        title = title or label
     return (f'<label class="chk {e(cls)}"{attrs(title=title or None)}>'
             f'<input type="checkbox"{change}{attrs(name=name or None, checked=bool(checked), disabled=disabled)}>'
             f'<span>{e(label)}</span></label>')
@@ -265,6 +280,12 @@ def status_line(text: str, kind: str = "ok") -> str:
     if not text:
         return ""
     return f'<div class="status status-{kind}">{e(text)}</div>'
+
+
+def name(text, cls: str = "") -> str:
+    """A name the user chose -- an experiment, a run -- which can be any
+    length: one line, cut with an ellipsis, the full name on hover."""
+    return f'<span class="xname {e(cls)}" title="{e(text)}">{e(text)}</span>'
 
 
 def dot(color: str, title: str = "", size: int = 7) -> str:

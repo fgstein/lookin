@@ -58,3 +58,17 @@ def test_a_snapshot_brings_the_same_order_back(gallery):
     gallery.restore_view_state(saved)
     assert gallery.shuffle_switch.value
     assert _all_pages(gallery) == order
+
+
+def test_a_reshuffle_blacks_out_the_old_pictures_first(gallery):
+    import flet as ft
+
+    gallery._render_grid()
+    images = [c for row in gallery.grid_area.controls for cell in row.controls
+              for c in getattr(getattr(cell, "content", None), "controls", None) or [] if isinstance(c, ft.Image)]
+    assert images
+    gallery._blank_grid()
+    firsts = [cell.content.controls[0] for row in gallery.grid_area.controls for cell in row.controls
+              if getattr(cell, "content", None) is not None]
+    assert firsts and not any(isinstance(c, ft.Image) for c in firsts)
+    assert all(c.bgcolor == ft.Colors.BLACK and c.width == images[0].width for c in firsts)
