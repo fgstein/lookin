@@ -1230,6 +1230,75 @@ class AppState:
             self._merged_cache_stamp = stamp
         return merged
 
+    def crop_details(self, uid: Optional[str] = None, crop: Optional[str] = None,
+                     top_k: int = 3) -> Optional[dict]:
+        """Everything known about one crop, for the full-size view's details
+        panel: its dataset row, its review decision, and what every loaded
+        experiment predicted for it.
+
+        The crop is found by uuid when there is one, else by the value of
+        its crop column. Read straight from each experiment's own scores
+        rather than through merged(), which caches one experiment only --
+        asking all of them would merge them all again, one after the other.
+        Returns None when the crop is not in the dataset.
+        """
+        dataset = self.dataset
+        if dataset is None:
+            return None
+        cols = dataset.columns
+        df = dataset.df
+        if uid is not None and cols.uuid_col and cols.uuid_col in df.columns:
+            hit = np.flatnonzero(df[cols.uuid_col].astype(str).to_numpy() == str(uid))
+        elif crop is not None and cols.crop_col and cols.crop_col in df.columns:
+            hit = np.flatnonzero(df[cols.crop_col].astype(str).to_numpy() == str(crop))
+        else:
+            return None
+        if not len(hit):
+            return None
+        row = df.iloc[int(hit[0])]
+        metadata = [(str(c), row[c]) for c in df.columns]
+        truth = row[cols.label_col] if cols.label_col and cols.label_col in df.columns else None
+        if truth is not None and truth != truth:
+            truth = None
+        row_uid = str(row[cols.uuid_col]) if cols.has_ids() else None
+
+        decision = None
+        if self.review is not None and row_uid is not None:
+            decision = self.review.decision_for(row_uid, self.overlay_version_id())
+        reference = truth
+        if self.use_reviewed_labels and decision is not None:
+            reference = decision.effective_label(truth)
+
+        predictions = []
+        for name, exp in self.experiments.items():
+            entry = {"experiment": name, "found": False}
+            predictions.append(entry)
+            if row_uid is None or exp.uuid_col not in exp.df.columns:
+                continue
+            rows = np.flatnonzero(exp.df[exp.uuid_col].astype(str).to_numpy() == row_uid)
+            if not len(rows):
+                continue
+            scores = exp.df.iloc[int(rows[0])][exp.score_cols].to_numpy(dtype=np.float64)
+            labels = exp.class_labels[: len(exp.score_cols)]
+            idx, best = argmax_ignoring_nan(scores[None, :])
+            predicted = labels[int(idx[0])] if 0 <= idx[0] < len(labels) else None
+            order = [i for i in np.argsort(-np.nan_to_num(scores, nan=-np.inf)) if scores[i] == scores[i]]
+            truth_score = None
+            if reference is not None:
+                at = [i for i, l in enumerate(labels) if str(l) == str(reference)]
+                if at and scores[at[0]] == scores[at[0]]:
+                    truth_score = float(scores[at[0]])
+            entry.update({
+                "found": True,
+                "predicted": predicted,
+                "score": None if best[0] != best[0] else float(best[0]),
+                "truth_score": truth_score,
+                "correct": None if reference is None or predicted is None else str(predicted) == str(reference),
+                "top": [(labels[i], float(scores[i])) for i in order[:top_k] if i < len(labels)],
+            })
+        return {"uuid": row_uid, "label": truth, "reference": reference, "metadata": metadata,
+                "decision": decision, "predictions": predictions}
+
     def _apply_review_overlay(self, merged: pd.DataFrame, cols: ColumnConfig) -> pd.DataFrame:
         """With use_reviewed_labels on: replace the label column by the
         reviewed label and drop excluded rows, *before* correctness is

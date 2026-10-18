@@ -45,6 +45,7 @@ from lookin.core.review import REVIEW_REASONS
 from lookin.ui.similarity import DEFAULT_K, K_CHOICES
 from lookin.web import html as h
 from lookin.web.views.base import NO_RENDER, Dialog
+from lookin.web.views.details import details_url
 from lookin.web.views.media import crop_url
 from lookin.web.views.widgets import class_select
 
@@ -336,6 +337,11 @@ class Carousel:
         parts.append("click to view full size")
         return "  -  ".join(parts)
 
+    def _info_url(self, rec: dict) -> str:
+        """Where the full-size view's (i) panel reads this crop's details."""
+        uid = rec.get(self.uuid_col) if self.uuid_col else None
+        return details_url(self.s, uid=uid, crop=None if uid is not None else rec.get(self.crop_col))
+
     def _tile(self, rec: dict, i: int) -> str:
         img_path = self.dataset.resolve_crop_path(rec[self.crop_col])
         url = crop_url(self.s, img_path, rec)
@@ -353,7 +359,7 @@ class Carousel:
                 outcome = " ok" if rec.get("correct") else " bad"
         img = (f'<span class="ctile-i" style="width:{img_w}px;height:{tile}px">'
                f'<img class="crop" src="{h.e(url)}" alt="{h.e(title)}" loading="lazy" data-zoom data-pixelated '
-               f'data-title="{h.e(title)}" title="{h.e(self._tooltip(rec))}" '
+               f'data-title="{h.e(title)}" data-info="{h.e(self._info_url(rec))}" title="{h.e(self._tooltip(rec))}" '
                f'style="width:{img_w}px;height:{tile}px">{self._badge(rec)}</span>')
         if not self.show_info:
             return (f'<div class="ctile{" hl" if highlighted else ""}{outcome}" data-i="{i}" '

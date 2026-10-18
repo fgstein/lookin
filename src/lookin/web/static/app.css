@@ -308,7 +308,29 @@ button.chip:hover { border-color: var(--acc); }
 .zoom-back { position: fixed; inset: 0; z-index: 80; background: rgba(15, 17, 21, .86); display: flex; flex-direction: column; }
 .zoom-bar { display: flex; align-items: center; gap: 8px; padding: 8px 14px; background: var(--surface); }
 .zoom-t { font-weight: 600; margin-right: auto; }
+/* < k / n > between images of a list, centred in the bar */
+.zoom-bar { position: relative; }
+.zoom-nav { position: absolute; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 8px; }
+.zoom-nav .btn { min-width: 34px; justify-content: center; font-weight: 600; }
+.zoom-pos { min-width: 64px; text-align: center; color: var(--muted); }
+.zoom-main { flex: 1 1 auto; display: flex; min-height: 0; }
 .zoom-img { flex: 1 1 auto; overflow: hidden; position: relative; cursor: grab; touch-action: none; }
+.zoom-info-b.on { color: var(--acc); background: var(--acc-soft); }
+/* the (i) panel of the full-size view: a crop's row and its predictions */
+.zoom-side { flex: none; width: min(380px, 40vw); overflow-y: auto; background: var(--surface); padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 14px; border-right: 1px solid var(--line); }
+.zoom-side[hidden] { display: none; }
+.zoom-side .kv-v { font-size: 12px; overflow-wrap: anywhere; }
+.zi-head { display: flex; flex-direction: column; gap: 4px; overflow-wrap: anywhere; }
+.zi-sec { display: flex; flex-direction: column; gap: 8px; }
+.zi-t { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.zi-pred { display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: var(--r); }
+.zi-exp { display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+.zi-line { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.zi-line > .muted { min-width: 92px; }
+.zi-ok, .zi-bad { display: inline-flex; align-items: center; gap: 2px; font-size: 11px; font-weight: 600; }
+.zi-ok { color: var(--ok); }
+.zi-bad { color: var(--err); }
 .zoom-img.drag { cursor: grabbing; }
 .zoom-img img { position: absolute; left: 0; top: 0; transform-origin: 0 0; max-width: none; background: #fff;
   user-select: none; -webkit-user-drag: none; box-shadow: 0 2px 18px rgba(0, 0, 0, .35); }

@@ -395,12 +395,12 @@
   }
 
   function requestMore(sentinel) {
-    if (sentinel._busy || sentinel.hidden) return;
+    if (sentinel._busy || sentinel.hidden) return null;
     const list = document.getElementById(sentinel.getAttribute("data-list"));
-    if (!list) return;
+    if (!list) return null;
     sentinel._busy = true;
     const [target, action] = parseTarget(sentinel.getAttribute("data-more"));
-    act(target, action, Object.assign(argsOf(sentinel), {
+    return act(target, action, Object.assign(argsOf(sentinel), {
       gen: list.getAttribute("data-gen") || "", loaded: list.children.length,
     })).then(() => {
       sentinel._busy = false;
@@ -643,15 +643,36 @@
   // is shown with its pixels, a chart as drawn), a drag pans, a double click
   // goes back and forth between fitted and 2x at that point. + - 0 on the
   // keyboard do the same as the buttons.
+  //
+  // A crop with a `data-info` URL (views/details.py) also gets an (i)
+  // button: a panel on the left -- the margin a fitted crop leaves unused
+  // -- with its dataset row, its review decision and every experiment's
+  // prediction, fetched when the panel is opened. Whether it is open is
+  // remembered from one crop to the next; "i" toggles it.
+  //
+  // A crop opened from a list (the Gallery's carousel: an element with
+  // data-gen) gets < > in the middle of the bar, and the arrow keys: they
+  // step through the crops of that list, loading its next page when the
+  // last loaded crop is reached.
   let zoomState = null;
+  let zoomInfoOpen = false;
+  const INFO_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8v.3"/></svg>';
 
   function openZoom(img) {
     const src = img.getAttribute("data-zoom-src") || img.currentSrc || img.src;
     const title = img.getAttribute("data-title") || img.alt || "image";
+    const info = img.getAttribute("data-info") || "";
+    const list = img.closest(".car-list[data-gen]");
     const z = document.getElementById("zoom");
     const fname = "lookin_" + title.replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 60) + ".png";
     z.innerHTML =
-      '<div class="zoom-back"><div class="zoom-bar"><span class="zoom-t"></span>' +
+      '<div class="zoom-back"><div class="zoom-bar">' +
+      (info ? '<button type="button" class="btn btn-sm btn-icon zoom-info-b" title="Details: metadata and predictions (i)">' + INFO_ICON + '</button>' : '') +
+      '<span class="zoom-t"></span>' +
+      (list ? '<span class="zoom-nav"><button type="button" class="btn btn-sm zoom-prev" title="Previous image (Left arrow)">&lt;</button>' +
+        '<span class="zoom-pos mono small"></span>' +
+        '<button type="button" class="btn btn-sm zoom-next" title="Next image (Right arrow)">&gt;</button></span>' : '') +
       '<button type="button" class="btn btn-sm zoom-out" title="Zoom out (-)">-</button>' +
       '<span class="zoom-pct mono small"></span>' +
       '<button type="button" class="btn btn-sm zoom-in" title="Zoom in (+)">+</button>' +
@@ -661,7 +682,8 @@
       '<a class="btn btn-sm" target="_blank" rel="noopener">Open in a new tab</a>' +
       '<a class="btn btn-sm">Save</a>' +
       '<button type="button" class="btn btn-sm btn-primary zoom-close">Close</button></div>' +
-      '<div class="zoom-img"><img alt="" draggable="false"></div></div>';
+      '<div class="zoom-main"><div class="zoom-side" hidden></div>' +
+      '<div class="zoom-img"><img alt="" draggable="false"></div></div></div>';
     z.querySelector(".zoom-t").textContent = title;
     const links = z.querySelectorAll("a");
     links[0].href = src;
@@ -670,8 +692,17 @@
     const big = stage.querySelector("img");
     big.alt = title;
     if (img.hasAttribute("data-pixelated")) big.classList.add("pix");
-    const st = { stage, big, scale: 1, x: 0, y: 0, fit: 1, w: 0, h: 0 };
+    const st = { stage, big, scale: 1, x: 0, y: 0, fit: 1, w: 0, h: 0, info, infoLoaded: false, list, from: img };
     zoomState = st;
+    if (list) {
+      z.querySelector(".zoom-prev").onclick = () => zoomStep(-1);
+      z.querySelector(".zoom-next").onclick = () => zoomStep(1);
+      zoomNavSync();
+    }
+    if (info) {
+      z.querySelector(".zoom-info-b").onclick = () => zoomInfo(!zoomInfoOpen);
+      if (zoomInfoOpen) zoomInfo(true);
+    }
     big.onload = () => { st.w = big.naturalWidth; st.h = big.naturalHeight; zoomFit(); };
     big.src = src;
 
@@ -714,6 +745,66 @@
       if (st.scale > st.fit * 1.05) zoomFit();
       else zoomTo(Math.max(st.fit * 2, 1), ev.clientX - r.left, ev.clientY - r.top);
     });
+  }
+
+  function zoomInfo(open) {
+    const st = zoomState;
+    if (!st || !st.info) return;
+    zoomInfoOpen = open;
+    const side = document.querySelector("#zoom .zoom-side");
+    const btn = document.querySelector("#zoom .zoom-info-b");
+    side.hidden = !open;
+    if (btn) btn.classList.toggle("on", open);
+    if (open && !st.infoLoaded) {
+      st.infoLoaded = true;
+      side.innerHTML = '<div class="muted small">Loading...</div>';
+      fetch(st.info).then((r) => r.ok ? r.text() : Promise.reject(r.status)).then((html) => {
+        if (zoomState === st) side.innerHTML = html;
+      }).catch(() => {
+        if (zoomState === st) { side.textContent = "Could not load the details of this crop."; st.infoLoaded = false; }
+      });
+    }
+    zoomFit();
+  }
+
+  function zoomSiblings(st) {
+    return Array.from(st.list.querySelectorAll("img[data-zoom]"));
+  }
+
+  function zoomMoreSentinel(st) {
+    const s = document.querySelector('[data-list="' + st.list.id + '"]');
+    return s && !s.hidden ? s : null;
+  }
+
+  function zoomNavSync() {
+    const st = zoomState;
+    if (!st || !st.list) return;
+    const all = zoomSiblings(st), k = all.indexOf(st.from);
+    const more = zoomMoreSentinel(st);
+    const z = document.getElementById("zoom");
+    z.querySelector(".zoom-prev").disabled = k <= 0;
+    z.querySelector(".zoom-next").disabled = k < 0 || (k >= all.length - 1 && !more);
+    z.querySelector(".zoom-pos").textContent = k < 0 ? "" : (k + 1) + " / " + all.length + (more ? "+" : "");
+  }
+
+  function zoomStep(delta) {
+    const st = zoomState;
+    if (!st || !st.list || st.stepping) return;
+    const all = zoomSiblings(st), k = all.indexOf(st.from);
+    if (k < 0) return;
+    const go = (img) => {
+      if (zoomState !== st || !img) return;
+      img.scrollIntoView({ block: "nearest" });
+      openZoom(img);
+    };
+    if (all[k + delta]) { go(all[k + delta]); return; }
+    if (delta < 0) return;
+    // past the last loaded crop: fetch the list's next page, then step
+    const more = zoomMoreSentinel(st);
+    const pending = more ? requestMore(more) : null;
+    if (!pending) return;
+    st.stepping = true;
+    pending.then(() => { st.stepping = false; go(zoomSiblings(st)[k + 1]); });
   }
 
   function zoomOnImage(ev) {
@@ -772,6 +863,9 @@
     if (ev.key === "+" || ev.key === "=") zoomBy(1.5);
     else if (ev.key === "-" || ev.key === "_") zoomBy(1 / 1.5);
     else if (ev.key === "0") zoomFit();
+    else if (ev.key === "i" && zoomState.info) zoomInfo(!zoomInfoOpen);
+    else if (ev.key === "ArrowLeft" && zoomState.list) zoomStep(-1);
+    else if (ev.key === "ArrowRight" && zoomState.list) zoomStep(1);
     else return false;
     return true;
   }

@@ -1005,26 +1005,39 @@ class EmbeddingsView(View):
         src = f"/dl/{self.s.sid}/{dkey}?inline=1"
         pimg = f"/pimg/{self.s.sid}/{mkey}/"
         modes = "".join(
-            f'<button type="button" class="seg-b{" on" if m == "pan" else ""}" data-pm-mode="{m}">{h.icon(ic, 13)}<span>{lbl}</span></button>'
-            for m, ic, lbl in (("pan", "pan", "Pan"), ("lasso", "lasso", "Lasso"), ("zoom", "zoom", "Zoom")))
+            f'<button type="button" class="seg-b{" on" if m == "pan" else ""}" data-pm-mode="{m}" title="{lbl}">'
+            f'{h.icon(ic, 13)}</button>'
+            for m, ic, lbl in (("pan", "pan", "Pan: drag to move the map"),
+                               ("lasso", "lasso", "Lasso: draw around points to select them"),
+                               ("zoom", "zoom", "Zoom: drag a box to zoom into it")))
+        # One row that never wraps: everything is an icon with its tooltip,
+        # so a button appearing (a selection, Reshuffle) never pushes the map
+        # down; the least needed group folds away when the map is narrow
+        # (embeddings.css).
+        def icon_btn(key: str, icon_name: str, title: str, *, hidden: bool = False, cls: str = "") -> str:
+            return (f'<button type="button" class="btn btn-sm btn-ghost btn-icon {cls}" data-pm="{key}" '
+                    f'title="{h.e(title)}"{" hidden" if hidden else ""}>{h.icon(icon_name, 14)}</button>')
+
         toolbar = (
-            f'<div class="seg"><button type="button" class="seg-b on" data-pm-render="interactive" title="Interactive map">{h.icon("target", 13)}</button>'
+            f'<div class="pm-row">'
+            f'<div class="seg pm-render"><button type="button" class="seg-b on" data-pm-render="interactive" title="Interactive map">{h.icon("target", 13)}</button>'
             f'<button type="button" class="seg-b" data-pm-render="static" title="Static matplotlib figure">{h.icon("image", 13)}</button></div>'
-            f'<button type="button" class="btn btn-sm btn-ghost btn-icon" data-pm="full" title="Full screen -- hide the settings column and fill the window">{h.icon("arrows-ud", 14)}</button>'
-            f'<span class="pm-tools"><span class="seg">{modes}</span>'
+            f'<span class="pm-tools pm-in"><span class="seg">{modes}</span>'
+            f'<span class="pm-zoom">'
             f'<button type="button" class="btn btn-sm btn-ghost btn-icon" data-pm="out" title="Zoom out">-</button>'
             f'<span class="pm-zoomtext muted small">x1.0</span>'
-            f'<button type="button" class="btn btn-sm btn-ghost btn-icon" data-pm="in" title="Zoom in">+</button>'
-            f'<button type="button" class="btn btn-sm btn-ghost btn-icon" data-pm="reset" title="Reset view" hidden>{h.icon("refresh", 13)}</button>'
+            f'<button type="button" class="btn btn-sm btn-ghost btn-icon" data-pm="in" title="Zoom in">+</button></span>'
+            f'{icon_btn("reset", "refresh", "Reset view", hidden=True)}'
+            f'<span class="grow"></span>'
             f'<b class="pm-seltext small"></b>'
-            f'<button type="button" class="btn btn-sm btn-ghost" data-pm="show" hidden>{h.icon("image", 13)}<span>Show selection</span></button>'
-            f'<button type="button" class="btn btn-sm btn-ghost" data-pm="clear" hidden>{h.icon("x", 13)}<span>Clear</span></button>'
-            f'<button type="button" class="btn btn-sm btn-ghost pm-toggle" data-pm="gallery" '
-            f'title="Gallery: a lasso shrinks the map into a corner and fills the rest with crops drawn at random from the selection">'
-            f'{h.icon("grid", 13)}<span>Gallery</span></button>'
-            f'<button type="button" class="btn btn-sm btn-ghost" data-pm="shuffle" title="Draw another random sample" hidden>'
-            f'{h.icon("refresh", 13)}<span>Reshuffle</span></button>'
-            f'<span class="pm-galtext muted small"></span></span>')
+            f'{icon_btn("show", "image", "Open the selection in the carousel", hidden=True)}'
+            f'{icon_btn("clear", "x", "Clear the selection", hidden=True)}'
+            f'<span class="vsep"></span>'
+            f'{icon_btn("gallery", "grid", "Gallery: the map moves to a corner, and a lasso fills the rest with crops drawn at random from the selection", cls="pm-toggle")}'
+            f'{icon_btn("shuffle", "refresh", "Draw another random sample of crops", hidden=True)}'
+            f'{icon_btn("copy", "copy", "Copy what is shown as a picture -- always the same size and framing for the same view")}'
+            f'{icon_btn("save", "download", "Save what is shown as a PNG -- always the same size and framing for the same view")}'
+            f'</span></div>')
         map_html = (f'<div class="pmap" data-map="{dkey}" data-src="{h.e(src)}" data-pimg="{h.e(pimg)}" data-target="{self.name}" '
                     f'data-static="{dkey}" title="">'
                     f'<div class="pm-bar">{toolbar}</div>'
@@ -1238,7 +1251,9 @@ class EmbeddingsView(View):
                         f'{h.spinner("Measuring class overlap...") if self.overlap_busy else ""}{self.overlap_html}')
         left.append(h.section("How much the classes overlap", overlap_body, manual="class-overlap",
                               sub="mean cosine similarity within and between classes"))
-        right = f'<div class="emb-right">{self.results_html}</div>'
+        split = ('<div class="emb-split" title="Drag to resize the map; drag it to the left edge, or double-click, '
+                 'for a full-width map"></div>')
+        right = f'{split}<div class="emb-right">{self.results_html}</div>'
         return f'<div class="emb"><div class="emb-left stack">{"".join(p for p in left if p)}</div>{right}</div>'
 
     def _filters_card(self) -> str:

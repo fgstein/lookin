@@ -11,10 +11,25 @@
  * a point on the rim can be brought to the middle. The legend hides groups
  * and brings them to the front in place.
  *
- * Gallery mode: a lasso shrinks the map into the top-left corner (lasso
- * still drawn on it, still live) and fills the rest of the square with the
- * crops of a random sample of the selected points -- as many as fit. One transform (toScreen) both places the dots
- * and answers "which point is under the cursor", so the two cannot drift.
+ * One transform (toScreen) both places the dots and answers "which point is
+ * under the cursor", so the two cannot drift.
+ *
+ * Gallery mode: the button itself shrinks the map into the top-left corner
+ * (so drawing or clearing a lasso never moves the layout); a lasso drawn
+ * there fills the rest of the panel with the crops of a random sample of
+ * the selected points -- as many as fit. The tiles keep one size (a
+ * seventh of the panel's shorter side) and the mosaic goes on as far as the
+ * panel does: drag the splitter to the left and it fills the whole width.
+ *
+ * Capture: "Copy" / "Save" draw what is shown -- the map with its lasso,
+ * and in gallery mode the tiles -- again, off screen, at a fixed scale
+ * whatever the window or the screen's pixel ratio: the map is always
+ * EXPORT_SIZE (3/7 of it in gallery mode) and so is a tile. The same view
+ * of the same data always gives the same picture, pixel for pixel, and two
+ * captures line up.
+ *
+ * The splitter between the settings column and the map (.emb-split) is
+ * wired at the bottom of this file.
  *
  * Talks to the server only through window.lookinAct.
  */
@@ -38,8 +53,13 @@
   // how far a drag may push the cloud off the canvas: its bounding box
   // keeps at least this fraction of the view's half-width on screen
   const PAN_KEEP = 0.1;
-  const GALLERY_CELL = 104;             // target crop tile side, px
-  const GALLERY_MAP_FRAC = 0.4;         // map side / box side in gallery mode
+  const GALLERY_COLS = 7;               // tiles along the panel's shorter side
+  const GALLERY_MAP_CELLS = 3;          // the corner map spans 3 x 3 tiles
+  const GALLERY_SAMPLE_MAX = 2000;      // crops drawn per selection
+  const EXPORT_SIZE = 800;              // capture side, CSS px ...
+  const EXPORT_RATIO = 2;               // ... drawn at 2x: a 1600 x 1600 PNG
+  const EXPORT_LINE = "#dfe2e8";        // the box's border colour (--line)
+  const EXPORT_IMAGE_WAIT_MS = 5000;
   const PROTOTYPE_RADIUS = 9.0;
   const SUBCENTER_SHAPES = ["star", "plus", "cross", "diamond", "triangle_up", "triangle_down", "square", "pentagon"];
   const PLOT_PADDING_MIN = 22;
@@ -47,6 +67,7 @@
   const MIN_PLOT_SIZE = 420;
 
   function plotPadding(size) { return Math.max(PLOT_PADDING_MIN, size * PLOT_PADDING_FRAC); }
+  function galleryMapSide(cell) { return Math.floor(GALLERY_MAP_CELLS * cell); }
 
   function markerPolygon(kind, cx, cy, r) {
     const ring = (n, start, radius) => {
@@ -111,16 +132,19 @@
       this.mode = "pan";
       this.current = null;
       this.sprites = {};
-      this.gallery = false;             // the toggle
-      this.galleryOn = false;           // the layout actually shown
+      this.gallery = false;             // gallery layout: map in the corner, crops around
       this.buildDom();
-      this.full = this.measure();       // side of the square box
-      this.size = this.full;            // side of the map canvas inside it
+      this.room = this.measure();       // [w, h] the panel leaves for the box
+      this.boxW = this.boxH = Math.min(this.room[0], this.room[1]);
+      this.size = this.boxW;            // side of the map canvas inside the box
       this.fit();
       this.wire();
       this.redraw();
+      // the panel's width (the splitter) and the window's height both size the box
       this.ro = new ResizeObserver(() => this.resize());
-      this.ro.observe(this.box);
+      this.ro.observe(this.box.parentElement);
+      this.onWinResize = () => this.resize();
+      window.addEventListener("resize", this.onWinResize);
     }
 
     // ---- DOM ----
@@ -147,15 +171,17 @@
       this.btnShuffle = r.querySelector("[data-pm=shuffle]");
     }
 
+    // [width, height] available for the box: the panel's width, and the
+    // window below the box's top
     measure() {
       const w = this.box.parentElement.clientWidth || 600;
       const top = this.box.getBoundingClientRect().top;
       const h = window.innerHeight - Math.max(0, top) - 16;
-      return Math.max(MIN_PLOT_SIZE, Math.floor(Math.min(w, h > 200 ? h : w)));
+      return [Math.max(MIN_PLOT_SIZE, Math.floor(w)), Math.max(MIN_PLOT_SIZE, Math.floor(h > 200 ? h : w))];
     }
 
     setupCanvas() {
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = this.dpr = window.devicePixelRatio || 1;
       for (const c of [this.canvas, this.overlay]) {
         c.width = Math.round(this.size * dpr);
         c.height = Math.round(this.size * dpr);
@@ -163,8 +189,8 @@
         c.style.height = this.size + "px";
         c.getContext("2d").setTransform(dpr, 0, 0, dpr, 0, 0);
       }
-      this.box.style.width = this.full + "px";
-      this.box.style.height = this.full + "px";
+      this.box.style.width = this.boxW + "px";
+      this.box.style.height = this.boxH + "px";
       this.sprites = {};
     }
 
@@ -230,23 +256,35 @@
     }
 
     resize() {
-      const full = this.measure();
-      if (Math.abs(full - this.full) < 2) return;
-      this.full = full;
+      if (!document.contains(this.box)) {      // the tab was redrawn without this map
+        this.ro.disconnect();
+        window.removeEventListener("resize", this.onWinResize);
+        return;
+      }
+      const room = this.measure();
+      if (Math.abs(room[0] - this.room[0]) < 2 && Math.abs(room[1] - this.room[1]) < 2) return;
+      this.room = room;
       this.layout();
     }
 
     // Size the map canvas for the current layout (the whole box, or its
     // corner in gallery mode) keeping the same view, then lay out the tiles.
     layout() {
-      this.galleryOn = this.gallery && this.selected.length > 0;
-      let size = this.full;
-      if (this.galleryOn) {
-        const cols = Math.max(4, Math.round(this.full / GALLERY_CELL));
-        this.cell = this.full / cols;
-        this.cols = cols;
-        this.mapCells = Math.max(2, Math.round(cols * GALLERY_MAP_FRAC));
-        size = Math.floor(this.mapCells * this.cell);
+      const [W, H] = this.room, square = Math.min(W, H);
+      let size = square;
+      this.boxW = this.boxH = square;
+      if (this.gallery) {
+        // tiles of about a seventh of the shorter side, as many whole
+        // columns and rows as fit, sized so the grid fills both the width
+        // and the height to within a fraction of a tile
+        const m = GALLERY_MAP_CELLS, c0 = square / GALLERY_COLS;
+        this.mapCells = m;
+        this.cols = Math.max(m + 1, Math.round(W / c0));
+        this.rows = Math.max(m + 1, Math.round(H / c0));
+        this.cell = Math.min(W / this.cols, H / this.rows);
+        this.boxW = Math.floor(this.cols * this.cell);
+        this.boxH = Math.floor(this.rows * this.cell);
+        size = galleryMapSide(this.cell);
       }
       const ratio = this.scale / this.fitScale;
       this.size = size;
@@ -254,45 +292,71 @@
       this.fitScale = (size - 2 * plotPadding(size)) / this.span;
       this.scale = this.fitScale * ratio;
       this.clampCentre();
-      this.box.classList.toggle("pm-gallery", this.galleryOn);
+      this.box.classList.toggle("pm-gallery", this.gallery);
       this.fillGallery();
       this.requestRedraw();
     }
 
     // ---- gallery ----
-    fillGallery() {
+    // `reshuffle`: draw a new sample. Without it (a resize, the toggle) the
+    // tiles keep their crops, so the layout can change size without the
+    // pictures changing under the user -- or between two captures.
+    fillGallery(reshuffle) {
+      if (reshuffle) this.sample = null;
       this.gal.innerHTML = "";
-      if (!this.galleryOn) return;
-      const cols = this.cols, m = this.mapCells, cell = this.cell;
+      if (!this.gallery) return;
+      const cols = this.cols, rows = this.rows, m = this.mapCells, cell = this.cell;
       const slots = [];
-      for (let r = 0; r < cols; r++) for (let c = 0; c < cols; c++) if (r >= m || c >= m) slots.push([r, c]);
-      const pool = this.selected.slice();
-      const take = Math.min(slots.length, pool.length);
-      for (let k = 0; k < take; k++) {      // partial Fisher-Yates
-        const j = k + Math.floor(Math.random() * (pool.length - k));
-        const t = pool[k]; pool[k] = pool[j]; pool[j] = t;
+      for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) if (r >= m || c >= m) slots.push([r, c]);
+      this.nShown = 0;
+      if (!this.selected.length) {
+        const hint = document.createElement("div");
+        hint.className = "pmap-gal-hint";
+        hint.style.left = (m * cell) + "px";
+        hint.style.top = "0px";
+        hint.style.width = ((cols - m) * cell) + "px";
+        hint.style.height = (m * cell) + "px";
+        hint.textContent = "Draw a lasso on the map: the crops it holds fill this space.";
+        this.gal.appendChild(hint);
+        this.syncToolbar();
+        return;
       }
+      if (!this.sample) {
+        // more than any panel shows, so widening it brings in more crops
+        // of the same draw instead of a new one
+        const pool = this.selected.slice();
+        const n = Math.min(GALLERY_SAMPLE_MAX, pool.length);
+        for (let k = 0; k < n; k++) {      // partial Fisher-Yates
+          const j = k + Math.floor(Math.random() * (pool.length - k));
+          const t = pool[k]; pool[k] = pool[j]; pool[j] = t;
+        }
+        this.sample = pool.slice(0, n);
+      }
+      const pool = this.sample;
+      const take = Math.min(slots.length, pool.length);
       const frag = document.createDocumentFragment();
       for (let k = 0; k < take; k++) {
         const i = pool[k], [r, c] = slots[k];
         const img = document.createElement("img");
         img.alt = "";
-        img.loading = "lazy";
         img.src = this.imgBase + i;
         img.title = this.d.hl[this.d.hi[i]] || "";
         img.dataset.i = i;
+        img.dataset.r = r; img.dataset.c = c;
         img.style.left = (c * cell) + "px";
         img.style.top = (r * cell) + "px";
         img.style.width = img.style.height = cell + "px";
         frag.appendChild(img);
       }
       this.gal.appendChild(frag);
-      if (this.galText) this.galText.textContent = take < this.selected.length
-        ? take.toLocaleString("en-US") + " drawn at random of " + this.selected.length.toLocaleString("en-US") : "";
+      this.nShown = take;
+      this.syncToolbar();
     }
 
     setGallery(on) {
       this.gallery = on;
+      // the gallery is driven by the lasso: switch to it straight away
+      if (on) this.mode = "lasso";
       this.hideHover();
       this.layout();
     }
@@ -308,7 +372,7 @@
     sprite(color, kind) {
       const key = color + "|" + kind;
       if (this.sprites[key]) return this.sprites[key];
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = this.dpr || 1;
       const d = POINT_DIAMETER * (kind === 1 ? 1.3 : 1.0);
       const c = document.createElement("canvas");
       const px = Math.ceil((d + 2) * dpr);
@@ -411,8 +475,8 @@
         }
         // on the corner map the selection halos crowd the outline: draw it
         // white under blue so it still reads
-        if (this.galleryOn) { g.strokeStyle = "#ffffff"; g.lineWidth = 5; g.stroke(); }
-        g.strokeStyle = LASSO_COLOR; g.lineWidth = this.galleryOn ? 2.5 : 1.8;
+        if (this.gallery) { g.strokeStyle = "#ffffff"; g.lineWidth = 5; g.stroke(); }
+        g.strokeStyle = LASSO_COLOR; g.lineWidth = this.gallery ? 2.5 : 1.8;
         g.stroke();
       }
       if (this.zoomBox) {
@@ -435,11 +499,18 @@
       if (this.btnReset) this.btnReset.hidden = Math.abs(this.scale / this.fitScale - 1) < 0.001
         && Math.abs(this.cx - this.base[0]) * this.scale < 1 && Math.abs(this.cy - this.base[1]) * this.scale < 1;
       const has = this.lassoData !== null;
-      if (this.selText) this.selText.textContent = has ? this.selected.length.toLocaleString("en-US") + " points selected" : "";
+      const n = this.selected.length.toLocaleString("en-US");
+      if (this.selText) {
+        // short, the toolbar is one row: "40/452" in gallery mode (crops shown / selected)
+        const partial = this.gallery && this.nShown && this.nShown < this.selected.length;
+        this.selText.textContent = !has ? "" : partial ? this.nShown.toLocaleString("en-US") + "/" + n : n;
+        this.selText.title = !has ? "" : n + " points selected" +
+          (partial ? ", " + this.nShown.toLocaleString("en-US") + " of them shown, drawn at random" : "");
+      }
       if (this.btnShow) this.btnShow.hidden = !this.selected.length;
       if (this.btnClear) this.btnClear.hidden = !has;
       if (this.btnGallery) this.btnGallery.classList.toggle("on", this.gallery);
-      if (this.btnShuffle) this.btnShuffle.hidden = !this.galleryOn;
+      if (this.btnShuffle) this.btnShuffle.hidden = !(this.gallery && this.selected.length);
       this.root.querySelectorAll("[data-pm-mode]").forEach((b) => b.classList.toggle("on", b.getAttribute("data-pm-mode") === this.mode));
     }
 
@@ -494,12 +565,12 @@
         x0 = this.psx[q]; y0 = this.psy[q]; w = 170; h = 46;
       }
       // the card may spill out of the corner map onto the tiles
-      const room = this.full;
+      const rw = this.boxW, rh = this.boxH;
       let x = x0 + HOVER_OFFSET, y = y0 + HOVER_OFFSET;
-      if (x + w > room) x = x0 - HOVER_OFFSET - w;
-      if (y + h > room) y = y0 - HOVER_OFFSET - h;
-      card.style.left = Math.max(2, Math.min(room - w - 2, x)) + "px";
-      card.style.top = Math.max(2, Math.min(room - h - 2, y)) + "px";
+      if (x + w > rw) x = x0 - HOVER_OFFSET - w;
+      if (y + h > rh) y = y0 - HOVER_OFFSET - h;
+      card.style.left = Math.max(2, Math.min(rw - w - 2, x)) + "px";
+      card.style.top = Math.max(2, Math.min(rh - h - 2, y)) + "px";
       card.style.display = "flex";
       this.drawOverlay();
     }
@@ -568,10 +639,13 @@
       on("[data-pm=out]", () => this.applyZoom(this.scale / ZOOM_STEP));
       on("[data-pm=reset]", () => { this.fit(); this.requestRedraw(); });
       on("[data-pm=show]", () => this.emitSelection());
-      on("[data-pm=clear]", () => { this.selected = []; this.lassoData = null; this.layout(); });
+      on("[data-pm=clear]", () => { this.selected = []; this.sample = null; this.lassoData = null; this.fillGallery(true); this.requestRedraw(); });
       on("[data-pm=gallery]", () => this.setGallery(!this.gallery));
-      on("[data-pm=shuffle]", () => this.fillGallery());
-      this.galText = this.root.querySelector(".pm-galtext");
+      on("[data-pm=shuffle]", () => this.fillGallery(true));
+      on("[data-pm=copy]", () => this.copyImage());
+      on("[data-pm=save]", () => this.saveImage());
+      const copyBtn = this.root.querySelector("[data-pm=copy]");
+      if (copyBtn && !this.canCopy()) copyBtn.hidden = true;
       // a tile: hovering rings its point on the map, a click opens it
       this.gal.addEventListener("pointerover", (ev) => {
         const t = ev.target.closest("img[data-i]");
@@ -582,13 +656,6 @@
       this.gal.addEventListener("click", (ev) => {
         const t = ev.target.closest("img[data-i]");
         if (t) window.lookinAct(this.target, "point", { i: +t.dataset.i });
-      });
-      on("[data-pm=full]", () => {
-        const view = this.root.closest(".emb");
-        if (view) view.classList.toggle("emb-full");
-        const b = this.root.querySelector("[data-pm=full]");
-        if (b && view) b.title = view.classList.contains("emb-full") ? "Leave full screen" : "Full screen -- hide the settings column and fill the window";
-        setTimeout(() => this.resize(), 30);
       });
       this.root.querySelectorAll("[data-pm-render]").forEach((b) => b.addEventListener("click", () => {
         const which = b.getAttribute("data-pm-render");
@@ -623,8 +690,8 @@
       if (v.length < LASSO_MIN_VERTICES) { this.drawOverlay(); return; }
       this.lassoData = v.map(([x, y]) => this.toData(x, y));
       this.reselect();
-      if (this.gallery) { this.layout(); return; }
       this.requestRedraw();
+      if (this.gallery) { this.fillGallery(true); return; }
       if (this.selected.length) this.emitSelection();
     }
 
@@ -635,11 +702,134 @@
       const out = [];
       for (let i = 0; i < this.n; i++) if (this.shown(i) && insidePolygon(poly, this.sx[i], this.sy[i])) out.push(i);
       this.selected = out;
+      this.sample = null;                 // a new selection: a new gallery sample
     }
 
     emitSelection() {
       if (!this.selected.length) return;
       window.lookinAct(this.target, "select", { idx: this.selected });
+    }
+
+    // ---- capture ----
+    // The map drawn again at a fixed size: the view (centre, zoom relative
+    // to the fit) is kept, everything that depends on the window -- canvas
+    // size, pixel ratio -- is swapped for fixed values for one synchronous
+    // redraw, then put back.
+    renderMap(side, ratio) {
+      const keep = {
+        size: this.size, canvas: this.canvas, overlay: this.overlay, dpr: this.dpr,
+        sprites: this.sprites, fitScale: this.fitScale, scale: this.scale, current: this.current,
+      };
+      const zoom = this.scale / this.fitScale;
+      const make = () => {
+        const c = document.createElement("canvas");
+        c.width = c.height = Math.round(side * ratio);
+        c.getContext("2d").setTransform(ratio, 0, 0, ratio, 0, 0);
+        return c;
+      };
+      if (this.raf) { cancelAnimationFrame(this.raf); this.raf = null; }
+      this.canvas = make(); this.overlay = make();
+      this.size = side; this.dpr = ratio; this.sprites = {}; this.current = null;
+      this.fitScale = (side - 2 * plotPadding(side)) / this.span;
+      this.scale = this.fitScale * zoom;
+      let out;
+      try {
+        this.redraw();
+        out = this.canvas;
+        out.getContext("2d").setTransform(1, 0, 0, 1, 0, 0);
+        out.getContext("2d").drawImage(this.overlay, 0, 0);
+      } finally {
+        Object.assign(this, keep);
+        this.redraw();
+      }
+      return out;
+    }
+
+    async capture() {
+      const W = EXPORT_SIZE, R = EXPORT_RATIO;
+      const out = document.createElement("canvas");
+      const g = out.getContext("2d");
+      if (!this.gallery) {
+        out.width = out.height = W * R;
+        g.fillStyle = "#ffffff";
+        g.fillRect(0, 0, out.width, out.height);
+        g.drawImage(this.renderMap(W, R), 0, 0);
+        return out;
+      }
+      // the grid shown (its columns and rows), at a fixed tile size
+      const cell = W / GALLERY_COLS, side = galleryMapSide(cell);
+      out.width = Math.round(this.cols * cell * R);
+      out.height = Math.round(this.rows * cell * R);
+      g.fillStyle = "#f7f8fa";                      // the tiles' backdrop (--surface-2)
+      g.fillRect(0, 0, out.width, out.height);
+      g.drawImage(this.renderMap(side, R), 0, 0);
+      g.fillStyle = EXPORT_LINE;
+      g.fillRect(side * R, 0, R, (side + 1) * R);
+      g.fillRect(0, side * R, (side + 1) * R, R);
+      // each crop loaded again (from the cache) rather than read off the
+      // page's <img>, which may not have loaded yet; one that does not
+      // come within a few seconds is left black rather than holding up
+      // the capture
+      const tiles = await Promise.all(Array.from(this.gal.querySelectorAll("img[data-i]")).map((el) => {
+        const im = new Image();
+        im.dataset.r = el.dataset.r; im.dataset.c = el.dataset.c;
+        const loaded = new Promise((ok) => { im.onload = im.onerror = () => ok(im); });
+        im.src = el.src;
+        return Promise.race([loaded, new Promise((ok) => setTimeout(() => ok(im), EXPORT_IMAGE_WAIT_MS))]);
+      }));
+      g.imageSmoothingEnabled = false;              // crops are shown with their pixels
+      for (const im of tiles) {
+        // device-pixel edges from the cell grid, so tiles never overlap or gap
+        const x0 = Math.round(+im.dataset.c * cell * R), y0 = Math.round(+im.dataset.r * cell * R);
+        const x1 = Math.round((+im.dataset.c + 1) * cell * R), y1 = Math.round((+im.dataset.r + 1) * cell * R);
+        g.fillStyle = "#ffffff"; g.fillRect(x0, y0, x1 - x0, y1 - y0);
+        const b = R;                                // the tile's 1 px white border
+        const iw = x1 - x0 - 2 * b, ih = y1 - y0 - 2 * b;
+        g.fillStyle = "#000000"; g.fillRect(x0 + b, y0 + b, iw, ih);
+        if (!im.complete || !im.naturalWidth) continue;
+        const k = Math.min(iw / im.naturalWidth, ih / im.naturalHeight);
+        const w = Math.round(im.naturalWidth * k), h = Math.round(im.naturalHeight * k);
+        g.drawImage(im, x0 + b + Math.floor((iw - w) / 2), y0 + b + Math.floor((ih - h) / 2), w, h);
+      }
+      return out;
+    }
+
+    fileName() {
+      const d = new Date(), p = (n) => String(n).padStart(2, "0");
+      return "lookin_embeddings" + (this.gallery ? "_gallery" : "") + "_" + d.getFullYear() + p(d.getMonth() + 1) +
+        p(d.getDate()) + "_" + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) + ".png";
+    }
+
+    canCopy() {
+      return !!(window.isSecureContext && navigator.clipboard && navigator.clipboard.write && window.ClipboardItem);
+    }
+
+    async copyImage() {
+      const toast = window.lookinToast || (() => {});
+      if (!this.canCopy()) { this.saveImage(); return; }
+      try {
+        // the blob is handed over as a promise: Safari wants the write
+        // started within the click, before the drawing is done
+        const blob = this.capture().then((c) => new Promise((ok) => c.toBlob(ok, "image/png")));
+        await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+        toast("Image copied to the clipboard");
+      } catch (e) {
+        console.error("lookin: copy", e);
+        toast("The browser refused the clipboard: the image is saved instead", "warn");
+        this.saveImage();
+      }
+    }
+
+    async saveImage() {
+      const c = await this.capture();
+      c.toBlob((blob) => {
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = this.fileName();
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+      }, "image/png");
     }
 
     // ---- legend: show / hide / bring to front, in place ----
@@ -676,7 +866,8 @@
     afterShownChange() {
       this.reselect();
       this.hideHover();
-      if (this.gallery) this.layout(); else this.requestRedraw();
+      if (this.gallery) this.fillGallery(true);
+      this.requestRedraw();
     }
   }
 
@@ -693,5 +884,62 @@
         maps.set(root, new PMap(root, data));
       }).catch((e) => console.error("lookin: map", e));
     });
+  });
+
+  // ---- the splitter between the settings column and the map ----------------
+  // Drag it to size the map; drag it (nearly) to the left edge, or
+  // double-click it, and the settings column folds away for a full-width
+  // map. Kept on <html> -- a CSS variable and a class -- rather than on the
+  // tab's elements, which the server's re-renders rewrite; remembered in
+  // this browser only.
+  const SPLIT_KEY = "lookin.embSplit";
+  const SPLIT_FOLD_PX = 200;           // a settings column dragged narrower than this folds
+  const html = document.documentElement;
+
+  function applySplit(st) {
+    if (st.right) html.style.setProperty("--emb-right", st.right + "px");
+    else html.style.removeProperty("--emb-right");
+    html.classList.toggle("emb-folded", !!st.folded);
+  }
+  function loadSplit() {
+    try { return JSON.parse(localStorage.getItem(SPLIT_KEY) || "{}") || {}; } catch (e) { return {}; }
+  }
+  function saveSplit(st) {
+    try { localStorage.setItem(SPLIT_KEY, JSON.stringify(st)); } catch (e) { /* private mode */ }
+  }
+  let split = loadSplit();
+  applySplit(split);
+
+  document.addEventListener("pointerdown", (ev) => {
+    const bar = ev.target.closest(".emb-split");
+    if (!bar || ev.button !== 0) return;
+    const emb = bar.closest(".emb");
+    if (!emb) return;
+    ev.preventDefault();
+    bar.setPointerCapture(ev.pointerId);
+    html.classList.add("emb-dragging");
+    const move = (e) => {
+      const r = emb.getBoundingClientRect();
+      const left = e.clientX - r.left;
+      if (left < SPLIT_FOLD_PX) split = { right: split.right, folded: true };
+      else split = { right: Math.round(r.right - e.clientX - bar.offsetWidth / 2), folded: false };
+      applySplit(split);
+    };
+    const up = () => {
+      bar.removeEventListener("pointermove", move);
+      bar.removeEventListener("pointerup", up);
+      bar.removeEventListener("pointercancel", up);
+      html.classList.remove("emb-dragging");
+      saveSplit(split);
+    };
+    bar.addEventListener("pointermove", move);
+    bar.addEventListener("pointerup", up);
+    bar.addEventListener("pointercancel", up);
+  });
+  document.addEventListener("dblclick", (ev) => {
+    if (!ev.target.closest(".emb-split")) return;
+    split = { right: split.right, folded: !split.folded };
+    applySplit(split);
+    saveSplit(split);
   });
 })();

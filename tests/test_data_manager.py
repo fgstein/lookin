@@ -468,3 +468,18 @@ def test_a_label_column_with_thousands_of_classes_loads(tmp_path):
     state = AppState()
     state.load_dataset(str(csv), ColumnConfig())
     assert len(state.dataset.labels()) == 2000
+
+
+def test_crop_details_gives_the_row_and_every_experiment_prediction(loaded_state, results_csv):
+    loaded_state.add_experiment(str(results_csv), "second")
+    info = loaded_state.crop_details(uid="f")
+    assert info["uuid"] == "f" and info["label"] == "bird"
+    assert dict(info["metadata"])["site"] == "east"
+    assert [p["experiment"] for p in info["predictions"]] == ["exp", "second"]
+    pred = info["predictions"][0]
+    assert pred["predicted"] == "dog" and pred["correct"] is False
+    assert pred["score"] == pytest.approx(0.8) and pred["truth_score"] == pytest.approx(0.1)
+    assert pred["top"][0] == ("dog", pytest.approx(0.8))
+    # found by its crop path when there is no uuid to go by
+    assert loaded_state.crop_details(crop="crops/a.png")["uuid"] == "a"
+    assert loaded_state.crop_details(uid="nope") is None

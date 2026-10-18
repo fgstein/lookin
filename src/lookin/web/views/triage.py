@@ -23,6 +23,7 @@ from lookin.ui.triage_view import (
 from lookin.web import html as h
 from lookin.web.views.base import Dialog
 from lookin.web.views.carousel import STATUS_CLS, STATUS_ICON, decision_summary, reason_options
+from lookin.web.views.details import details_url
 from lookin.web.views.media import crop_url
 from lookin.web.views.widgets import class_select
 
@@ -234,7 +235,7 @@ class TriageDialog(Dialog):
             src = self._crop_src(uid)
             if src is not None:
                 thumbs.append(f'<img class="crop" src="{h.e(src)}" alt="{h.e(uid)}" title="{h.e(uid)}" '
-                              f'data-zoom data-pixelated data-title="{h.e(uid)}" '
+                              f'data-zoom data-pixelated data-title="{h.e(uid)}" data-info="{h.e(details_url(self.session, uid))}" '
                               f'style="width:{REFERENCE_THUMB}px;height:{REFERENCE_THUMB}px;object-fit:cover">')
         if not thumbs:
             return f'<div class="muted small"><i>No reference crops for {h.e(label)}.</i></div>'
@@ -274,6 +275,7 @@ class TriageDialog(Dialog):
 
         src = self._crop_src(candidate.uuid)
         img = (f'<img class="crop" src="{h.e(src)}" alt="{h.e(candidate.uuid)}" data-zoom data-pixelated '
+               f'data-info="{h.e(details_url(self.session, candidate.uuid))}" '
                f'data-title="{h.e(candidate.uuid)}" style="width:{IMAGE_SIZE}px;height:{IMAGE_SIZE}px;object-fit:contain">'
                if src else "")
         # The next crop is already fetched, so the queue never waits on it.
