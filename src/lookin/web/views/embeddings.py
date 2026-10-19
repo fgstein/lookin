@@ -1057,8 +1057,14 @@ class EmbeddingsView(StaleTracking, View):
         def group(cls: str, title: str, body: str) -> str:
             return f'<span class="pm-grp {cls}" title="{h.e(title)}">{body}</span>'
 
+        # Shown only while the settings column is folded away (see the
+        # splitter in projection.js): an icon at the head of the toolbar,
+        # set apart from the map's own tools.
+        unfold = (f'<button type="button" class="btn btn-sm btn-icon emb-unfold" data-emb-unfold="1" '
+                  f'title="Show the settings column again" aria-label="Show settings">{h.icon("sliders", 14)}</button>')
         view = (
-            f'<div class="seg pm-render"><button type="button" class="seg-b on" data-pm-render="interactive" title="Interactive map">{h.icon("target", 13)}</button>'
+            unfold
+            + f'<div class="seg pm-render"><button type="button" class="seg-b on" data-pm-render="interactive" title="Interactive map">{h.icon("target", 13)}</button>'
             f'<button type="button" class="seg-b" data-pm-render="static" title="Static matplotlib figure">{h.icon("image", 13)}</button></div>'
             f'<span class="pm-tools pm-in">'
             + group("pm-g-view", "Move around the map",
@@ -1305,13 +1311,10 @@ class EmbeddingsView(StaleTracking, View):
                  'for a full-width map"></div>')
         # The settings column folds away (the splitter, see projection.js)
         # only while there is a map to widen: folded with no map, the tab
-        # showed one "Click 'Run projection'" line and hid the button. And a
-        # folded column says how to get it back.
+        # showed one "Click 'Run projection'" line and hid the button. A
+        # folded column is brought back from the map's toolbar.
         has_map = 'class="pmap' in self.results_html
-        unfold = (f'<button type="button" class="btn btn-sm emb-unfold" data-emb-unfold="1" '
-                  f'title="The settings column is folded away -- show it again">'
-                  f'{h.icon("sliders", 14)}<span>Show settings</span></button>')
-        right = f'{split}<div class="emb-right stack">{unfold}{self.stale_html()}{self.results_html}</div>'
+        right = f'{split}<div class="emb-right stack">{self.stale_html()}{self.results_html}</div>'
         return (f'<div class="emb{" emb-has-map" if has_map else ""}">'
                 f'<div class="emb-left stack">{"".join(p for p in left if p)}</div>{right}</div>')
 

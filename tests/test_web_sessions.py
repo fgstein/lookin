@@ -603,7 +603,6 @@ def test_embeddings_settings_cannot_fold_away_without_a_map(example):
         s.goto("embeddings")
         html = render.render_view(s, "embeddings")
     assert "emb-has-map" not in html and "Run projection" in html
-    assert "data-emb-unfold" in html
     s.view("embeddings").results_html = '<div class="pmap" data-map="k"></div>'
     with RequestScope(s):
         assert 'class="emb emb-has-map"' in render.render_view(s, "embeddings")
