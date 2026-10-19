@@ -1303,8 +1303,17 @@ class EmbeddingsView(StaleTracking, View):
                               sub="mean cosine similarity within and between classes"))
         split = ('<div class="emb-split" title="Drag to resize the map; drag it to the left edge, or double-click, '
                  'for a full-width map"></div>')
-        right = f'{split}<div class="emb-right stack">{self.stale_html()}{self.results_html}</div>'
-        return f'<div class="emb"><div class="emb-left stack">{"".join(p for p in left if p)}</div>{right}</div>'
+        # The settings column folds away (the splitter, see projection.js)
+        # only while there is a map to widen: folded with no map, the tab
+        # showed one "Click 'Run projection'" line and hid the button. And a
+        # folded column says how to get it back.
+        has_map = 'class="pmap' in self.results_html
+        unfold = (f'<button type="button" class="btn btn-sm emb-unfold" data-emb-unfold="1" '
+                  f'title="The settings column is folded away -- show it again">'
+                  f'{h.icon("sliders", 14)}<span>Show settings</span></button>')
+        right = f'{split}<div class="emb-right stack">{unfold}{self.stale_html()}{self.results_html}</div>'
+        return (f'<div class="emb{" emb-has-map" if has_map else ""}">'
+                f'<div class="emb-left stack">{"".join(p for p in left if p)}</div>{right}</div>')
 
     def _filters_card(self) -> str:
         if not self._filter_columns:

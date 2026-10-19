@@ -1025,6 +1025,12 @@
     bar.addEventListener("pointerup", up);
     bar.addEventListener("pointercancel", up);
   });
+  document.addEventListener("click", (ev) => {
+    if (!ev.target.closest("[data-emb-unfold]")) return;
+    split = { right: split.right, folded: false };
+    applySplit(split);
+    saveSplit(split);
+  });
   document.addEventListener("dblclick", (ev) => {
     if (!ev.target.closest(".emb-split")) return;
     split = { right: split.right, folded: !split.folded };

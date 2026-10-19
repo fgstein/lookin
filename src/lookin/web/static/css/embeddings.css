@@ -9,9 +9,12 @@
 .emb-split::before { content: ""; position: absolute; top: 0; bottom: 0; left: 6px; width: 2px; border-radius: 1px; background: var(--line-2); }
 .emb-split:hover::before, .emb-dragging .emb-split::before { background: var(--acc); }
 .emb-dragging, .emb-dragging * { cursor: col-resize !important; user-select: none; }
-/* splitter dragged to the left edge: the map takes the whole width */
-.emb-folded .emb-left { display: none; }
-.emb-folded .emb-right { flex: 1 1 auto; width: auto; }
+/* splitter dragged to the left edge: the map takes the whole width -- only
+   while there is a map, and with a button to bring the settings back */
+.emb-folded .emb-has-map .emb-left { display: none; }
+.emb-folded .emb-has-map .emb-right { flex: 1 1 auto; width: auto; }
+.emb-unfold { display: none; align-self: flex-start; }
+.emb-folded .emb-has-map .emb-unfold { display: inline-flex; }
 .emb-proto { border-top: 1px solid var(--line-2); padding-top: 6px; display: flex; flex-direction: column; gap: 4px; }
 .pmap { display: flex; flex-direction: column; gap: 6px; }
 /* the map's toolbar: one row that never wraps, so nothing appearing in it

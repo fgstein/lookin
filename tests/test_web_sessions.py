@@ -590,3 +590,20 @@ def test_a_restored_snapshot_redraws_every_restored_view(example):
     with RequestScope(t):
         t.view_state.restore(captured)
     assert sorted(called) == ["calibration", "cleaning", "compare", "embeddings", "metrics"]
+
+
+def test_embeddings_settings_cannot_fold_away_without_a_map(example):
+    """The splitter folds the settings column away for a wider map; with no
+    map yet, folded settings left one "Click 'Run projection'" line and no
+    button to run it. The column only folds when a map is shown, and then a
+    "Show settings" button brings it back."""
+    s = _session(WebApp(), "s" * 24)
+    _load(s, example, [("baseline", str(example / "baseline_cnn_results.csv"))])
+    with RequestScope(s):
+        s.goto("embeddings")
+        html = render.render_view(s, "embeddings")
+    assert "emb-has-map" not in html and "Run projection" in html
+    assert "data-emb-unfold" in html
+    s.view("embeddings").results_html = '<div class="pmap" data-map="k"></div>'
+    with RequestScope(s):
+        assert 'class="emb emb-has-map"' in render.render_view(s, "embeddings")
