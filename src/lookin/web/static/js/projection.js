@@ -145,6 +145,7 @@
       this.current = null;
       this.sprites = {};
       this.gallery = false;             // gallery layout: map in the corner, crops around
+      this.static = false;              // the matplotlib figure in place of the canvas
       const gp = loadGalleryPrefs();
       this.density = clamp(+gp.density || GALLERY_COLS, GALLERY_COLS_MIN, GALLERY_COLS_MAX);
       this.wantCells = Math.max(GALLERY_MAP_CELLS_MIN, +gp.cells || GALLERY_MAP_CELLS);
@@ -391,7 +392,7 @@
         const i = pool[k], [r, c] = slots[k];
         const img = document.createElement("img");
         img.alt = "";
-        img.src = this.imgBase + i;
+        img.src = this.imgUrl(i);
         const label = this.d.hl[this.d.hi[i]] || "";
         img.title = label;
         img.dataset.i = i;
@@ -604,6 +605,58 @@
       return best < 0 ? null : best;
     }
 
+    // The crop behind point i, through the display setting (LUT, roll).
+    // The server reads the setting when it answers, but the address has to
+    // name it too: the same address would be answered from the browser's
+    // cache, with the crop as it was drawn before the setting changed.
+    imgUrl(i) {
+      const emb = this.root.closest(".emb");
+      const display = emb ? emb.getAttribute("data-display") || "" : "";
+      return this.imgBase + i + (display ? "?d=" + encodeURIComponent(display) : "");
+    }
+
+    // The display setting changed: the tiles and the hovered crop again.
+    displayChanged() {
+      this.hideHover();
+      if (this.gallery) this.fillGallery(false);
+    }
+
+    // ---- what a map carries over to the next one of the same projection ----
+    // Leaving the tab and coming back redraws it, and builds a new map: the
+    // view (zoom, centre), the tool, the hidden groups and those in front,
+    // the lasso and its gallery, the static figure -- all of it used to start
+    // over. The next map of the same projection takes them from this one.
+    adopt(prev) {
+      this.hidden = new Set(prev.hidden);
+      this.front = prev.front.slice();
+      this.mode = prev.mode;
+      this.lassoData = prev.lassoData;
+      this.selected = prev.selected.slice();
+      this.sample = prev.sample;
+      this.gallery = prev.gallery;
+      this.static = prev.static;
+      const zoom = prev.scale / prev.fitScale;
+      this.cx = prev.cx; this.cy = prev.cy;
+      if (this.static) this.setStatic(true);
+      if (this.legend) this.syncLegend();
+      this.layout();                 // the gallery, the corner map, the tiles
+      this.scale = this.fitScale * zoom;
+      this.clampCentre();
+      this.syncToolbar();
+      this.requestRedraw();
+    }
+
+    syncLegend() {
+      this.legend.querySelectorAll("input[data-g]").forEach((cb) => { cb.checked = !this.hidden.has(+cb.getAttribute("data-g")); });
+      this.legend.querySelectorAll("button[data-front]").forEach((x) => x.classList.toggle("on", this.front.includes(+x.getAttribute("data-front"))));
+    }
+
+    setStatic(on) {
+      this.static = on;
+      this.root.classList.toggle("pm-static", on);
+      this.root.querySelectorAll("[data-pm-render]").forEach((x) => x.classList.toggle("on", (x.getAttribute("data-pm-render") === "static") === on));
+    }
+
     // ---- hover ----
     hover(px, py) {
       const j = this.pickPrototype(px, py);
@@ -618,7 +671,7 @@
       if (target[0] === "p") {
         const i = target[1];
         img.style.display = ""; note.style.display = "none";
-        img.src = this.imgBase + i;
+        img.src = this.imgUrl(i);
         label.textContent = this.d.hl[this.d.hi[i]] || "";
         x0 = this.sx[i]; y0 = this.sy[i]; w = HOVER_THUMB + 12; h = HOVER_THUMB + 28;
       } else {
@@ -722,9 +775,7 @@
       on("[data-pm=crop-smaller]", () => this.setDensity(this.density + 1));
       this.wireGrip();
       this.root.querySelectorAll("[data-pm-render]").forEach((b) => b.addEventListener("click", () => {
-        const which = b.getAttribute("data-pm-render");
-        this.root.classList.toggle("pm-static", which === "static");
-        this.root.querySelectorAll("[data-pm-render]").forEach((x) => x.classList.toggle("on", x === b));
+        this.setStatic(b.getAttribute("data-pm-render") === "static");
       }));
       this.wireLegend();
     }
@@ -961,18 +1012,42 @@
   }
 
   const maps = new WeakMap();
+  // The latest map of each projection (by its data address), so the map
+  // built when the tab is shown again carries on from it -- and does not
+  // fetch the same points again. Only the last few are kept.
+  const latest = new Map();
+  const LATEST_MAX = 4;
+
+  function remember(src, map) {
+    latest.delete(src);
+    latest.set(src, map);
+    while (latest.size > LATEST_MAX) latest.delete(latest.keys().next().value);
+  }
 
   window.lookinInit((doc) => {
     doc.querySelectorAll(".pmap[data-src]").forEach((root) => {
       const src = root.getAttribute("data-src");
       if (root.getAttribute("data-loaded") === src) return;
       root.setAttribute("data-loaded", src);
-      fetch(src).then((r) => r.json()).then((data) => {
+      const build = (data, prev) => {
         const old = maps.get(root);
         if (old && old.ro) old.ro.disconnect();
-        maps.set(root, new PMap(root, data));
-      }).catch((e) => console.error("lookin: map", e));
+        const map = new PMap(root, data);
+        if (prev) {
+          try { map.adopt(prev); } catch (e) { console.error("lookin: map state", e); }
+        }
+        maps.set(root, map);
+        remember(src, map);
+      };
+      const prev = latest.get(src);
+      if (prev && prev.root !== root) { build(prev.d, prev); return; }
+      fetch(src).then((r) => r.json()).then((data) => build(data, null))
+        .catch((e) => console.error("lookin: map", e));
     });
+  });
+
+  document.addEventListener("lookin:display-changed", () => {
+    for (const map of latest.values()) if (document.contains(map.root)) map.displayChanged();
   });
 
   // ---- the splitter between the settings column and the map ----------------

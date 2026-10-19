@@ -606,3 +606,22 @@ def test_embeddings_settings_cannot_fold_away_without_a_map(example):
     s.view("embeddings").results_html = '<div class="pmap" data-map="k"></div>'
     with RequestScope(s):
         assert 'class="emb emb-has-map"' in render.render_view(s, "embeddings")
+
+
+def test_the_embeddings_map_follows_the_display_setting(example):
+    """The map is never redrawn by the page, so its crops' addresses name
+    the display setting from the tab around it, and a new setting tells the
+    map to fetch them again -- they used to come back from the browser's
+    cache, drawn through the old LUT."""
+    s = _session(WebApp(), "t" * 24)
+    _load(s, example, [("baseline", str(example / "baseline_cnn_results.csv"))])
+    with RequestScope(s):
+        s.goto("embeddings")
+        assert 'data-display="none."' in render.render_view(s, "embeddings")
+    with RequestScope(s):
+        s.display_lut = "minmax"
+        s.notify_display_change()
+        out = render.collect(s)
+    assert {"event": "display-changed"} in out.get("cmds", [])
+    with RequestScope(s):
+        assert 'data-display="minmax."' in render.render_view(s, "embeddings")

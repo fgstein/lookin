@@ -1315,7 +1315,11 @@ class EmbeddingsView(StaleTracking, View):
         # folded column is brought back from the map's toolbar.
         has_map = 'class="pmap' in self.results_html
         right = f'{split}<div class="emb-right stack">{self.stale_html()}{self.results_html}</div>'
-        return (f'<div class="emb{" emb-has-map" if has_map else ""}">'
+        # The display setting the map's crops are drawn through: the map
+        # itself is never redrawn by the page (data-static), so its script
+        # reads the setting here to name it in the crops' addresses.
+        display = f"{self.s.display_lut or ''}.{self.s.display_roll_col or ''}"
+        return (f'<div class="emb{" emb-has-map" if has_map else ""}" data-display="{h.e(display)}">'
                 f'<div class="emb-left stack">{"".join(p for p in left if p)}</div>{right}</div>')
 
     def _filters_card(self) -> str:
@@ -1542,6 +1546,12 @@ class EmbeddingsView(StaleTracking, View):
             self.experiment = new_name
         if self.built:
             self.refresh_controls()
+
+    def on_display_changed(self) -> None:
+        """A new LUT or roll: the map's tiles and hovered crop are fetched
+        again through it (projection.js); nothing is recomputed."""
+        self.refresh()
+        self.s.cmd(event="display-changed")
 
     def recompute_after_restore(self) -> None:
         state = self.state
