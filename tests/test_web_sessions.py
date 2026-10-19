@@ -569,3 +569,24 @@ def test_home_redraws_at_most_once_a_second_on_its_own():
     assert len(pushed) == 1
     time.sleep(1.3)
     assert len(pushed) == 2
+
+
+def test_a_restored_snapshot_redraws_every_restored_view(example):
+    """The snapshot registry holds the views lazily (render._LazyView); a
+    restore must still reach each view's recompute_after_restore, or a
+    reopened snapshot shows an empty Embeddings map, Metrics, Compare..."""
+    app = WebApp()
+    s = _session(app, "f" * 24)
+    _load(s, example, [("baseline", str(example / "baseline_cnn_results.csv")),
+                       ("resnet", str(example / "finetuned_resnet_results.csv"))])
+    captured = s.view_state.capture()
+
+    t = _session(app, "g" * 24)
+    _load(t, example, [("baseline", str(example / "baseline_cnn_results.csv")),
+                       ("resnet", str(example / "finetuned_resnet_results.csv"))])
+    called = []
+    for name in ("embeddings", "metrics", "compare", "calibration", "cleaning"):
+        t.view(name).recompute_after_restore = lambda n=name: called.append(n)
+    with RequestScope(t):
+        t.view_state.restore(captured)
+    assert sorted(called) == ["calibration", "cleaning", "compare", "embeddings", "metrics"]
