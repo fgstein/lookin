@@ -1367,6 +1367,8 @@ class HomeView:
                 ft.PopupMenuButton(icon=ft.Icons.MORE_HORIZ, items=[
                     ft.PopupMenuItem(text="Rename...", icon=ft.Icons.EDIT_OUTLINED,
                                      on_click=lambda e: self._on_rename(ws)),
+                    ft.PopupMenuItem(text="Duplicate...", icon=ft.Icons.COPY_ALL_OUTLINED,
+                                     on_click=lambda e: self._on_duplicate(ws)),
                     ft.PopupMenuItem(text="Details, export, snapshots...", icon=ft.Icons.INVENTORY_2_OUTLINED,
                                      on_click=lambda e: self.workspace_panel.open_panel(select=ws)),
                     ft.PopupMenuItem(text="Delete...", icon=ft.Icons.DELETE_OUTLINE,
@@ -1943,6 +1945,34 @@ class HomeView:
                 self._after_workspace_change(fresh)
 
         dialog.actions = [ft.FilledButton("Save", on_click=save, style=ft.ButtonStyle(bgcolor=ACCENT)),
+                          ft.TextButton("Cancel", on_click=lambda ev: self.ctx.page.close(dialog))]
+        self.ctx.page.open(dialog)
+
+    def _on_duplicate(self, ws: lib.Workspace) -> None:
+        name = ft.TextField(label="Name of the copy", value=lib.copy_name(ws.name), dense=True,
+                            border_radius=8, autofocus=True)
+        dialog = ft.AlertDialog(
+            modal=True, title=ft.Text(f"Duplicate {ws.label()}", weight=ft.FontWeight.BOLD),
+            content=ft.Container(width=420, content=ft.Column([
+                name,
+                ft.Text("The copy has the same dataset, experiments and snapshots. Changing one never "
+                        "changes the other.", size=TEXT_SMALL, color=ft.Colors.ON_SURFACE_VARIANT),
+            ], spacing=10, tight=True)),
+        )
+
+        def save(ev):
+            self.ctx.page.close(dialog)
+            copy = lib.duplicate_workspace(ws, (name.value or "").strip())
+            if copy is None:
+                self._status("Could not copy the workspace.", "error")
+                return
+            self.reload_workspaces()
+            bd.place_after(copy.id, ws.id, known_ids=[w.id for w in self.workspaces])
+            self._after_workspace_change(copy)
+            self._status(f"Created {copy.label()} ({copy.id}), a copy of {ws.label()}.")
+
+        name.on_submit = save
+        dialog.actions = [ft.FilledButton("Duplicate", on_click=save, style=ft.ButtonStyle(bgcolor=ACCENT)),
                           ft.TextButton("Cancel", on_click=lambda ev: self.ctx.page.close(dialog))]
         self.ctx.page.open(dialog)
 

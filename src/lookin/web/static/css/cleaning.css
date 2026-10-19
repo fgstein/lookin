@@ -25,7 +25,7 @@
 .t-ok { color: var(--ok); }
 .t-acc { color: var(--acc); }
 .t-err { color: var(--err); }
-.t-warn { color: #A15C07; }
+.t-warn { color: var(--warn); }
 .cl-batches { width: auto; }
 .cl-batches td { padding-top: 0; padding-bottom: 0; }
 .cl-examples { line-height: 1.5; overflow-x: auto; white-space: nowrap; }

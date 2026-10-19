@@ -625,3 +625,43 @@ def test_the_embeddings_map_follows_the_display_setting(example):
     assert {"event": "display-changed"} in out.get("cmds", [])
     with RequestScope(s):
         assert 'data-display="minmax."' in render.render_view(s, "embeddings")
+
+
+def test_a_workspace_duplicated_from_home_sits_below_it(tmp_path):
+    from lookin.core import board as bd
+    from lookin.core import library as lib
+
+    lib.set_library_root(tmp_path / "lib")
+    try:
+        original = lib.create_workspace("original", lib.Mount(dataset_path=""))
+        lib.create_workspace("other", lib.Mount(dataset_path=""))
+        s = _session(WebApp(), "d" * 24)
+        home = s.view("home")
+        home.reload(wait=True)
+        with RequestScope(s):
+            assert "Duplicate…" in render.render_view(s, "home")
+            home.on_duplicate(id=original.id)
+            [dialog] = s.dialogs
+            dialog.on_submit(name="the copy")
+            html = render.render_view(s, "home")
+        assert not s.dialogs
+        copy = next(w for w in lib.list_workspaces() if w.name == "the copy")
+        assert copy.id != original.id and "the copy" in html
+        ids = bd.column_of(bd.load(), original.id)["workspaces"]
+        assert ids[ids.index(original.id) + 1] == copy.id
+    finally:
+        lib.set_library_root(None)
+
+
+def test_the_theme_is_set_before_the_first_paint_and_toggled_in_both_modes(example):
+    from lookin.web.server import THEME_KEY, page_html
+
+    page = page_html()
+    assert page.index(THEME_KEY) < page.index("app.css")        # in <head>, before the stylesheet
+    assert "http" not in page.split("<body>")[0].replace('http-equiv', '')  # nothing fetched
+    s = _session(WebApp(), "t" * 24)
+    with RequestScope(s):
+        assert "data-theme-toggle" in render.render_top(s)
+        _load(s, example, [("baseline", str(example / "baseline_cnn_results.csv"))])
+        s.goto("metrics")
+        assert "data-theme-toggle" in render.render_top(s)

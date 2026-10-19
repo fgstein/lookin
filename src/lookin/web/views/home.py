@@ -359,6 +359,7 @@ class HomeView(View):
             ("Open in a new tab", self.a("open_ws", id=w.id), "external", False),
             ("Dataset…", self.a("set_dataset", id=w.id), "table", False),
             ("Rename…", self.a("rename", id=w.id), "edit", False),
+            ("Duplicate…", self.a("duplicate", id=w.id), "copy", False),
             ("Unfavourite" if self.index.is_favorite(w.id) else "Favourite", self.a("fav", id=w.id), "star", False),
             ("Details, export, snapshots…", self.a("details", id=w.id), "save", False),
             "hr",
@@ -650,6 +651,25 @@ class HomeView(View):
                 self.after_workspace_change(fresh)
             return None
         self.s.open_dialog(PromptDialog("Rename workspace", [("name", "Name", ws.name)], save))
+
+    def on_duplicate(self, id: str = "", **_):  # noqa: A002
+        ws = self._ws(id)
+        if ws is None:
+            return
+
+        def save(values):
+            copy = lib.duplicate_workspace(ws, (values.get("name") or "").strip())
+            if copy is None:
+                return "Could not copy the workspace."
+            bd.place_after(copy.id, ws.id, known_ids=[w.id for w in self.workspaces] + [copy.id])
+            self.index.reload_board()
+            self.after_workspace_change(copy)
+            self.s.toast(f"Created {copy.label()} ({copy.id}), a copy of {ws.label()}.", "ok")
+            return None
+        self.s.open_dialog(PromptDialog(
+            f"Duplicate {ws.label()}", [("name", "Name of the copy", lib.copy_name(ws.name))], save,
+            submit_label="Duplicate",
+            note="The copy has the same dataset, experiments and snapshots. Changing one never changes the other."))
 
     def on_delete(self, id: str = "", **_):  # noqa: A002
         ws = self._ws(id)

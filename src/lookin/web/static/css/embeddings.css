@@ -55,7 +55,7 @@
 .pmap-grip::before { content: ""; position: absolute; inset: 4px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); }
 .pmap-grip:hover { border-color: var(--acc); }
 .pmap-grip[hidden] { display: none; }
-.pmap-box { position: relative; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fff; }
+.pmap-box { position: relative; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--paper); }
 .pmap-c, .pmap-o { position: absolute; left: 0; top: 0; }
 /* gallery mode: the map in the top-left corner, crop tiles around it */
 .pmap-gal { position: absolute; inset: 0; }

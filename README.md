@@ -52,6 +52,11 @@ Every browser tab is its own session: open several workspaces side by side
 and nothing in one affects the others. See `src/lookin/web/README.md` for how
 it is built.
 
+It also has a light and a dark mode: the sun / moon button in the top bar
+switches between them, and this browser remembers the choice (until then it
+follows the system's setting). Charts and the Embeddings map stay on white
+in both, like the PNGs they are exported as.
+
 It also has a **Filter** tab, right after Sources, that `lookin ui` does not:
 remove rows from the loaded dataset by conditions on its columns (pick
 values, a numeric range, contains / regex, empty or not) or by a query
@@ -442,6 +447,10 @@ Workspaces live in `~/.config/lookin/library` (or `--library` /
 on Home, or the chips in the app bar) is where one is exported, imported,
 renamed and its snapshots managed. Workspaces used to be called
 *bundles*; existing ones load as they are.
+
+**Duplicate...** in a workspace's menu on Home copies it -- dataset,
+experiments and snapshots -- under a new id, right below the original;
+changing one never changes the other.
 
 For a one-off look without a workspace, the Data tab's **Add from MLflow...**
 loads a single CSV from a run into the session on screen.

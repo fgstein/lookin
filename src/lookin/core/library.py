@@ -663,6 +663,76 @@ def list_workspaces(root=None) -> list:
     return workspaces
 
 
+def copy_name(name: str) -> str:
+    """What a duplicate is called unless the user says otherwise."""
+    return f"{name or 'untitled'} (copy)"
+
+
+def duplicate_workspace(workspace: Workspace, name: str = "", root=None) -> Optional[Workspace]:
+    """Copy a workspace -- its mount, metadata and snapshots -- under a new
+    id and directory, and return the copy, or None if it could not be
+    written.
+
+    The copy is read from the manifest *on disk now*, for the same reason
+    update_workspace is: the one in memory was read when the page was drawn.
+
+    Everything inside the workspace directory is copied (snapshots, and the
+    data/ an import or an export put there), and every mount path pointing
+    into the original directory is pointed at the copy's, so deleting
+    either one never breaks the other. Paths outside it -- the dataset where
+    it is, the MLflow download cache -- are shared, as they are between any
+    two workspaces on the same files.
+
+    Snapshots get fresh ids: a snapshot id names one view across the whole
+    library (find_snapshot), and two files answering to it would make a link
+    in a report open whichever was listed first.
+    """
+    if workspace.path is None:
+        return None
+    source_dir = Path(workspace.path)
+    source = load_workspace(source_dir)
+    if source is None:
+        return None
+    workspace_id = new_id(WORKSPACE_PREFIX)
+    new_name = (name or "").strip() or copy_name(source.name)
+    root_path = Path(root) if root is not None else source_dir.parent
+    path = root_path / workspace_dirname(new_name, workspace_id)
+    try:
+        shutil.copytree(source_dir, path, ignore=shutil.ignore_patterns(MANIFEST_NAME, SNAPSHOTS_DIRNAME))
+        (path / SNAPSHOTS_DIRNAME).mkdir(parents=True, exist_ok=True)
+    except OSError as ex:
+        _log(f"library: could not copy {source_dir} to {path} ({ex})")
+        shutil.rmtree(path, ignore_errors=True)
+        return None
+
+    def moved(recorded: str) -> str:
+        if not recorded:
+            return recorded
+        try:
+            inside = Path(recorded).resolve().relative_to(source_dir.resolve())
+        except (OSError, ValueError):
+            return recorded
+        return str(path / inside)
+
+    mount = replace(source.mount, dataset_path=moved(source.mount.dataset_path), experiments=[
+        replace(e, path=moved(e.path), embeddings_path=moved(e.embeddings_path),
+                prototypes_path=moved(e.prototypes_path))
+        for e in source.mount.experiments])
+    stamp = _now()
+    copy = replace(source, id=workspace_id, name=new_name, tags=list(source.tags), mount=mount,
+                   provenance=dict(source.provenance), created_at=stamp, updated_at=stamp, path=path)
+    if not save_workspace(copy):
+        shutil.rmtree(path, ignore_errors=True)
+        return None
+    for snapshot in list_snapshots(source):
+        # Written as they are rather than through save_snapshot, which would
+        # stamp them as edited now: the copies were taken when the originals
+        # were, and the snapshot list is sorted by that.
+        snapshot.id, snapshot.workspace_id = new_id(SNAPSHOT_PREFIX), workspace_id
+        _atomic_write_json(snapshot_to_dict(snapshot), copy.snapshots_dir() / f"{snapshot.id}.json")
+    return copy
+
+
 def delete_workspace(workspace: Workspace) -> bool:
     """Remove a workspace and everything in it, snapshots included.
 

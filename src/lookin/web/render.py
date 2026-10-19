@@ -314,19 +314,30 @@ def render_nav(session) -> str:
             f'{ws_block}{"".join(items)}{foot}')
 
 
+def theme_button() -> str:
+    """Light / dark. Handled in the browser alone (app.js), since it is this
+    browser's choice rather than the session's: both icons are drawn, the
+    stylesheet shows the one for the theme it would switch to."""
+    return (f'<button type="button" class="btn btn-sm btn-icon btn-ghost" data-theme-toggle="1" '
+            f'title="Switch between light and dark mode" aria-label="Switch between light and dark mode">'
+            f'<span class="theme-light-only">{h.icon("moon", 14)}</span>'
+            f'<span class="theme-dark-only">{h.icon("sun", 14)}</span></button>')
+
+
 def render_top(session) -> str:
     busy = session.busy.running
     busy_html = (f'<span class="busy" title="{h.e(", ".join(busy))}"><span class="spinner"></span>'
                  f'{h.e(busy[-1])}{f" (+{len(busy) - 1})" if len(busy) > 1 else ""}</span>') if busy else ""
     if session.mode == "home":
         return (f'{_brand()}<div class="top-search">{session.view("home").search_box()}</div>'
-                f'<div class="top-r">{busy_html}'
+                f'<div class="top-r">{busy_html}{theme_button()}'
                 f'{h.button("Manual", act_attr=h.act("app", "manual", page=""), icon_name="book", small=True)}'
                 f'{h.button("New workspace", act_attr=h.act("home", "new_workspace"), kind="primary", small=True)}</div>')
     title = TAB_TITLES.get(session.tab, "")
     return (f'<h1>{h.e(title)}</h1>'
             f'<div class="top-r">{busy_html}{filter_chip(session)}{save_chips(session)}'
-            f'{h.button("Save snapshot", act_attr=h.act("app", "save_snapshot"), small=True, icon_name="bookmark")}</div>')
+            f'{h.button("Save snapshot", act_attr=h.act("app", "save_snapshot"), small=True, icon_name="bookmark")}'
+            f'{theme_button()}</div>')
 
 
 def filter_badge(session) -> str:

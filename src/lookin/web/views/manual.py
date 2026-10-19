@@ -38,7 +38,7 @@ def math_img(tex: str, size: float, color: str = INK) -> str:
         data, width, height = render_math(tex, size, color)
     except MathRenderError:
         return f'<code style="color:var(--err)">{h.e(tex)}</code>'
-    return (f'<img src="data:image/png;base64,{data}" width="{width:.0f}" height="{height:.0f}" '
+    return (f'<img class="math" src="data:image/png;base64,{data}" width="{width:.0f}" height="{height:.0f}" '
             f'alt="{h.e(tex)}" style="vertical-align:middle">')
 
 

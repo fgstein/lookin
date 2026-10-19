@@ -160,6 +160,24 @@ def move(workspace_id: str, column_id: str, index: Optional[int] = None, root=No
         return board
 
 
+def place_after(workspace_id: str, after_id: str, root=None, known_ids=None) -> dict:
+    """Put a workspace right below another one, on that one's column -- where
+    a duplicate goes. The end of the first column when `after_id` is on
+    none (it is shown there, see layout)."""
+    with _locked(root):
+        board = load(root)
+        _sync(board, known_ids)
+        for c in board["columns"]:
+            c["workspaces"] = [i for i in c["workspaces"] if i != workspace_id]
+        target = column_of(board, after_id)
+        if target is None:
+            board["columns"][0]["workspaces"].append(workspace_id)
+        else:
+            target["workspaces"].insert(target["workspaces"].index(after_id) + 1, workspace_id)
+        save(board, root)
+        return board
+
+
 def add_column(name: str, root=None) -> dict:
     with _locked(root):
         board = load(root)

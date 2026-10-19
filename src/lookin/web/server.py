@@ -121,6 +121,16 @@ def _extra_assets() -> str:
     return "\n".join(out)
 
 
+# Inline and first in <head>, so the theme is set before anything is drawn:
+# the saved choice (app.js, THEME_KEY), else the system's. Kept in this
+# browser rather than in the library or the session -- every tab of it
+# follows, and a colleague on the same library keeps theirs.
+THEME_KEY = "lookin-theme"
+THEME_SCRIPT = ("(function(){var t=null;try{t=localStorage.getItem(\"" + THEME_KEY + "\")}catch(e){}"
+                "if(t!==\"light\"&&t!==\"dark\")t=window.matchMedia&&matchMedia(\"(prefers-color-scheme: dark)\").matches"
+                "?\"dark\":\"light\";document.documentElement.setAttribute(\"data-theme\",t)})();")
+
+
 def page_html() -> str:
     return f"""<!doctype html>
 <html lang="en">
@@ -129,6 +139,7 @@ def page_html() -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lookin</title>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<script>{THEME_SCRIPT}</script>
 <link rel="stylesheet" href="/static/app.css?v={__version__}">
 <script src="/static/app.js?v={__version__}" defer></script>
 {_extra_assets()}

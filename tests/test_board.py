@@ -107,3 +107,17 @@ def test_a_workspace_nobody_moved_keeps_its_place_when_others_arrive(root):
     bd.move("mover", second, root=root, known_ids=known)
     board = bd.move("mover", first, root=root, known_ids=known)
     assert _names(bd.layout(board, _ws(*known)))[0] == ("group 1", ["old", "mover"])
+
+
+def test_a_duplicate_goes_right_below_its_original(root):
+    board = bd.add_column("done", root)
+    second = board["columns"][1]["id"]
+    bd.move("a", second, root=root)
+    bd.move("b", second, root=root)
+    board = bd.place_after("a2", "a", root=root, known_ids=["a", "b", "c", "a2"])
+    assert _names(bd.layout(board, _ws("a", "b", "c", "a2"))) == [("group 1", ["c"]), ("done", ["a", "a2", "b"])]
+
+
+def test_a_duplicate_of_an_unplaced_workspace_goes_below_it_in_the_first_column(root):
+    board = bd.place_after("a2", "a", root=root, known_ids=["a", "b", "a2"])
+    assert _names(bd.layout(board, _ws("a", "b", "a2"))) == [("group 1", ["a", "a2", "b"])]

@@ -382,3 +382,17 @@ def test_an_experiment_unticked_during_a_refresh_does_not_come_back(home, monkey
     monkeypatch.setattr(home, "_render_all", lambda: None)
     home._fetch_worker(server, True)
     assert "8" not in server.runs_by_exp
+
+
+def test_duplicating_a_workspace_puts_the_copy_below_it(home):
+    from lookin.core import board as bd
+    ws = lib.create_workspace("A", lib.Mount(), hash_dataset=False)
+    lib.create_workspace("B", lib.Mount(), hash_dataset=False)
+    home.reload_workspaces()
+    home._on_duplicate(ws)
+    dialog = home.ctx.page.opened[-1]
+    assert dialog.content.content.controls[0].value == "A (copy)"
+    dialog.actions[0].on_click(None)
+    copy = next(w for w in lib.list_workspaces() if w.name == "A (copy)")
+    ids = bd.column_of(bd.load(), ws.id)["workspaces"]
+    assert ids[ids.index(ws.id) + 1] == copy.id

@@ -489,6 +489,24 @@
     return el.value;
   }
 
+  // ---- light / dark ------------------------------------------------------
+  // The <head> script (server.py, THEME_SCRIPT) applied the saved choice, or
+  // the system's, before the first paint; this saves a click on the button,
+  // and the other tabs of this browser follow it.
+  const THEME_KEY = "lookin-theme";
+
+  function toggleTheme() {
+    const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* private mode: this tab only */ }
+  }
+
+  window.addEventListener("storage", (ev) => {
+    if (ev.key === THEME_KEY && (ev.newValue === "light" || ev.newValue === "dark")) {
+      document.documentElement.setAttribute("data-theme", ev.newValue);
+    }
+  });
+
   document.addEventListener("click", (ev) => {
     const zoomEl = ev.target.closest("img[data-zoom]");
     if (zoomEl && !ev.target.closest("[data-act]")) { ev.preventDefault(); openZoom(zoomEl); return; }
@@ -504,6 +522,7 @@
       act("app", "home", {});
       return;
     }
+    if (ev.target.closest("[data-theme-toggle]")) { toggleTheme(); ev.preventDefault(); return; }
     const copyEl = ev.target.closest("[data-copy]");
     if (copyEl) { copyText(copyEl.getAttribute("data-copy")); toast("Copied.", "ok"); return; }
     const menuBtn = ev.target.closest("[data-menu]");

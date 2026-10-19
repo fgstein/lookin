@@ -371,3 +371,56 @@ def test_updating_keeps_an_mlflow_run_that_was_never_downloaded(workspace, tmp_p
     fresh = lib.update_workspace_mount(workspace.path, Mount(dataset_path=workspace.mount.dataset_path))
 
     assert [e.name for e in fresh.mount.experiments] == ["remote"]
+
+
+# ---- duplicating ----------------------------------------------------------
+
+def test_duplicate_is_a_new_workspace_with_the_same_mount(workspace, root):
+    copy = lib.duplicate_workspace(workspace)
+    assert copy is not None
+    assert copy.id != workspace.id and copy.path != workspace.path
+    assert copy.name == "Eval ckpt42 on dataset B (copy)"
+    assert copy.tags == ["eval"]
+    assert lib.load_workspace(copy.path).mount == workspace.mount
+    assert {w.id for w in lib.list_workspaces(root)} == {workspace.id, copy.id}
+
+
+def test_duplicate_takes_the_name_it_is_given(workspace):
+    assert lib.duplicate_workspace(workspace, "  other  ").name == "other"
+
+
+def test_duplicate_copies_snapshots_under_new_ids(workspace, root):
+    snap = lib.create_snapshot(workspace, {"tab": "metrics"}, name="the confusion")
+    copy = lib.duplicate_workspace(workspace)
+    [copied] = lib.list_snapshots(copy)
+    assert copied.id != snap.id and copied.workspace_id == copy.id
+    assert (copied.name, copied.view_state, copied.created_at) == ("the confusion", {"tab": "metrics"}, snap.created_at)
+    # The original's id still names the original, and only it.
+    assert lib.find_snapshot(snap.id, root)[0].id == workspace.id
+    assert len(lib.list_snapshots(workspace)) == 1
+
+
+def test_duplicate_reads_the_manifest_as_it_is_now(workspace):
+    lib.update_workspace(workspace.path, lambda w: (setattr(w, "description", "edited elsewhere"), True)[1])
+    assert lib.duplicate_workspace(workspace).description == "edited elsewhere"
+
+
+def test_duplicate_points_its_own_data_at_its_own_copy(workspace):
+    """An imported workspace reads its CSVs from its data/; the copy must not
+    break when the original is deleted."""
+    data = workspace.path / lib.DATA_DIRNAME
+    data.mkdir()
+    (data / "results.csv").write_text("uuid,tug\na,1\n", encoding="utf-8")
+    inside = str(data / "results.csv")
+    lib.update_workspace(workspace.path, lambda w: (setattr(w.mount.experiments[0], "path", inside), True)[1])
+    copy = lib.duplicate_workspace(workspace)
+    assert copy.mount.experiments[0].path == str(copy.path / lib.DATA_DIRNAME / "results.csv")
+    assert copy.mount.dataset_path == workspace.mount.dataset_path   # outside: shared
+    assert lib.delete_workspace(lib.load_workspace(workspace.path))
+    assert lib.load_workspace(copy.path).mount.experiments[0].path
+    assert (copy.path / lib.DATA_DIRNAME / "results.csv").is_file()
+
+
+def test_duplicate_of_a_deleted_workspace_is_none(workspace):
+    assert lib.delete_workspace(workspace)
+    assert lib.duplicate_workspace(workspace) is None
