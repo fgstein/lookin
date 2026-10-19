@@ -34,7 +34,7 @@ from lookin.core import workspace_sources as wss
 from lookin.core.prefs import config_dir
 
 # How often the index is read again while a Home page is connected.
-REFRESH_S = 20.0
+REFRESH_S = 5.0
 # A burst of requests (the MLflow listing moving several times a second)
 # makes one read, this long after the first of them.
 SOON_S = 1.5
