@@ -70,11 +70,12 @@ class _LazyView:
     def __init__(self, session, name: str):
         self.session, self.name = session, name
 
-    def view_state(self) -> dict:
-        return self.session.view(self.name).view_state()
-
-    def restore_view_state(self, state) -> list:
-        return self.session.view(self.name).restore_view_state(state)
+    def __getattr__(self, attr):
+        # Everything the registry asks of a view -- view_state,
+        # restore_view_state, and recompute_after_restore, which redraws
+        # what a snapshot restored (missing it left the Embeddings map of a
+        # reopened snapshot empty) -- is the real view's.
+        return getattr(self.session.view(self.name), attr)
 
 
 def _wire(session) -> None:
