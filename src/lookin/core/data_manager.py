@@ -15,6 +15,7 @@ re-merge hundreds of thousands of rows.
 """
 from __future__ import annotations
 
+import re
 import time
 import warnings
 import zipfile
@@ -65,6 +66,20 @@ def _log(msg: str) -> None:
     tell which phase (row counting, CSV parsing, dtype downcasting, preview
     building...) is the one actually taking the time."""
     print(f"[lookin] {msg}", flush=True)
+
+
+_HEX_COLOR = re.compile(r"#?([0-9a-fA-F]{6})")
+
+
+def normalize_color(value) -> Optional[str]:
+    """"#rrggbb" (lower case) for a color, "" for none, None for anything
+    else -- a color arrives from a browser's color input or a hand-edited
+    manifest, and ends up in an HTML attribute and in matplotlib."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    m = _HEX_COLOR.fullmatch(text)
+    return f"#{m.group(1).lower()}" if m else None
 
 
 def _count_data_rows(path: str) -> int:
@@ -683,6 +698,10 @@ class AppState:
     # name -> palette slot, see color_slots. Kept apart from the order of
     # `experiments` so that reordering the experiments never recolors them.
     _color_slots: dict = field(default_factory=dict)
+    # name -> "#rrggbb" the user picked for that experiment (the Metrics
+    # tab's color menu), in place of its palette color. Saved with the
+    # workspace (MountExperiment.color), carried over by a rename.
+    experiment_colors: dict = field(default_factory=dict)
     # name -> InferenceSet: crops with embeddings but no place in the
     # dataset. Kept apart from `dataset`/`experiments` on purpose -- see
     # InferenceSet for why nothing that computes a metric may see them.
@@ -912,6 +931,7 @@ class AppState:
 
     def remove_experiment(self, name: str) -> None:
         self.experiments.pop(name, None)
+        self.experiment_colors.pop(name, None)
         self._invalidate_merged_cache(name)
 
     def load_inference(
@@ -1035,6 +1055,8 @@ class AppState:
         self.experiments[new_name].name = new_name
         if old_name in self._color_slots:
             self._color_slots[new_name] = self._color_slots.pop(old_name)
+        if old_name in self.experiment_colors:
+            self.experiment_colors[new_name] = self.experiment_colors.pop(old_name)
         if self._merged_cache_name == old_name:
             self._merged_cache_name = new_name
 
@@ -1047,6 +1069,11 @@ class AppState:
         unloaded, so the color follows the experiment, not its position:
         reordering the list, which the Metrics tab lets the user do, must
         not repaint every chart. A rename carries the slot over.
+
+        An experiment the user gave a color to (set_experiment_color) maps
+        to that "#rrggbb" instead of a slot number -- color_for_experiment
+        reads either -- and keeps its slot underneath, so going back to
+        "Automatic" gives it its old color back.
         """
         slots = {n: i for n, i in self._color_slots.items() if n in self.experiments}
         taken = set(slots.values())
@@ -1058,7 +1085,21 @@ class AppState:
                 slots[name] = free
                 taken.add(free)
         self._color_slots = slots
-        return slots
+        return {**slots, **{n: c for n, c in self.experiment_colors.items() if n in slots}}
+
+    def set_experiment_color(self, name: str, color: str) -> bool:
+        """Give an experiment its own color ("#rrggbb"), or its palette one
+        back with "". Returns whether anything changed."""
+        color = normalize_color(color)
+        if name not in self.experiments or color is None:
+            return False
+        if self.experiment_colors.get(name, "") == color:
+            return False
+        if color:
+            self.experiment_colors[name] = color
+        else:
+            self.experiment_colors.pop(name, None)
+        return True
 
     def reorder_experiments(self, names: list) -> None:
         """Set the experiment order to `names`. That order is what every
@@ -1079,6 +1120,7 @@ class AppState:
     def clear_all(self) -> None:
         self.dataset = None
         self.experiments.clear()
+        self.experiment_colors.clear()
         self.inferences.clear()
         # Decisions are already on disk (the review store saves after every
         # mutation), so dropping the in-memory store here loses nothing --

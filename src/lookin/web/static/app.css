@@ -547,3 +547,15 @@ img.img-wait { filter: brightness(0); }
 .progress-cell .progress { gap: 6px; white-space: nowrap; }
 .progress-cell .pbar { flex: 0 0 90px; }
 .inp.relabelled { border-color: var(--acc); background: var(--acc-soft-2); }
+
+/* ---- an experiment's color menu (views/widgets.experiment_color_menu) ---- */
+.color-btn { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; border: 1px solid transparent; border-radius: 50%; background: transparent; cursor: pointer; flex: none; }
+.color-btn:hover { border-color: var(--line-strong); }
+.color-menu { padding: 8px; }
+.swatches { display: grid; grid-template-columns: repeat(5, 24px); gap: 6px; padding: 2px 2px 8px; }
+.menu .swatch { width: 24px; height: 24px; padding: 0; border: 2px solid var(--surface); border-radius: 50%; box-shadow: 0 0 0 1px var(--line); cursor: pointer; }
+.menu .swatch:hover { box-shadow: 0 0 0 2px var(--ink-2); background-clip: padding-box; }
+.menu .swatch.on { box-shadow: 0 0 0 2px var(--acc); }
+.swatch-other { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--r-s); font-size: 12px; color: var(--ink-2); cursor: pointer; position: relative; }
+.swatch-other:hover { background: var(--surface-3); color: var(--ink); }
+.swatch-other input[type=color] { margin-left: auto; width: 28px; height: 20px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: none; cursor: pointer; }

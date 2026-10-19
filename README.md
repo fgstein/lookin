@@ -452,6 +452,11 @@ renamed and its snapshots managed. Workspaces used to be called
 experiments and snapshots -- under a new id, right below the original;
 changing one never changes the other.
 
+An experiment's color is its dot's to change: click it (Metrics tab, or the
+Experiments table on Sources) for ten preset colors, any other color
+(`lookin web`), or *Automatic* to go back to its palette one. Every chart
+follows, and the color is saved with the workspace.
+
 For a one-off look without a workspace, the Data tab's **Add from MLflow...**
 loads a single CSV from a run into the session on screen.
 

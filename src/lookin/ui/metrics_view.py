@@ -41,7 +41,7 @@ from lookin.core import library
 from lookin.core.report_pptx import PptxReport
 from lookin.core.metrics import compute_metrics, compute_curves, MACRO_AVERAGE
 from lookin.core import class_focus as cf
-from lookin.ui.components import fig_to_zoomable_image, saved_path_message, section_title, info_banner, color_for_experiment, blues_color, card, grid_card_width, matrix_cell_size, matrix_text_size, matrix_label_chars, uuid_overlap_banner, score_diagnostics_banner, status_row, style_axes, legend_below, legend_columns, legend_height_inches, reserve_legend_space, GRID_MAJOR, GRID_NONE, ACCENT, BackgroundRebuild, StaleBanner, NAME_MAX, name_checkbox, name_text
+from lookin.ui.components import fig_to_zoomable_image, saved_path_message, section_title, info_banner, color_for_experiment, blues_color, card, grid_card_width, matrix_cell_size, matrix_text_size, matrix_label_chars, uuid_overlap_banner, score_diagnostics_banner, status_row, style_axes, legend_below, legend_columns, legend_height_inches, reserve_legend_space, GRID_MAJOR, GRID_NONE, ACCENT, EXPERIMENT_PRESET_COLORS, BackgroundRebuild, StaleBanner, NAME_MAX, name_checkbox, name_text
 from lookin.ui.carousel import Carousel
 from lookin.ui.class_matrix import ClassFocus, PAIRS_SHOWN, make_searchable, confused_pairs_table, overview_image, short_column_labels
 from lookin.ui.server_browser import ServerFileBrowser
@@ -280,7 +280,7 @@ class MetricsView:
             content=ft.Row(
                 [
                     handle,
-                    ft.Container(width=10, height=10, bgcolor=color, border_radius=5),
+                    self._color_menu(name, color),
                     checkbox,
                     ft.IconButton(
                         ft.Icons.KEYBOARD_ARROW_UP, icon_size=16, tooltip="Move up",
@@ -297,6 +297,34 @@ class MetricsView:
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
         )
+
+    def _color_menu(self, name: str, color: str) -> ft.Control:
+        """The experiment's color dot, which opens the ten preset colors
+        (EXPERIMENT_PRESET_COLORS) and "Automatic". `lookin web` also offers
+        any other color, through the browser's picker."""
+        def swatch(c: str, label: str) -> ft.PopupMenuItem:
+            return ft.PopupMenuItem(
+                content=ft.Row([ft.Container(width=14, height=14, bgcolor=c, border_radius=7),
+                                ft.Text(label, size=12)], spacing=8),
+                on_click=lambda e, v=c: self._set_color(name, v))
+
+        items = [swatch(c, c) for c in EXPERIMENT_PRESET_COLORS]
+        if name in self.ctx.state.experiment_colors:
+            items.append(ft.PopupMenuItem(text="Automatic", icon=ft.Icons.REFRESH,
+                                          on_click=lambda e: self._set_color(name, "")))
+        return ft.PopupMenuButton(
+            content=ft.Container(width=10, height=10, bgcolor=color, border_radius=5),
+            tooltip=f"Color of {name} -- click to change", items=items)
+
+    def _set_color(self, name: str, color: str) -> None:
+        """Nothing is recomputed: as with the order, only the drawing reads
+        the color."""
+        if not self.ctx.state.set_experiment_color(name, color):
+            return
+        self._rebuild_experiment_checks()
+        self._render()
+        if self.root.page:
+            self.root.update()
 
     def _update_selection_summary(self):
         total = len(self.experiment_checks)

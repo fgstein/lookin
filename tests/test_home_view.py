@@ -396,3 +396,34 @@ def test_duplicating_a_workspace_puts_the_copy_below_it(home):
     copy = next(w for w in lib.list_workspaces() if w.name == "A (copy)")
     ids = bd.column_of(bd.load(), ws.id)["workspaces"]
     assert ids[ids.index(ws.id) + 1] == copy.id
+
+
+def test_a_run_box_is_half_ticked_while_only_some_of_its_csvs_are(home):
+    server = home.servers[URI]
+    run = hv.run_key(URI, "r2")
+    test, val = (hv.csv_key(URI, "r2", p) for p in ("a/test_results.csv", "a/val_results.csv"))
+    selected = set()
+    hv.set_selected(selected, server, test, True)
+    assert hv.run_selection(selected, server, "r2") == hv.SELECTED_SOME
+    hv.set_selected(selected, server, val, True)
+    assert hv.run_selection(selected, server, "r2") == hv.SELECTED_ALL
+    hv.set_selected(selected, server, run, False)
+    assert not selected
+    # Ticking the run ticks every CSV it is known to have...
+    hv.set_selected(selected, server, run, True)
+    assert selected == {test, val}
+    hv.set_selected(selected, server, val, False)
+    assert selected == {test} and hv.run_selection(selected, server, "r2") == hv.SELECTED_SOME
+
+
+def test_a_run_whose_csvs_are_not_listed_is_selected_whole(home):
+    server = home.servers[URI]
+    selected = set()
+    hv.set_selected(selected, server, hv.run_key(URI, "r3"), True)
+    assert selected == {hv.run_key(URI, "r3")}
+    assert hv.run_selection(selected, server, "r3") == hv.SELECTED_ALL
+    # Listed later: unticking one CSV of the whole run keeps the others.
+    server.artifacts["r3"] = {"csvs": [mlf.ArtifactFile("x.csv", 1), mlf.ArtifactFile("y.csv", 1)], "npzs": []}
+    assert hv.csv_selected(selected, hv.csv_key(URI, "r3", "x.csv"))
+    hv.set_selected(selected, server, hv.csv_key(URI, "r3", "x.csv"), False)
+    assert selected == {hv.csv_key(URI, "r3", "y.csv")}

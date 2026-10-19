@@ -665,3 +665,45 @@ def test_the_theme_is_set_before_the_first_paint_and_toggled_in_both_modes(examp
         _load(s, example, [("baseline", str(example / "baseline_cnn_results.csv"))])
         s.goto("metrics")
         assert "data-theme-toggle" in render.render_top(s)
+
+
+def test_an_experiment_color_picked_in_metrics_is_drawn_and_saved(example):
+    s = _session(WebApp(), "k" * 24)
+    with RequestScope(s):
+        _load(s, example, [("baseline", str(example / "baseline_cnn_results.csv"))])
+        s.goto("metrics")
+        metrics = s.view("metrics")
+        assert "color-menu" in render.render_view(s, "metrics")
+        metrics.on_color(name="baseline", value="#FF8800")
+        assert "#ff8800" in render.render_view(s, "metrics")
+        assert "#ff8800" in render.render_view(s, "sources")
+        [saved] = s.view("sources").current_mount().experiments
+        assert saved.color == "#ff8800"
+        metrics.on_color(name="baseline", value="")
+        assert s.view("sources").current_mount().experiments[0].color == ""
+
+
+def test_removing_a_server_from_all_runs_asks_first(tmp_path, monkeypatch):
+    from lookin.web.mlflow_hub import MlflowHub
+    from lookin.web.views.mlflow_dialogs import RunsDialog
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    s = _session(WebApp(), "m" * 24)
+    hub = MlflowHub.get()
+    uri = "http://mlflow.example:5000"
+    hub.config.add_server(uri, "lab")
+    hub.sync_servers()
+    try:
+        with RequestScope(s):
+            dialog = RunsDialog(s)
+            s.open_dialog(dialog)
+            assert 'remove_server' in dialog.body()
+            dialog.on_remove_server(uri=uri)
+            confirm = s.dialogs[-1]
+            assert uri in hub.servers                                   # nothing yet: it asks
+            confirm.on_yes()
+        assert uri not in hub.servers
+        assert uri not in {x["uri"] for x in hub.config.servers}
+    finally:
+        hub.config.remove_server(uri)
+        hub.sync_servers()

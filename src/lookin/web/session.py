@@ -337,6 +337,19 @@ class Session:
                     traceback.print_exc()
         self.mark("*")
 
+    def notify_colors(self) -> None:
+        """An experiment's color changed (AppState.set_experiment_color):
+        the views that draw it in a chart redraw from what they computed
+        (on_colors_changed); everything else only needs a re-render."""
+        for v in list(self.views.values()):
+            fn = getattr(v, "on_colors_changed", None)
+            if fn is not None:
+                try:
+                    fn()
+                except Exception:  # noqa: BLE001
+                    traceback.print_exc()
+        self.mark("*")
+
     def notify_display_change(self) -> None:
         for v in list(self.views.values()):
             fn = getattr(v, "on_display_changed", None)

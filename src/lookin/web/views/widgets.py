@@ -236,3 +236,23 @@ class ClassFocus:
         min_support = state.get("min_support")
         if isinstance(min_support, int) and min_support >= 0:
             self.min_support = min_support
+
+
+def experiment_color_menu(target: str, name: str, color: str, custom: bool, size: int = 10) -> str:
+    """An experiment's color dot that opens its color menu: ten preset
+    swatches, "Other color..." (the browser's own picker -- nothing
+    fetched), and "Automatic" to go back to its palette color. Each choice
+    runs `target.on_color(name=, value=)`, value "" for Automatic."""
+    from lookin.ui.components import EXPERIMENT_PRESET_COLORS
+
+    swatches = "".join(
+        f'<button type="button" class="swatch{" on" if c == color else ""}" style="background:{c}"'
+        f'{h.act(target, "color", name=name, value=c)} title="{c}" aria-label="Color {c}"></button>'
+        for c in EXPERIMENT_PRESET_COLORS)
+    picker = (f'<label class="swatch-other">{h.icon("sliders", 14)}<span>Other color…</span>'
+              f'<input type="color" value="{h.e(color)}"{h.on_change(target, "color", name=name)}></label>')
+    auto = (f'<hr><button type="button"{h.act(target, "color", name=name, value="")}>'
+            f'{h.icon("refresh", 14)}<span>Automatic</span></button>') if custom else ""
+    return (f'<span class="menu-wrap"><button type="button" class="color-btn" data-menu="1" '
+            f'title="Color of {h.e(name)} -- click to change" aria-label="Color of {h.e(name)}">{h.dot(color, size=size)}</button>'
+            f'<div class="menu menu-fixed color-menu"><div class="swatches">{swatches}</div>{picker}{auto}</div></span>')

@@ -20,12 +20,15 @@ from lookin.core import mlflow_cache
 from lookin.core import mlflow_client as mlf
 from lookin.core import workspace_sources as wss
 from lookin.core.home_config import METRIC_PREFIX, PARAM_PREFIX, column_label, column_value
-from lookin.ui.home_view import csv_key, parse_key, run_key, workspace_color
+from lookin.ui.home_view import (
+    SELECTED_ALL, SELECTED_NONE, SELECTED_SOME, csv_key, csv_selected, parse_key, run_key, run_selection,
+    set_selected, unselect_run, workspace_color,
+)
 from lookin.ui.mlflow_panel import UNSUCCESSFUL_STATUSES
 from lookin.web import datasets as dsc
 from lookin.web import html as h
 from lookin.web.mlflow_hub import MlflowHub
-from lookin.web.views.base import Dialog
+from lookin.web.views.base import ConfirmDialog, Dialog
 from lookin.web.views.files import FileBrowserDialog, menu
 from lookin.web.views.media import crop_img
 
@@ -58,6 +61,29 @@ def _follow_hub(dialog, session) -> None:
 
     dialog.close = close
     dialog.on_close = lambda **_: close()
+
+
+def confirm_remove_server(session, uri: str) -> None:
+    """Ask, then forget an MLflow server -- from Home's server chip or from
+    the All runs window. Only the view settings change: workspaces keep the
+    experiments they took from it, and downloaded files stay."""
+    hub = MlflowHub.get()
+    server = hub.servers.get(uri)
+    if server is None:
+        return
+
+    def yes():
+        hub.config.remove_server(uri)
+        hub.sync_servers()
+        hub.changed()
+        session.toast(f"Removed {server.name}.", "neutral")
+        session.mark("home", "dialogs")
+
+    session.open_dialog(ConfirmDialog(
+        f"Remove the server {server.name}?",
+        f"{server.uri} and its runs leave the lists. Workspaces keep the experiments they took from it, "
+        "and files already downloaded stay. \"+ server\" adds it back.",
+        yes, yes_label="Remove"))
 
 
 def _badges(workspaces) -> str:
@@ -177,11 +203,13 @@ class RunsDialog(Dialog):
             if server.error and server.status != "down":
                 note = server.error[:80]
             checked = " checked" if server.uri not in self.server_off else ""
-            out.append(f'<label class="facet-chk"><input type="checkbox"{checked}{self.c("server_toggle", uri=server.uri)}>'
+            out.append(f'<div class="row-nw" style="align-items:flex-start;gap:0;padding-right:6px">'
+                       f'<label class="facet-chk grow" style="min-width:0"><input type="checkbox"{checked}{self.c("server_toggle", uri=server.uri)}>'
                        f'<span style="display:flex;flex-direction:column;min-width:0"><span class="row-nw" style="font-weight:500">'
                        f'{h.dot(color, size=6)}{h.e(server.name)}</span>'
                        f'<span class="mono small muted ell" title="{h.e(server.uri)}">{h.e(server.uri)}</span>'
-                       f'<span class="small muted">{h.e(note)}</span></span></label>')
+                       f'<span class="small muted">{h.e(note)}</span></span></label>'
+                       f'{h.button(icon_name="unlink", act_attr=self.a("remove_server", uri=server.uri), small=True, kind="ghost", title="Remove this server")}</div>')
         if not hub.servers:
             out.append('<div class="small muted" style="padding:0 12px">No server yet.</div>')
         out.append(f'<div style="padding:4px 12px">{h.button("+ Connect a server", act_attr=self.a("add_server"), small=True)}</div>')
@@ -230,7 +258,8 @@ class RunsDialog(Dialog):
     def _run_row(self, server, run, by_run, columns) -> str:
         key = run_key(server.uri, run.run_id)
         expanded = key in self.expanded
-        sel = key in self.selected
+        state = run_selection(self.selected, server, run.run_id)
+        sel = state != SELECTED_NONE
         hidden = run.run_id in self.hub.config.hidden_run_ids(server.uri)
         tip = "\n".join(filter(None, [run.run_name or run.run_id, f"{run.status} -- started {_fmt_ms(run.start_time)}",
                                       f"by {run.user}" if run.user else "", run.description]))
@@ -247,7 +276,8 @@ class RunsDialog(Dialog):
         if server.offline or hidden:
             cls.append("dim")
         return (f'<tr{f" class={chr(34)}{" ".join(cls)}{chr(34)}" if cls else ""} data-key="r-{h.e(run.run_id)}">'
-                f'<td class="nowrap"><input type="checkbox"{" checked" if sel else ""}{self.c("select", key=key)} aria-label="Select {h.e(run.label())}">'
+                f'<td class="nowrap"><input type="checkbox"{" checked" if state == SELECTED_ALL else ""}'
+                f'{" data-indeterminate=1" if state == SELECTED_SOME else ""}{self.c("select", key=key)} aria-label="Select {h.e(run.label())}">'
                 f'<button type="button" class="chev"{self.a("toggle_run", key=key)} style="font-size:9px" title="Show its CSVs">{"▼" if expanded else "▶"}</button></td>'
                 f'<td class="mono nowrap" title="{h.e(tip)}">{h.e(run.label())}</td>'
                 f'<td class="nowrap"><span class="row-nw small">{h.dot(STATUS_DOT.get(run.status, "var(--ghost)"), size=6)}{h.e(run.status.title())}</span></td>'
@@ -272,7 +302,7 @@ class RunsDialog(Dialog):
         out = []
         for c in candidates:
             key = csv_key(server.uri, run.run_id, c.csv.path)
-            sel = key in self.selected
+            sel = csv_selected(self.selected, key)
             sidecars = [n for n, art in (("embeddings", c.embeddings), ("prototypes", c.prototypes)) if art]
             cached = mlflow_cache.is_cached(run.run_id, c.csv.path, c.csv.size)
             out.append(
@@ -342,6 +372,10 @@ class RunsDialog(Dialog):
 
     def on_add_server(self, **_):
         self.s.open_dialog(AddServerDialog(self.hub))
+
+    def on_remove_server(self, uri: str = "", **_):
+        self.server_off.discard(uri)
+        confirm_remove_server(self.s, uri)
 
     def on_exp_filter(self, value: str = "", **_):
         self.exp_filter = value or ""
@@ -418,10 +452,8 @@ class RunsDialog(Dialog):
     # ---- actions: rows ----
 
     def on_select(self, key: str = "", value=False, **_):
-        if value:
-            self.selected.add(key)
-        else:
-            self.selected.discard(key)
+        _, uri, _, _ = parse_key(key)
+        set_selected(self.selected, self.hub.servers.get(uri), key, bool(value))
         self.refresh()
 
     def on_clear(self, **_):
@@ -442,7 +474,9 @@ class RunsDialog(Dialog):
     def on_hide_run(self, uri: str = "", run_id: str = "", name: str = "", hidden=True, **_):
         self.hub.config.set_run_hidden(uri, run_id, name, bool(hidden))
         if hidden:
-            self.selected.discard(run_key(uri, run_id))
+            server = self.hub.servers.get(uri)
+            if server is not None:
+                unselect_run(self.selected, server, run_id)
             self.s.toast(f"Hid {name}. 'Show hidden runs' brings it back.", "neutral")
         self.refresh()
 

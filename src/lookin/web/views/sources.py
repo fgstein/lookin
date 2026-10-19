@@ -39,6 +39,7 @@ from lookin.ui.components import color_for_experiment
 from lookin.web import html as h
 from lookin.web.views.base import View
 from lookin.web.views.files import FileBrowserDialog
+from lookin.web.views.widgets import experiment_color_menu
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_DATASET = PACKAGE_ROOT / "data" / "example" / "dataset.csv"
@@ -402,6 +403,8 @@ class SourcesView(View):
         state = self.state
         exp = state.experiments.get(row.loaded_name) if row.loaded_name else None
         color = color_for_experiment(row.loaded_name, self.state.color_slots) if exp is not None else "var(--ghost)"
+        dot = (experiment_color_menu(self.target, row.loaded_name, color, row.loaded_name in state.experiment_colors, size=9)
+               if exp is not None else h.dot(color, size=9))
         # A row with nothing loaded opens on its files -- except while it
         # waits or loads, which its bar in the row already says.
         is_open = row.open or (exp is None and not row.held and not row.loading)
@@ -453,7 +456,7 @@ class SourcesView(View):
         tr = (f'<tr{" class=sel" if row.open and exp is not None else ""}>'
               f'<td><button type="button" class="chev"{self.a("toggle_row", row=row.id)} aria-expanded="{"true" if is_open else "false"}" '
               f'aria-label="Show details" style="font-size:9px">{tri}</button></td>'
-              f'<td><div class="row-nw">{h.dot(color, size=9)}{name_input}</div></td>'
+              f'<td><div class="row-nw">{dot}{name_input}</div></td>'
               f'<td class="small nowrap" style="color:var(--muted)">{src}</td>'
               f'<td class="mono small nowrap" title="{h.e(row.path)}">{h.e(Path(row.path).name if row.path else "—")}</td>'
               f'<td class="nowrap">{ids_html}</td>'
@@ -871,6 +874,10 @@ class SourcesView(View):
             self.refresh()
         self._browse(picked, r.proto_path or r.path, {".npz"}, title="Select model prototypes .npz")
 
+    def on_color(self, name: str = "", value: str = "", **_):
+        if self.state.set_experiment_color(name, value):
+            self.s.notify_colors()
+
     def on_rename(self, row=0, value: str = "", **_):
         """A loaded experiment's name is a label, nothing else: renaming
         keeps every cached metric (see UploadView._on_name_committed)."""
@@ -1213,11 +1220,12 @@ class SourcesView(View):
                 name=name, path=path,
                 embeddings_path=str(exp.embeddings_path or ""),
                 prototypes_path=str(exp.model_prototypes_path or ""),
+                color=state.experiment_colors.get(name, ""),
             )
             origin = origins.get((name, path))
             if origin is not None:
                 loaded = replace(origin, embeddings_path=loaded.embeddings_path,
-                                 prototypes_path=loaded.prototypes_path)
+                                 prototypes_path=loaded.prototypes_path, color=loaded.color)
             experiments.append(loaded)
         return library.Mount(
             dataset_path=str(state.dataset.csv_path),
@@ -1349,6 +1357,7 @@ class SourcesView(View):
             if not ok:
                 print(f"[lookin] library: could not restore experiment {e.name!r} from {e.path}: {message}", flush=True)
                 continue
+            self.state.set_experiment_color(e.name, e.color)
             for path, loader, kind in (
                 (e.embeddings_path, self.s.prototype_source.load_embeddings_for, "embeddings"),
                 (e.prototypes_path, self.s.prototype_source.load_prototypes_for, "prototypes"),

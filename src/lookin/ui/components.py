@@ -481,6 +481,8 @@ def color_for_experiment(name: str, slots) -> str:
     """
     if isinstance(slots, dict):
         idx = slots.get(name, len(slots))
+        if isinstance(idx, str):
+            return idx          # the user's own choice (AppState.set_experiment_color)
     else:
         names = list(slots)
         idx = names.index(name) if name in names else len(names)
@@ -490,6 +492,12 @@ def color_for_experiment(name: str, slots) -> str:
     # color in every legend and confusion-matrix header.
     r, g, b = QUALITATIVE[idx % len(QUALITATIVE)]
     return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
+
+
+# The ten an experiment's color menu offers first (the palette's own first
+# ten, so picking one of them is picking what an experiment could have been
+# given anyway); "Other color..." opens the full picker.
+EXPERIMENT_PRESET_COLORS = [f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}" for r, g, b in QUALITATIVE[:10]]
 
 
 def info_button(ctx, manual_page, tooltip: str | None = None, icon_size: int = 17) -> ft.Control:

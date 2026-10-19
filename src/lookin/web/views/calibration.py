@@ -202,6 +202,11 @@ class CalibrationView(RebuildView):
             return
         self.on_update()
 
+    def on_colors_changed(self) -> None:
+        # Drawn again from the cached bundles: only the colors changed.
+        if self.built and self._cache:
+            self.rebuild(self._refresh_now, clear_stale=False)
+
     def rename_experiment(self, old_name: str, new_name: str) -> None:
         if old_name in self._cache:
             bundle = self._cache.pop(old_name)

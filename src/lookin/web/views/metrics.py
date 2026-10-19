@@ -47,7 +47,7 @@ from lookin.web.views.common import (
 from lookin.web.views.files import FileBrowserDialog
 from lookin.web.views.media import fig_html
 from lookin.web.views.slice_panel import SlicePanel
-from lookin.web.views.widgets import ClassFocus, class_select
+from lookin.web.views.widgets import ClassFocus, class_select, experiment_color_menu
 
 PERCLASS_MANUAL_PAGES = {
     "f1": "f1",
@@ -119,7 +119,7 @@ class MetricsView(RebuildView):
         total = len(names)
         selected = len(self._selected_names())
         summary = (f"{selected} of {total} experiment(s) shown -- the arrows set the order used by "
-                   f"every table, legend and chart below.")
+                   f"every table, legend and chart below, a dot its color.")
         rows = []
         for position, name in enumerate(names):
             color = color_for_experiment(name, self.state.color_slots)
@@ -127,7 +127,7 @@ class MetricsView(RebuildView):
                 f'<div class="mx-row" data-key="mx-{h.e(name)}">'
                 f'{h.button(icon_name="chev-up", act_attr=self.a("move", name=name, delta=-1), small=True, kind="ghost", title="Move up", disabled=position == 0)}'
                 f'{h.button(icon_name="chev-down", act_attr=self.a("move", name=name, delta=1), small=True, kind="ghost", title="Move down", disabled=position == total - 1)}'
-                f'{h.dot(color, size=10)}'
+                f'{experiment_color_menu(self.target, name, color, name in self.state.experiment_colors)}'
                 f'{h.checkbox(name, self.checked.get(name, True), change=self.c("check", name=name), cls="grow", ellipsis=True)}'
                 f'</div>')
         head = (f'<div class="row"><span class="muted small grow">{h.e(summary)}</span>'
@@ -139,6 +139,14 @@ class MetricsView(RebuildView):
     def _apply_order(self, names: list) -> None:
         self.state.reorder_experiments(names)
         self._redraw()
+
+    def on_color(self, name: str = "", value: str = "", **_):
+        if self.state.set_experiment_color(name, value):
+            self.s.notify_colors()
+
+    def on_colors_changed(self) -> None:
+        if self.built:
+            self._redraw()
 
     def on_check(self, name: str = "", value=False, **_):
         if name in self.state.experiments:

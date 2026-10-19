@@ -214,6 +214,9 @@ class MountExperiment:
     embeddings_size: Optional[int] = None
     prototypes_artifact: str = ""
     prototypes_size: Optional[int] = None
+    # "#rrggbb" the user picked for it, "" for its palette color (see
+    # AppState.experiment_colors).
+    color: str = ""
 
     def from_mlflow(self) -> bool:
         return bool(self.mlflow_run_id and self.artifact_path)

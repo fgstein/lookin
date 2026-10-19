@@ -629,6 +629,14 @@
       const right = window.innerWidth - r.right;
       if (r.left + 220 > window.innerWidth) { menu.style.right = "0"; menu.style.left = "auto"; }
       if (right < 0) menu.style.right = "0";
+      if (menu.classList.contains("menu-fixed")) {
+        // Opened from inside a scrolling list (an experiment's color, see
+        // widgets.experiment_color_menu), which would clip it: placed on
+        // the page instead, under its button.
+        menu.style.position = "fixed"; menu.style.right = "auto"; menu.style.minWidth = "0";
+        menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - menu.offsetWidth - 8)) + "px";
+        menu.style.top = Math.min(r.bottom + 4, window.innerHeight - menu.offsetHeight - 8) + "px";
+      }
     }
   }
   function closeMenus(keep) {
@@ -975,6 +983,11 @@
   window.lookinInit = (fn) => initializers.push(fn);
   function initDynamic() {
     wireInfiniteLists(document);
+    // "Half ticked" is a property, not an attribute, so the server asks for
+    // it with data-indeterminate (a run with some of its CSVs selected).
+    document.querySelectorAll("input[type=checkbox]").forEach((el) => {
+      el.indeterminate = el.hasAttribute("data-indeterminate");
+    });
     initializers.forEach((fn) => { try { fn(document); } catch (e) { console.error(e); } });
   }
 

@@ -126,6 +126,65 @@ def parse_key(key: str) -> tuple:
     return "", "", "", ""
 
 
+# ---- selecting a run, or some of its CSVs ---------------------------------
+#
+# A run's box stands for all its CSVs. Before they are listed, ticking it
+# selects the run key (adding it asks which CSV when it has several, see
+# HomeView.add_keys); once they are listed, it ticks each of them, and the
+# run's box shows "half ticked" while only some are. Shared with `lookin web`
+# (views/mlflow_dialogs.RunsDialog), whose servers are the same ServerState.
+
+SELECTED_ALL, SELECTED_SOME, SELECTED_NONE = "all", "some", "none"
+
+
+def run_csv_keys(server, run_id: str):
+    """The keys of a run's CSVs, or None while they are not listed."""
+    run = server.run_by_id(run_id) if server is not None else None
+    entry = server.artifacts.get(run_id) if server is not None else None
+    if run is None or not entry or "csvs" not in entry:
+        return None
+    candidates = wss.candidates_for_run(server.uri, run, entry["csvs"], entry.get("npzs", []))
+    return [csv_key(server.uri, run_id, c.csv.path) for c in candidates]
+
+
+def run_selection(selected: set, server, run_id: str) -> str:
+    """How much of this run is selected: SELECTED_ALL, _SOME or _NONE."""
+    if run_key(server.uri, run_id) in selected:
+        return SELECTED_ALL
+    keys = run_csv_keys(server, run_id) or []
+    n = sum(1 for k in keys if k in selected)
+    return SELECTED_ALL if keys and n == len(keys) else (SELECTED_SOME if n else SELECTED_NONE)
+
+
+def csv_selected(selected: set, key: str) -> bool:
+    _, uri, run_id, _ = parse_key(key)
+    return key in selected or run_key(uri, run_id) in selected
+
+
+def set_selected(selected: set, server, key: str, value: bool) -> None:
+    """Tick (value=True) or untick a run's box or one of its CSVs', in place.
+    A run box that is half ticked ticks every CSV."""
+    kind, uri, run_id, _ = parse_key(key)
+    whole = run_key(uri, run_id)
+    csvs = set(run_csv_keys(server, run_id) or [])
+    if kind == "run":
+        selected -= csvs | {whole}
+        if value:
+            selected |= csvs or {whole}
+    elif value:
+        selected.add(key)
+    else:
+        if whole in selected:
+            # The whole run was ticked: untick this one CSV of it.
+            selected.discard(whole)
+            selected |= csvs
+        selected.discard(key)
+
+
+def unselect_run(selected: set, server, run_id: str) -> None:
+    selected -= {run_key(server.uri, run_id), *(run_csv_keys(server, run_id) or [])}
+
+
 def _dc_from_dict(cls, raw: dict):
     known = cls.__dataclass_fields__
     return cls(**{k: v for k, v in raw.items() if k in known})
@@ -949,6 +1008,7 @@ class HomeView:
     def _run_row(self, server: ServerState, run: mlf.Run, by_run: dict) -> ft.Control:
         key = run_key(server.uri, run.run_id)
         expanded = key in self.expanded_runs
+        state = run_selection(self.selected, server, run.run_id)
         tooltip = "\n".join(filter(None, [
             run.run_name or run.run_id, f"{run.status} -- started {_format_time(run.start_time)}",
             f"by {run.user}" if run.user else "", run.description,
@@ -956,12 +1016,16 @@ class HomeView:
         row = ft.Container(
             padding=ft.padding.only(left=4, right=8, top=1, bottom=1),
             opacity=0.55 if server.offline else 1.0,
-            bgcolor=ft.Colors.with_opacity(0.10, ACCENT) if key in self.selected else None,
+            bgcolor=ft.Colors.with_opacity(0.10, ACCENT) if state != SELECTED_NONE else None,
             content=ft.Row([
                 ft.IconButton(ft.Icons.EXPAND_MORE if expanded else ft.Icons.CHEVRON_RIGHT, icon_size=16,
                               width=26, height=26, style=ft.ButtonStyle(padding=0),
                               tooltip="Show its CSVs", on_click=lambda e: self._toggle_run(server, run)),
-                ft.Checkbox(value=key in self.selected, on_change=lambda e: self._toggle_selected(key),
+                # tristate: None draws the "half ticked" box. A click on it
+                # ticks every CSV (see set_selected), so the box's own next
+                # value is not what decides.
+                ft.Checkbox(value={SELECTED_ALL: True, SELECTED_SOME: None}.get(state, False), tristate=True,
+                            on_change=lambda e: self._set_selected(server, key, state != SELECTED_ALL),
                             width=24, height=24),
                 ft.Container(width=8, height=8, border_radius=4,
                              bgcolor=STATUS_COLORS.get(run.status, ft.Colors.ON_SURFACE_VARIANT)),
@@ -1009,9 +1073,10 @@ class HomeView:
             row = ft.Container(
                 padding=ft.padding.only(left=34, right=8, top=1, bottom=1),
                 opacity=0.55 if server.offline else 1.0,
-                bgcolor=ft.Colors.with_opacity(0.10, ACCENT) if key in self.selected else None,
+                bgcolor=ft.Colors.with_opacity(0.10, ACCENT) if csv_selected(self.selected, key) else None,
                 content=ft.Row([
-                    ft.Checkbox(value=key in self.selected, on_change=lambda e, k=key: self._toggle_selected(k),
+                    ft.Checkbox(value=csv_selected(self.selected, key),
+                                on_change=lambda e, k=key: self._set_selected(server, k, not csv_selected(self.selected, k)),
                                 width=24, height=24),
                     ft.Icon(ft.Icons.TABLE_CHART_OUTLINED, size=15, color=ft.Colors.ON_SURFACE_VARIANT),
                     ft.Text(c.csv.path, size=TEXT_SUB, expand=True, no_wrap=True,
@@ -1497,7 +1562,7 @@ class HomeView:
 
     def _hide_run(self, server: ServerState, run: mlf.Run) -> None:
         self.config.set_run_hidden(server.uri, run.run_id, run.label(), True)
-        self.selected.discard(run_key(server.uri, run.run_id))
+        unselect_run(self.selected, server, run.run_id)
         self._render_runs()
         self._status(f"Hid {run.label()}. The footer can show hidden runs again.", "neutral")
 
@@ -1514,11 +1579,8 @@ class HomeView:
             self._fetch_artifacts(server, run.run_id)
         self._render_runs()
 
-    def _toggle_selected(self, key: str) -> None:
-        if key in self.selected:
-            self.selected.discard(key)
-        else:
-            self.selected.add(key)
+    def _set_selected(self, server: ServerState, key: str, value: bool) -> None:
+        set_selected(self.selected, server, key, value)
         self._render_runs()
 
     def _clear_selection(self) -> None:

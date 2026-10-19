@@ -483,3 +483,22 @@ def test_crop_details_gives_the_row_and_every_experiment_prediction(loaded_state
     # found by its crop path when there is no uuid to go by
     assert loaded_state.crop_details(crop="crops/a.png")["uuid"] == "a"
     assert loaded_state.crop_details(uid="nope") is None
+
+
+def test_an_experiment_keeps_the_color_it_is_given(loaded_state, results_csv):
+    from lookin.ui.components import color_for_experiment
+    loaded_state.add_experiment(str(results_csv), "b")
+    palette = color_for_experiment("b", loaded_state.color_slots)
+    assert loaded_state.set_experiment_color("b", "#FF8800")
+    assert color_for_experiment("b", loaded_state.color_slots) == "#ff8800"
+    assert not loaded_state.set_experiment_color("b", "#ff8800"), "nothing changed"
+    assert not loaded_state.set_experiment_color("b", "orange"), "not a color"
+    assert not loaded_state.set_experiment_color("gone", "#123456"), "not loaded"
+    loaded_state.reorder_experiments(["b", "exp"])
+    loaded_state.rename_experiment("b", "b2")
+    assert color_for_experiment("b2", loaded_state.color_slots) == "#ff8800"
+    assert loaded_state.set_experiment_color("b2", "")                  # Automatic
+    assert color_for_experiment("b2", loaded_state.color_slots) == palette
+    loaded_state.set_experiment_color("b2", "#ff8800")
+    loaded_state.remove_experiment("b2")
+    assert loaded_state.experiment_colors == {}

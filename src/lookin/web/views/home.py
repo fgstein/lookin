@@ -900,9 +900,8 @@ class HomeView(View):
         self.hub.refresh(uri)
 
     def on_remove_server(self, uri: str = "", **_):
-        self.hub.config.remove_server(uri)
-        self.hub.sync_servers()
-        self.hub.changed()
+        from lookin.web.views.mlflow_dialogs import confirm_remove_server
+        confirm_remove_server(self.s, uri)
 
     def on_add_server(self, **_):
         from lookin.web.views.mlflow_dialogs import AddServerDialog

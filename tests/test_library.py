@@ -424,3 +424,9 @@ def test_duplicate_points_its_own_data_at_its_own_copy(workspace):
 def test_duplicate_of_a_deleted_workspace_is_none(workspace):
     assert lib.delete_workspace(workspace)
     assert lib.duplicate_workspace(workspace) is None
+
+
+def test_an_experiment_color_is_saved_with_the_workspace(root, mount):
+    mount.experiments[0].color = "#ff8800"
+    ws = lib.create_workspace("colored", mount, root=root)
+    assert lib.load_workspace(ws.path).mount.experiments[0].color == "#ff8800"

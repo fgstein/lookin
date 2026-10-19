@@ -1111,11 +1111,12 @@ class UploadView:
                 path=path,
                 embeddings_path=str(exp.embeddings_path or ""),
                 prototypes_path=str(exp.model_prototypes_path or ""),
+                color=state.experiment_colors.get(name, ""),
             )
             origin = origins.get((name, path))
             if origin is not None:
                 loaded = replace(origin, embeddings_path=loaded.embeddings_path,
-                                 prototypes_path=loaded.prototypes_path)
+                                 prototypes_path=loaded.prototypes_path, color=loaded.color)
             experiments.append(loaded)
         return library.Mount(
             dataset_path=str(state.dataset.csv_path),
@@ -1267,6 +1268,7 @@ class UploadView:
                 print(f"[lookin] library: could not restore experiment {experiment.name!r} "
                       f"from {experiment.path}: {message}", flush=True)
                 continue
+            self.ctx.state.set_experiment_color(experiment.name, experiment.color)
             for path, loader, kind in (
                 (experiment.embeddings_path, self.ctx.prototype_source.load_embeddings_for, "embeddings"),
                 (experiment.prototypes_path, self.ctx.prototype_source.load_prototypes_for, "prototypes"),
