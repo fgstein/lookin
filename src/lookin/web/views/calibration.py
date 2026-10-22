@@ -1,7 +1,5 @@
 """Calibration: what a model's confidence is worth, and what can be done with it.
 
-Same tab as lookin.ui.calibration_view, in the browser:
-
 * **Can the confidence be believed?** The summary table (ECE / MCE / AURC),
   a reliability diagram and a right-vs-wrong confidence histogram per
   experiment, and the fix -- one fitted temperature, with the ECE before
@@ -34,7 +32,7 @@ from lookin.core.chart_style import (
     subplots,
 )
 from lookin.core.metrics import compute_reliability, diagnose_scores
-from lookin.ui.components import color_for_experiment
+from lookin.core.chart_style import color_for_experiment
 from lookin.web import html as h
 from lookin.web.views.base import RebuildView
 from lookin.web.views.carousel import CarouselDialog
@@ -56,7 +54,7 @@ CALIBRATION_FOCUS_CRITERIA = (
 DEFAULT_TARGET_ACCURACY = 0.99
 DEFAULT_TARGET_PRECISION = 0.95
 
-# On-screen widths of the per-experiment charts, as in the original.
+# On-screen widths of the per-experiment charts.
 RELIABILITY_WIDTH = 380
 HISTOGRAM_WIDTH = 400
 
@@ -90,8 +88,8 @@ def _parse_float(text, default: float, low: float = 0.0, high: float = 1.0) -> f
 
 @dataclass
 class ExperimentCalibration:
-    """Everything this tab keeps for one experiment between renders (see
-    the original: the threshold index is the only per-row structure kept)."""
+    """Everything this tab keeps for one experiment between renders (the
+    threshold index is the only per-row structure kept)."""
     name: str
     index: cal.ThresholdIndex
     curve: cal.RiskCoverage
@@ -179,8 +177,7 @@ class CalibrationView(RebuildView):
             self.rebuild(self._refresh_now)
 
     def on_data_change(self) -> None:
-        """Same contract as the original: flag stale, recompute when asked.
-        The cached bundles were computed from the old data, so whatever
+        """Flag stale, recompute when asked. The cached bundles were computed from the old data, so whatever
         recompute comes next starts from scratch."""
         self.dirty = True
         self._cache_stale = True
@@ -284,8 +281,8 @@ class CalibrationView(RebuildView):
         self.placeholder_error = error
 
     def _refresh_now(self) -> None:
-        """The original's _render, in the background: bundles, then every
-        chart, then the tables' lookups."""
+        """The whole tab, in the background: bundles, then every chart, then
+        the tables' lookups."""
         if self._cache_stale:
             self._cache.clear()
             self._class_rows.clear()
@@ -295,7 +292,7 @@ class CalibrationView(RebuildView):
         self.placeholder = ""
         if state.dataset is None or not state.experiments:
             self._show_placeholder(
-                "Load a dataset and at least one experiment (results CSV) in the 'Data' tab first.")
+                "Load a dataset and at least one experiment (results CSV) in the 'Sources' tab first.")
             return
         selected = self._selected_names()
         if not selected:
@@ -335,7 +332,7 @@ class CalibrationView(RebuildView):
     def _bundles(self) -> dict:
         return {n: self._cache[n] for n in self.shown if n in self._cache}
 
-    # ---- charts (the original's figure code) ------------------------------
+    # ---- charts ------------------------------------------------------------
 
     def _reliability_chart(self, name: str, data, color) -> Optional[_Chart]:
         """Reliability diagram: a bar per confidence bin with its actual
@@ -421,8 +418,8 @@ class CalibrationView(RebuildView):
     # ---- threshold explorer --------------------------------------------
 
     def _apply_target(self) -> None:
-        """Read the target field (clamped to [0, 1], written back the way
-        the original does) and work back to each shown experiment's
+        """Read the target field (clamped to [0, 1] and written back) and
+        work back to each shown experiment's
         threshold -- one pass over the index, so not done in render()."""
         target = _parse_float(self.target_text, DEFAULT_TARGET_ACCURACY)
         self.target_text = f"{target:g}"
@@ -647,7 +644,7 @@ class CalibrationView(RebuildView):
         # The two cheap placeholders are decided here; the rest by the last rebuild.
         if state.dataset is None or not state.experiments:
             parts.append(h.banner(
-                "Load a dataset and at least one experiment (results CSV) in the 'Data' tab first.", "info"))
+                "Load a dataset and at least one experiment (results CSV) in the 'Sources' tab first.", "info"))
             return f'<div class="stack cal">{"".join(parts)}</div>'
         if not self._selected_names() and not self.progress_text:
             parts.append(h.banner("Select at least one experiment above.", "info"))
@@ -882,7 +879,7 @@ class CalibrationView(RebuildView):
         return (self._table(headers, rows)
                 + "".join(f'<div class="small c-warn"><i>{h.e(n)}</i></div>' for n in notes))
 
-    # ---- snapshots (see ui/view_state.py) ----
+    # ---- snapshots (see core/view_state.py) ----
 
     def view_state(self) -> dict:
         self._sync_checks()

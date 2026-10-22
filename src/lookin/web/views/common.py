@@ -1,5 +1,4 @@
-"""Pieces several analysis tabs draw the same way -- the web counterparts of
-the helpers in lookin.ui.components and lookin.ui.class_matrix:
+"""Pieces several analysis tabs draw the same way:
 
 * uuid_overlap_banner / score_diagnostics_banner -- the warnings a tab shows
   before (or instead of) its numbers;
@@ -7,21 +6,106 @@ the helpers in lookin.ui.components and lookin.ui.class_matrix:
 * saved_path_message -- the path a "wrote it there" line shows, copied to
   the clipboard of the browser the user sits at;
 * save_png -- write a picture next to the user's downloads on the server;
-* confused_pairs_table / overview_image -- the confusion helpers.
-
-The pure helpers (colours, matrix sizing) are reused from
-lookin.ui.components as they are.
+* confused_pairs_table / overview_image -- the confusion helpers;
+* matrix_cell_size / matrix_text_size / matrix_label_chars /
+  short_column_labels -- how a class grid is sized and labelled.
 """
 from __future__ import annotations
 
+import os
+import re
 from datetime import datetime
+from pathlib import Path
 
 from lookin.core.class_focus import ZOOM_BLOCKS, overview_figure
-from lookin.ui.components import _default_save_dir
 from lookin.web import html as h
 from lookin.web.views.media import CHART_DPI, chart_html, fig_png
 
 CLIPBOARD_NOTE = " (path copied to the clipboard)"
+
+
+def default_save_dir() -> Path:
+    downloads = Path.home() / "Downloads"
+    return downloads if downloads.is_dir() else Path.cwd()
+
+
+def slug(title: str, fallback: str = "image") -> str:
+    """A panel title reduced to something safe in a filename and a URL."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", title).strip("_")[:60] or fallback
+
+
+# ---- class grids ------------------------------------------------------------
+
+# The number of columns a confusion matrix is sized against when it has
+# fewer: a two-class matrix draws four big cells instead of four small ones
+# lost in a corner of the tab. Above this the cells keep their base size and
+# the grid grows, which is what a many-class matrix needs.
+MATRIX_FLOOR_COLUMNS = 8
+
+
+def matrix_cell_size(n_columns: int, base: int, spacing: int = 2) -> int:
+    """Cell pitch for a confusion matrix with `n_columns` columns.
+
+    At MATRIX_FLOOR_COLUMNS columns or more this is `base`, so a matrix
+    with many classes is as wide as it has to be. Below it, the cells take
+    the room those columns would have used: the grid keeps the footprint of
+    an eight-class one rather than shrinking to a thumbnail, which is what
+    a binary matrix -- the most common case there is -- used to do.
+    """
+    if n_columns <= 0 or n_columns >= MATRIX_FLOOR_COLUMNS:
+        return base
+    return int(round(MATRIX_FLOOR_COLUMNS * (base + spacing) / n_columns)) - spacing
+
+
+def matrix_text_size(cell_size: int, base_cell: int, base_size: int, cap: int = 18) -> float:
+    """`base_size`, grown with the cell it sits in (see matrix_cell_size).
+
+    Counts drawn at 10px inside a 140px cell would be a grid of small
+    numbers floating in colour. Capped, because past a point a bigger digit
+    stops being easier to read.
+    """
+    if cell_size <= base_cell or base_cell <= 0:
+        return base_size
+    return min(cap, round(base_size * cell_size / base_cell))
+
+
+def matrix_label_chars(cell_size: int, base_cell: int, minimum: int) -> int:
+    """How many characters of a class label a column header keeps.
+
+    Headers are truncated to keep the grid on its pitch. `minimum` is what
+    fits at the base pitch, and a cell that grew shows proportionally more
+    -- the text in it grew too (see matrix_text_size), so the ratio is the
+    honest estimate. The full label is in the cell's tooltip either way.
+    """
+    if base_cell <= 0 or cell_size <= base_cell:
+        return minimum
+    return max(minimum, int(minimum * cell_size / base_cell))
+
+
+# Rows of the confused-pairs table shown under each matrix.
+PAIRS_SHOWN = 15
+
+
+def short_column_labels(labels: list, chars: int) -> tuple:
+    """(short labels, dropped prefix) for the column headers of a grid.
+
+    Headers are a few characters wide, and class names in a big taxonomy
+    usually share a long prefix ("species_0412", "species_0413"), so
+    cutting each one to its first characters makes every header identical.
+    The prefix every label shares is dropped instead, then each is cut to
+    `chars`; the caller says which prefix went, and the full label stays in
+    the cell's tooltip.
+    """
+    names = [str(l) for l in labels]
+    prefix = os.path.commonprefix(names) if len(names) > 1 else ""
+    # Never strip a label down to nothing (one label a prefix of another),
+    # and cut only after a separator: "Quercus r" out of "Quercus robur"
+    # and "Quercus rubra" would leave "obur" and "ubra".
+    prefix = prefix[: min((len(n) for n in names), default=0) - 1] if prefix else ""
+    cut = max((i for i, ch in enumerate(prefix) if not ch.isalnum()), default=-1)
+    prefix = prefix[: cut + 1]
+    short = [n[len(prefix):] for n in names]
+    return [s if len(s) <= chars else s[: chars - 1] + "…" for s in short], prefix
 
 
 def _warn_box(lines: list, icon_name: str = "warn") -> str:
@@ -83,8 +167,7 @@ def saved_path_message(session, path) -> str:
 def save_png(session, png: bytes, title: str) -> tuple:
     """(ok, message): `png` written next to the user's downloads, on the
     machine running Lookin (where the data is)."""
-    from lookin.ui.image_export import slug
-    dest = _default_save_dir() / f"lookin_{slug(title)}_{datetime.now():%Y%m%d-%H%M%S}.png"
+    dest = default_save_dir() / f"lookin_{slug(title)}_{datetime.now():%Y%m%d-%H%M%S}.png"
     try:
         dest.write_bytes(png)
     except OSError as ex:
@@ -137,7 +220,7 @@ def overview_zoom(session, confusion, focus: list, title: str) -> None:
 
 def card(title: str, body: str, *, right: str = "", key: str = "", cls: str = "", manual=None,
          width: str = "") -> str:
-    """A titled card (the original's card() + section_title())."""
+    """A titled card, with the (i) button of its manual page."""
     style = f' style="width:{width}"' if width else ""
     head = (f'<div class="card-h"><h2>{h.e(title)}</h2>{h.info_btn(manual) if manual else ""}'
             f'<div class="card-r">{right}</div></div>') if title else ""

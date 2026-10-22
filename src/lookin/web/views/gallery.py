@@ -1,6 +1,6 @@
 """Gallery: a filterable mosaic of crops that loads as it is scrolled.
 
-Same behaviour as lookin.ui.gallery_view: nothing is filtered until the
+Nothing is filtered until the
 user adds a filter for a column (checkboxes for label / categorical /
 binary columns, a class search past FOCUS_MAX values, a range for numeric
 ones); optionally colour each thumbnail by whether an experiment's
@@ -232,7 +232,7 @@ class GalleryView(RebuildView):
     def render(self) -> str:
         state = self.state
         if state.dataset is None:
-            return h.banner("Load a dataset in the 'Data' tab first.", "info")
+            return h.banner("Load a dataset in the 'Sources' tab first.", "info")
         self.on_shown()
         return (f'<div class="stack">{self.stale_html()}'
                 f'<div class="gal">{self._filters_html()}<div class="gal-main stack">'
@@ -456,7 +456,7 @@ class GalleryView(RebuildView):
             self.experiment = new_name
         self.refresh()
 
-    # ---- snapshots (see ui/view_state.py) ----
+    # ---- snapshots (see core/view_state.py) ----
 
     def view_state(self) -> dict:
         filters = {}

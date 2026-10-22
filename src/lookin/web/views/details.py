@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Optional
 from urllib.parse import urlencode
 
-from lookin.ui.components import color_for_experiment
+from lookin.core.chart_style import color_for_experiment
 from lookin.web import html as h
 
 

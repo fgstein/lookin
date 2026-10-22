@@ -1,6 +1,6 @@
 """Statistics: a chart per column the user picks (nothing by default -- a
 wide CSV has dozens of columns, and charting all of them on every load is
-slow and rarely wanted). Same charts as lookin.ui.stats_view: a histogram
+slow and rarely wanted): a histogram
 for a numeric column, a bar per value for a categorical one, and past
 RANKED_CATEGORIES_MIN values the sorted sizes on a log scale with the
 extremes named under it.
@@ -10,12 +10,20 @@ from __future__ import annotations
 import numpy as np
 
 from lookin.core.chart_style import subplots
-from lookin.ui.components import GRID_NONE, style_axes
-from lookin.ui.stats_view import RANKED_CATEGORIES_MIN, RANKED_NAMED, RANKED_SMALL
+from lookin.core.chart_style import GRID_NONE, style_axes
 from lookin.web import html as h
 from lookin.web.views.base import RebuildView
 from lookin.web.views.media import fig_html
 
+
+# Past this many distinct values a categorical chart is drawn as sorted
+# sizes rather than one bar per value (see _make_chart); the RANKED_NAMED
+# largest and smallest are named under it.
+RANKED_CATEGORIES_MIN = 60
+RANKED_NAMED = 5
+
+# "Fewer than this many" is the count reported for the long tail.
+RANKED_SMALL = 10
 BAR_COLOR = "#2550C8"
 
 

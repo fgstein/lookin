@@ -1,9 +1,8 @@
 """Where MLflow artifacts land on this machine, and how they get there.
 
 One cache, shared by everything that downloads from a tracking server --
-the MLflow browse dialog and the workspaces on the Home page -- so a CSV
-downloaded by one is a cache hit for the other. It moved here from
-ui/mlflow_panel.py when the second user appeared.
+the runs dialog, the workspaces on the Home page, the MCP endpoint -- so a
+CSV downloaded by one is a cache hit for the others.
 
 The layout is ``<cache>/<run_id>/<artifact path>``. A run id is a UUID
 minted by the tracking server, so two servers do not collide in practice,

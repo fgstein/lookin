@@ -21,10 +21,8 @@ import io
 import json
 import mimetypes
 import queue
-import threading
 import time
 import traceback
-from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, quote
@@ -34,6 +32,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 
 from lookin import __version__
+from lookin.core.images import crop_bytes
 from lookin.web.session import RequestScope, SessionStore
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -51,51 +50,6 @@ class WebApp:
         self.dataset = dataset
         self.experiments = list(experiments or [])
         self.store = SessionStore(self)
-
-
-# ---- crops -----------------------------------------------------------------
-
-_CROP_CACHE: "OrderedDict[str, tuple]" = OrderedDict()
-_CROP_CACHE_MAX = 3000
-_CROP_LOCK = threading.Lock()
-_NATIVE = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
-_PLACEHOLDER = (b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" '
-                b'fill="#eceef2"/><text x="16" y="21" font-size="14" text-anchor="middle" fill="#8a93a6">?</text></svg>')
-
-
-def crop_bytes(path: str, lut: str, turns: int) -> tuple:
-    """(bytes, mime) for a crop: the file's own bytes when nothing has to
-    change (PNG/JPEG, no LUT, no turn), else a lossless PNG re-encode
-    through the display transform -- the same rules as the original UI
-    (see lookin.ui.components.file_to_full_base64)."""
-    from lookin.ui.components import LUT_NONE, _load_and_encode_png
-
-    p = Path(path)
-    try:
-        st = p.stat()
-        version = f"{st.st_size}:{st.st_mtime_ns}"
-    except OSError:
-        return _PLACEHOLDER, "image/svg+xml"
-    key = f"{path}\x00{version}\x00{lut}\x00{turns}"
-    with _CROP_LOCK:
-        hit = _CROP_CACHE.get(key)
-        if hit is not None:
-            _CROP_CACHE.move_to_end(key)
-            return hit
-    try:
-        suffix = p.suffix.lower()
-        if (lut or LUT_NONE) == LUT_NONE and not turns and suffix in _NATIVE:
-            out = (p.read_bytes(), _NATIVE[suffix])
-        else:
-            out = (_load_and_encode_png(p, lut or LUT_NONE, turns), "image/png")
-    except (OSError, ValueError) as ex:
-        print(f"[lookin] could not load image {path}: {ex}", flush=True)
-        return _PLACEHOLDER, "image/svg+xml"
-    with _CROP_LOCK:
-        _CROP_CACHE[key] = out
-        while len(_CROP_CACHE) > _CROP_CACHE_MAX:
-            _CROP_CACHE.popitem(last=False)
-    return out
 
 
 def content_disposition(disposition: str, filename: str) -> str:
@@ -154,9 +108,8 @@ def page_html() -> str:
 
 
 def _mcp_parts(enable_mcp: bool):
-    """(routes, lifespan) for the read-only MCP endpoint at MCP_PATH -- the
-    same one `lookin ui` serves (see lookin/mcp_server.py), so an agent can
-    read workspaces and results whichever interface is running."""
+    """(routes, lifespan) for the MCP endpoint at MCP_PATH (see
+    lookin/mcp_server.py), served on the same port as the page."""
     from contextlib import asynccontextmanager
 
     if not enable_mcp:

@@ -26,38 +26,10 @@ from lookin.core.data_manager import DATASET_SOURCE_GROUP
 from lookin.core.embedding_analysis import (
     OutOfSampleUnsupported, fit_projection, nearest_to_vector,
 )
-from lookin.ui.projection_view import (
-    CLASS_COLOR_KEY, SOURCE_COLOR_KEY, ProjectionView, overlay_indices,
-)
+from lookin.web.views.embeddings import overlay_indices
 
 
 # ---- fixtures -----------------------------------------------------------
-
-class FakePage:
-    width, height = 1440, 900
-
-    def run_thread(self, fn, *args):
-        fn(*args)
-
-    def open(self, *a):
-        pass
-
-    def close(self, *a):
-        pass
-
-
-class FakeCtx:
-    def __init__(self, state):
-        self.page = FakePage()
-        self.state = state
-        self.image_zoom = None
-        self.prototype_source = type("NoPrototypes", (), {
-            "active_set": lambda self, name: None,
-            "resolve": lambda self, name: (None, None),
-            "model_set_for_dataset": lambda self, name: None,
-            "dataset_set": lambda self, name, embeddings, labels: (None, ""),
-        })()
-
 
 @pytest.fixture
 def inference_files(tmp_path):
@@ -84,23 +56,6 @@ def state_with_inference(loaded_state, embeddings_npz, inference_files):
     return loaded_state
 
 
-@pytest.fixture
-def view(state_with_inference) -> ProjectionView:
-    view = ProjectionView(FakeCtx(state_with_inference))
-    view.build()
-    view.refresh()
-    view.projection_method.value = "pca"
-    return view
-
-
-def _run(view, overlay: bool = False, refit: bool = False) -> None:
-    if overlay:
-        view._on_overlay_toggle("probe", True)
-    view.refit_check.value = refit
-    view._refit_choice = refit
-    view._on_run_projection(None)
-
-
 # ---- loading ------------------------------------------------------------
 
 def test_rows_and_embeddings_are_aligned_once_and_for_all(state_with_inference):
@@ -120,7 +75,7 @@ def test_a_row_with_no_embedding_is_dropped_rather_than_drawn_nowhere(tmp_path, 
 
     inference = loaded_state.load_inference("half", str(csv), str(npz), uuid_col="uuid", crop_col="img")
     assert list(inference.uuids()) == ["p1"]
-    # ...and the counts are kept so the Data tab can say what happened.
+    # ...and the counts are kept so the Sources tab can say what happened.
     assert (inference.csv_rows, inference.npz_rows) == (2, 1)
 
 
@@ -205,133 +160,7 @@ def test_an_overlay_capped_at_a_few_points_keeps_the_shape_of_the_set():
 
 # ---- the map --------------------------------------------------------------
 
-def test_ticking_an_overlay_places_it_without_projecting_again(view, monkeypatch):
-    """The whole point: the cloud the user is reading must not rearrange
-    itself to let three new crops in."""
-    import lookin.ui.projection_view as projection_view
-
-    _run(view)
-    before = view._last_result.proj.copy()
-
-    calls = []
-    real = projection_view.ea.fit_projection
-    monkeypatch.setattr(projection_view.ea, "fit_projection",
-                        lambda *a, **k: (calls.append(1), real(*a, **k))[1])
-    view._on_overlay_toggle("probe", True)
-
-    assert calls == [], "placing points onto an existing fit is not a projection"
-    assert np.array_equal(view._last_result.proj, before)
-    layers = view._overlay_layers(view._last_result)
-    assert [layer.name for layer in layers] == ["probe"]
-    assert layers[0].coords.shape == (3, 2)
-
-
-def test_placed_coordinates_are_computed_once_and_kept(view):
-    _run(view, overlay=True)
-    result = view._last_result
-    first = view._overlay_layers(result)[0].coords
-    assert "probe" in result.overlay_proj
-    again = view._overlay_layers(result)[0].coords
-    assert again is first, "a recolor must not pay for another transform"
-
-
-def test_refitting_puts_them_in_the_fit_and_says_so(view):
-    _run(view, overlay=True, refit=True)
-    result = view._last_result
-    assert result.refit_with_overlay and result.overlay_names == ["probe"]
-    assert result.overlay_proj["probe"].shape == (3, 2)
-    note = view._fit_note(result, view._overlay_layers(result), len(result.proj))
-    assert "together with" in note
-
-    view.refit_check.value = False
-    _run(view, refit=False)
-    note = view._fit_note(view._last_result, view._overlay_layers(view._last_result),
-                          len(view._last_result.proj))
-    assert "only projected onto that fit" in note
-
-
-def test_changing_the_overlay_while_refitting_asks_for_a_run_instead_of_lying(view):
-    """With the overlay part of the fit, ticking another set changes what
-    the projection is computed from -- so the map on screen is dropped
-    rather than redrawn with points the fit never saw."""
-    _run(view, overlay=True, refit=True)
-    assert view._has_result
-    view._on_overlay_toggle("probe", False)
-    assert not view._has_result
-
-
-def test_tsne_leaves_no_choice_and_explains_itself(view):
-    view.refit_check.value = False
-    view._refit_choice = False
-    view.projection_method.value = "tsne"
-    view._sync_refit_control()
-    assert view.refit_check.value and view.refit_check.disabled
-    assert "t-SNE" in view.overlay_note.value
-
-    # ...and going back restores what the user had chosen for themselves.
-    view.projection_method.value = "pca"
-    view._sync_refit_control()
-    assert not view.refit_check.value and not view.refit_check.disabled
-
-
 # ---- what the points are colored by ---------------------------------------
-
-def _legend(view, key):
-    view.color_by.value = key
-    result = view._last_result
-    mapping, _ = view._color_mapping(result, view._overlay_layers(result))
-    return mapping, [name for _color, name in mapping.legend]
-
-
-def test_where_a_point_comes_from_is_a_coloring_of_its_own(view):
-    _run(view, overlay=True)
-    mapping, names = _legend(view, SOURCE_COLOR_KEY)
-    assert names == [DATASET_SOURCE_GROUP, "probe"]
-    assert len(mapping.colors) == len(view._last_result.proj) + 3
-
-
-def test_the_source_entry_is_only_offered_when_there_is_a_second_source(loaded_state, embeddings_npz):
-    loaded_state.experiments["exp"].load_embeddings(str(embeddings_npz))
-    bare = ProjectionView(FakeCtx(loaded_state))
-    bare.build()
-    bare.refresh()
-    assert SOURCE_COLOR_KEY not in bare._color_column_map
-
-
-def test_an_inference_only_column_is_offered_and_leaves_the_dataset_grey(view):
-    _run(view, overlay=True)
-    key = next(k for k, column in view._color_column_map.items() if column == "sensor")
-    mapping, names = _legend(view, key)
-    assert set(names) == {"alpha", "beta", "(missing)"}
-    # The dataset has no 'sensor'; its points say so rather than borrowing
-    # a color that would mean something.
-    assert set(mapping.groups[: len(view._last_result.proj)]) == {"(missing)"}
-
-
-def test_a_column_only_the_dataset_has_leaves_the_overlay_grey(view):
-    _run(view, overlay=True)
-    key = next(k for k, column in view._color_column_map.items() if column == "correct")
-    mapping, _ = _legend(view, key)
-    assert set(mapping.groups[-3:]) == {"(missing)"}
-
-
-def test_a_value_they_share_gets_one_colour_across_both_pools(view):
-    """'site' exists on both sides, and north is north wherever it is read
-    -- otherwise comparing the two clouds by eye means nothing."""
-    _run(view, overlay=True)
-    key = next(k for k, column in view._color_column_map.items() if column == "site")
-    mapping, names = _legend(view, key)
-    assert "north" in names and "west" in names
-    assert mapping.color_of("north") != mapping.color_of("west")
-    assert mapping.groups[-3] == "north"  # p1, from the inference
-
-
-def test_an_overlaid_crop_has_no_class_and_is_not_given_one(view):
-    _run(view, overlay=True)
-    mapping, names = _legend(view, CLASS_COLOR_KEY)
-    assert set(mapping.groups[-3:]) == {"(missing)"}
-    assert "(missing)" in names
-
 
 # ---- finding what looks like an inference crop ----------------------------
 
@@ -354,33 +183,3 @@ def test_a_dataset_uuid_is_not_claimed_by_an_inference(state_with_inference):
     assert state_with_inference.inference_for_uuid("a") is None
 
 
-def test_an_inference_column_is_not_buried_under_the_class_scores(view):
-    """The per-class score columns are last on purpose -- a 200-class run
-    contributes 200 of them. A column that arrived with a set the user
-    loaded on purpose belongs with the metadata, above that wall."""
-    offered = [column for column in view._color_column_map.values() if column is not None]
-    assert "sensor" in offered
-    scores = [c for c in ("cat", "dog", "bird") if c in offered]
-    assert scores, "the experiment's score columns should be offered too"
-    assert offered.index("sensor") < min(offered.index(c) for c in scores)
-
-
-def test_embeddings_from_another_model_are_refused_in_words_a_user_can_act_on(view, tmp_path):
-    """Same map means same space. A different width proves a different
-    model; the same width and a different model is undetectable, which is
-    exactly why this says what it checked."""
-    csv = tmp_path / "wide.csv"
-    pd.DataFrame({"uuid": ["w1"], "img": ["w.png"]}).to_csv(csv, index=False)
-    npz = tmp_path / "wide_embeddings.npz"
-    np.savez(npz, uuid=np.array(["w1"], dtype="<U8"), embeddings=np.ones((1, 9), dtype=np.float32))
-    view.ctx.state.load_inference("wide", str(csv), str(npz), uuid_col="uuid", crop_col="img")
-    view.refresh()
-
-    _run(view)
-    view._on_overlay_toggle("wide", True)
-    result = view._last_result
-    layers = view._overlay_layers(result)
-
-    assert layers == [], "a set from another model is left off rather than placed anywhere"
-    note = view._fit_note(result, layers, len(result.proj))
-    assert "9-dimensional" in note and "same model" in note

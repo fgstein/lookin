@@ -1,6 +1,6 @@
 """Per-prediction confidence diagnostics for one experiment: margin (top
 score minus second score) and the entropy of the softmax-normalized score
-distribution -- see ui/confidence_view.py.
+distribution -- see web/views/confidence.py.
 
 This answers a different question than core/metrics.py: those functions
 compare a prediction to the ground truth (was the model right); these

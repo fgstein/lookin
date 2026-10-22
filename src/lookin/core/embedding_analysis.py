@@ -113,7 +113,7 @@ def class_mean_prototypes(embeddings: np.ndarray, labels: np.ndarray, class_orde
 def relabel_prototypes(protos: PrototypeSet, label_of: dict) -> PrototypeSet:
     """`protos` with each class label passed through `label_of` (labels it
     does not mention are kept). The network names its classes its own way
-    -- the score columns -- and the Data tab's class mapping is what says
+    -- the score columns -- and the Sources tab's class mapping is what says
     which dataset class each one is; without this a prototype is matched to
     the dataset by spelling alone. Several network classes mapped onto one
     dataset class keep all their vectors, as extra subcenters of it.

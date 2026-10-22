@@ -11,7 +11,7 @@ works on a slow link, and downloading several hundred megabytes of
 embeddings is something the user decides to wait for, not something a drop
 does behind their back.
 
-No Flet here, and nothing that talks to a server except `download` -- the
+No UI here, and nothing that talks to a server except `download` -- the
 listing of runs and artifacts is the Home page's to do and to cache.
 """
 from __future__ import annotations

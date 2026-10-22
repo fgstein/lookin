@@ -2,7 +2,7 @@
 
 Crops: the page never sees a path. A view registers the file with its
 session and gets a key; /img/<sid>/<key>?l=<lut>&t=<turns> serves it through
-the session's display LUT and roll correction (see server.crop_bytes). The
+the session's display LUT and roll correction (see core/images.crop_bytes). The
 LUT and the turn are in the URL, so changing either is a new URL and the
 browser cannot show a stale rendering.
 
@@ -16,7 +16,8 @@ from __future__ import annotations
 import io
 import struct
 
-from lookin.ui.components import INLINE_DPI, crop_display
+from lookin.core.chart_style import INLINE_DPI
+from lookin.core.images import crop_display
 from lookin.web import html as h
 
 CHART_DPI = INLINE_DPI * 2

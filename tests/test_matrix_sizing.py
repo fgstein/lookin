@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import pytest
 
-from lookin.ui.components import (
+from lookin.web.views.common import (
     MATRIX_FLOOR_COLUMNS, matrix_cell_size, matrix_label_chars, matrix_text_size,
 )
-from lookin.ui.metrics_view import CELL_SIZE, LABEL_COL_WIDTH
+from lookin.web.views.metrics import CELL_SIZE, LABEL_COL_WIDTH
 
 
 def _grid_width(n_columns: int) -> int:
-    """What metrics_view._build_confusion_grid computes for n classes."""
+    """How wide the Metrics tab draws a confusion grid of n classes."""
     return LABEL_COL_WIDTH + n_columns * (matrix_cell_size(n_columns, CELL_SIZE) + 2)
 
 

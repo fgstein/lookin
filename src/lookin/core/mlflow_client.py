@@ -7,6 +7,7 @@ download, which is all the "load an experiment from MLflow" feature needs.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -19,6 +20,35 @@ import httpx
 # merely slow -- an experiments/search over a large tracking database
 # routinely takes longer than the 15s this used to allow, and cutting it off
 # there reported a working server as unreachable.
+# Where a fresh install looks for a tracking server, and the variable that
+# overrides it.
+FALLBACK_TRACKING_URI = "http://127.0.0.1:5000"
+TRACKING_URI_ENV = "MLFLOW_TRACKING_URI"
+
+# Run statuses that mean the run did not finish: drawn apart in the runs
+# table, since their results are partial at best.
+UNSUCCESSFUL_STATUSES = ("FAILED", "KILLED")
+
+
+def env_tracking_uri() -> str:
+    """The tracking URI from the environment, or "" if there is nothing this
+    client can use.
+
+    MLFLOW_TRACKING_URI is the variable MLflow's own client and CLI already
+    read, so a machine set up for MLflow needs no configuring here. But it
+    legitimately holds values this client cannot talk to -- ``file:///...``
+    for a local mlruns directory, ``databricks``, a bare path -- and the
+    client here speaks the HTTP API only. Those are reported to the user
+    rather than silently dialled and failed on.
+    """
+    value = os.environ.get(TRACKING_URI_ENV, "").strip()
+    return value if value.startswith(("http://", "https://")) else ""
+
+
+def default_tracking_uri() -> str:
+    return env_tracking_uri() or FALLBACK_TRACKING_URI
+
+
 CONNECT_TIMEOUT = 5.0
 TIMEOUT = httpx.Timeout(30.0, connect=CONNECT_TIMEOUT)
 # Downloads get their own, much longer read budget: a proxied-artifact

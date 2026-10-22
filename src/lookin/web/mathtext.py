@@ -2,15 +2,14 @@ r"""Typesetting mathematics with no network and no browser.
 
 The manual is a course, and a course without equations is a glossary. The
 obvious way to get real equations on screen -- KaTeX or MathJax in a web
-view -- is exactly the kind of thing CLAUDE.md rules out unless the whole
-bundle *and* its fonts are vendored, and Flet's Markdown widget does not
-typeset mathematics at all.
+page -- is exactly the kind of thing CLAUDE.md rules out unless the whole
+bundle *and* its fonts are vendored.
 
 matplotlib is already a dependency, it ships its own math fonts (STIX, the
 same face core/chart_style.py gives every chart), and its mathtext engine
 is a real typesetter: fractions, sums, roots, hats, subscripts, Greek. So a
 formula is drawn the way a chart is -- to a PNG, in memory, offline -- and
-handed to Flet as base64.
+sent to the browser as a PNG data URI.
 
 Two consequences worth knowing before writing a page:
 
@@ -55,12 +54,12 @@ SCALE = RENDER_DPI / LOGICAL_DPI
 DISPLAY_SIZE = 17.0
 INLINE_SIZE = 13.5
 
-# Ink color. The app is dark-themed and fixed that way (see app.py), so
-# this is a constant rather than something read back from the theme -- and
-# the background stays transparent, so an equation sits on whatever card
-# it lands in.
+# Default ink colors; a caller drawing on a light page passes its own
+# (views/manual.py). The background stays transparent, so an equation sits
+# on whatever card it lands in.
 INK = "#E3E6EB"
 INK_MUTED = "#AEB5C0"
+
 
 # Left as-is when the formula will not typeset: the raw source, so the page
 # still says something and the error is obvious rather than silent.

@@ -16,6 +16,7 @@ rest of the UI, so the accent check runs over its text too.
 from __future__ import annotations
 
 import ast
+import html
 import pathlib
 import re
 
@@ -25,8 +26,8 @@ from lookin.core import manual
 from lookin.core.manual.model import (
     Bullets, Callout, Equation, Heading, HowToRead, Para, Table,
 )
-from lookin.ui import manual_view
-from lookin.ui.mathtext import render_math
+from lookin.web.mathtext import render_math
+from lookin.web.views.manual import ManualDialog
 
 ACCENTED = re.compile(r"[À-ɏ]")
 
@@ -116,24 +117,31 @@ def test_page_has_a_summary_and_a_body(page):
     assert page.blocks, f"{page.id} has no body"
 
 
-UI_SOURCE = sorted(pathlib.Path("src/lookin/ui").glob("*.py"))
+UI_SOURCE = sorted(pathlib.Path("src/lookin/web").rglob("*.py"))
 
 
 def _pages_named_in(source: str) -> set:
     """Every manual page id a view names, read out of its syntax tree.
 
-    Three forms, because a view names a page in three places: the literal
-    on a section_title (`manual="f1"`), the lookup table a dropdown
-    resolves through (`PERCLASS_MANUAL_PAGES`), and the resolver method
-    that reads it (`_perclass_manual_page`, whose fallback id appears
-    nowhere else).
+    Four forms, because a view names a page in four places: the literal
+    on a section (`manual="f1"`) or an (i) button (`info_btn("f1")`), the
+    lookup table a dropdown resolves through (`PERCLASS_MANUAL_PAGES`, and
+    the fallback of a `.get()` on it), and the resolver method that reads
+    it (`manual_page`, whose fallback id appears nowhere else).
     """
     found = set()
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.keyword) and node.arg == "manual":
             if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
                 found.add(node.value.value)
-        elif isinstance(node, ast.FunctionDef) and node.name.endswith("_manual_page"):
+        elif isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute)):
+            name = node.func.id if isinstance(node.func, ast.Name) else node.func.attr
+            receiver = node.func.value if isinstance(node.func, ast.Attribute) else None
+            if name == "info_btn" or (name == "get" and isinstance(receiver, ast.Name)
+                                      and receiver.id.endswith("_MANUAL_PAGES")):
+                args = node.args if name == "info_btn" else node.args[1:]
+                found |= {a.value for a in args if isinstance(a, ast.Constant) and isinstance(a.value, str)}
+        elif isinstance(node, ast.FunctionDef) and node.name.endswith("manual_page"):
             body = node.body[1:] if ast.get_docstring(node) else node.body  # skip the docstring
             for statement in body:
                 found |= {n.value for n in ast.walk(statement)
@@ -150,7 +158,7 @@ def _referenced_pages() -> dict:
     """page id -> the files naming it, over the whole UI."""
     found: dict = {}
     for path in UI_SOURCE:
-        if path.name == "manual_view.py":
+        if path.name in ("manual.py", "html.py"):
             continue
         for page_id in _pages_named_in(path.read_text(encoding="utf-8")):
             found.setdefault(page_id, []).append(path.name)
@@ -167,12 +175,11 @@ def test_every_info_button_points_at_a_real_page():
 
 
 def test_every_dynamic_page_resolver_exists():
-    """`manual=self._something` has to name a method of the same class.
+    """`manual=self._something(...)` has to name a method of the same class.
 
-    It is a bound method passed as a value, so a typo or a rename is not an
-    import error -- it raises the first time that section is *drawn*, which
-    is inside a background rebuild, which turns into an empty tab and a
-    line in a log.
+    A typo or a rename is not an import error -- it raises the first time
+    that section is *drawn*, which is inside a background rebuild, which
+    turns into an empty tab and a line in a log.
     """
     for path in UI_SOURCE:
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -183,7 +190,7 @@ def test_every_dynamic_page_resolver_exists():
             for inner in ast.walk(node):
                 if not (isinstance(inner, ast.keyword) and inner.arg == "manual"):
                     continue
-                value = inner.value
+                value = inner.value.func if isinstance(inner.value, ast.Call) else inner.value
                 if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name) \
                         and value.value.id == "self":
                     assert value.attr in methods, \
@@ -194,9 +201,9 @@ def test_the_manual_is_reachable_from_the_tabs_that_need_it():
     """Every tab that shows a number should explain at least one of them."""
     referenced = _referenced_pages()
     naming = {name for files in referenced.values() for name in files}
-    for view in ("metrics_view.py", "calibration_view.py", "compare_view.py",
-                 "projection_view.py", "prototypes_view.py", "cleaning_view.py",
-                 "slice_panel.py", "stats_view.py", "review_panel.py", "upload_view.py"):
+    for view in ("metrics.py", "calibration.py", "confidence.py", "compare.py", "embeddings.py",
+                 "prototypes.py", "cleaning.py", "slice_panel.py", "stats.py", "review_panel.py",
+                 "sources.py", "filter.py"):
         assert view in naming, f"{view} has no (i) button"
 
 
@@ -218,52 +225,34 @@ def test_search_matches_title_and_summary():
     assert manual.matches(manual.PAGES["f1"], "")  # empty query keeps everything
 
 
-class FakePage:
-    width, height = 1400, 900
-
-    def __init__(self):
-        self.opened = []
-
-    def open(self, dialog):
-        self.opened.append(dialog)
-
-    def update(self):
-        pass
-
-
-class FakeCtx:
-    def __init__(self):
-        self.page = FakePage()
-
-
 def test_view_renders_every_page():
     """A page that only fails when drawn fails here, not in front of a user."""
-    view = manual_view.ManualView(FakeCtx())
+    dialog = ManualDialog()
     for page_id in PAGE_IDS:
-        view.show(page_id)
-        assert view.body_column.controls
-        assert view.title_text.value == manual.PAGES[page_id].title
+        dialog.show(page_id)
+        assert f'data-key="mp-{page_id}"' in dialog.body()
+        assert html.escape(manual.PAGES[page_id].title) in dialog.title_html()
 
 
 def test_unknown_page_lands_on_the_index():
-    view = manual_view.ManualView(FakeCtx())
-    view.show("no-such-page")
-    assert view.current == manual.DEFAULT_PAGE
+    dialog = ManualDialog()
+    dialog.show("no-such-page")
+    assert dialog.current == manual.DEFAULT_PAGE
 
 
 def test_back_walks_the_history():
-    view = manual_view.ManualView(FakeCtx())
-    view.open("f1")
-    view.show("precision-recall")
-    assert view.current == "precision-recall"
-    view._on_back(None)
-    assert view.current == "f1"
-    assert view.back_button.disabled
+    dialog = ManualDialog()
+    dialog.show("f1", remember=False)
+    dialog.show("precision-recall")
+    assert dialog.current == "precision-recall"
+    dialog.show(dialog.history.pop(), remember=False)
+    assert dialog.current == "f1"
+    assert not dialog.history
 
 
-def test_search_rebuilds_the_table_of_contents():
-    view = manual_view.ManualView(FakeCtx())
-    full = len(view._toc_buttons)
-    view.search_field.value = "calibration"
-    view._on_search(None)
-    assert 0 < len(view._toc_buttons) < full
+def test_search_narrows_the_table_of_contents():
+    dialog = ManualDialog()
+    full = dialog.body().count('data-act="dlg:')
+    dialog.query = "calibration"
+    narrowed = dialog.body().count('data-act="dlg:')
+    assert 0 < narrowed < full

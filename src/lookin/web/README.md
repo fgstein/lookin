@@ -1,9 +1,8 @@
 # `lookin web` -- how the browser interface is built
 
-`lookin web` serves the same tool as `lookin ui`, rewritten as a plain
-HTML/CSS page driven by the server. Both can run at the same time; nothing
-here imports from `lookin.ui` except modules (or functions) that do not
-build Flet controls.
+`lookin web` serves Lookin as a plain HTML/CSS page driven by the server.
+Everything that computes lives in `lookin.core` and knows nothing of HTML;
+this package draws it, and keeps one session per browser tab.
 
 ## The moving parts
 
@@ -13,10 +12,10 @@ build Flet controls.
 * `session.py` -- one `Session` per **browser tab**. It owns an `AppState`,
   the views, the dialogs, the job queues. Two tabs never share anything but
   the process-wide MLflow hub, so several workspaces can be explored side by
-  side. The session stands in for the original `AppContext`: `state`,
-  `display_lut`, `display_roll_col`, `prototype_source`, `view_state`,
-  `notify_change()`, `notify_rename()`, `notify_review()`,
-  `notify_display_change()`, `upload_view`.
+  side. What core reads off a session: `state`, `display_lut`,
+  `display_roll_col`, `prototype_source`, `view_state`, `notify_change()`,
+  `notify_rename()`, `notify_review()`, `notify_display_change()`,
+  `upload_view`.
 * `render.py` -- which regions to send back, the page layout, the tabs.
 * `views/` -- one module per tab, plus dialogs and shared components.
 * `static/app.js` -- the whole client runtime (no framework, no CDN).
@@ -40,7 +39,7 @@ class FooView(RebuildView):          # or View, for a cheap one
 * After any action of a view, the view and the top bar are re-rendered
   automatically. From a background thread, call `self.refresh()` (or
   `self.s.mark("<view>")`) and the page fetches the new HTML.
-* `RebuildView` gives the original's `StaleBanner` + `BackgroundRebuild`:
+* `RebuildView` is a view whose content is expensive to rebuild:
   `on_data_change()` marks it stale (red "Data has changed" banner with
   "Update now"), `rebuild(work)` runs `work` on the session's job for this
   view (one at a time, the latest request coalesced, behind the process-wide
@@ -51,9 +50,9 @@ class FooView(RebuildView):          # or View, for a cheap one
   `on_display_changed()`, `on_shown()` (the tab was selected).
 * Snapshot views (`gallery`, `metrics`, `calibration`, `compare`,
   `embeddings`, `cleaning`) implement `view_state() -> dict` and
-  `restore_view_state(state) -> list[str]` with **exactly the same keys and
-  warning texts as the original view** -- a snapshot written by `lookin ui`
-  must restore here and the other way round.
+  `restore_view_state(state) -> list[str]` (see `core/view_state.py`). The
+  keys are a file format: a snapshot saved months ago must still restore,
+  so a key is never renamed.
 
 ## HTML helpers (`web/html.py`)
 
@@ -87,7 +86,7 @@ rules go in `static/css/<view>.css`, which every page loads.
 
 ## Pictures
 
-* Charts: build the matplotlib figure exactly as the original does, then
+* Charts: build the matplotlib figure (styled by `core/chart_style.py`), then
   `fig_html(self.s, fig, "title")` (`views/media.py`) -- an `<img>` drawn at
   twice the screen resolution; a click zooms it, with Open / Save.
 * Crops: `crop_url(self.s, path, record)` (honours the display LUT and the
@@ -102,15 +101,16 @@ rules go in `static/css/<view>.css`, which every page loads.
 ## Shared components
 
 * `views/widgets.py` -- `class_select` (a class dropdown, type-to-filter
-  past FOCUS_MAX), `ClassPicker`, `ClassFocus` (same criteria, same snapshot
-  shape as `ui/class_matrix.ClassFocus`). They take the owner's target and
+  past FOCUS_MAX), `ClassPicker`, `ClassFocus` (the criteria of
+  `core/class_focus.py`, or a manual pick). They take the owner's target and
   an action name; the owner's `on_<action>(op, **args)` calls
   `component.handle(op, args)`.
 * `views/common.py` -- `uuid_overlap_banner`, `score_diagnostics_banner`,
   `status_line`, `saved_path_message`, `save_png`, `confused_pairs_table`,
-  `overview_image` / `overview_zoom`, `card`.
-* `views/files.py` -- `FileBrowserDialog` (the original `ServerFileBrowser`:
-  a path on the machine running Lookin), `menu(...)`.
+  `overview_image` / `overview_zoom`, `card`, and how a class grid is
+  sized (`matrix_cell_size`, `short_column_labels`).
+* `views/files.py` -- `FileBrowserDialog` (a path on the machine running
+  Lookin), `menu(...)`.
 * `views/base.py` -- `Dialog`, `MessageDialog`, `ConfirmDialog`,
   `PromptDialog`.
 

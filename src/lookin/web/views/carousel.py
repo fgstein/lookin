@@ -1,8 +1,6 @@
 """The shared paginated mosaic of crops, and what hangs off it: the review
 decision bar and the "Find similar" search.
 
-Same behaviour as lookin.ui.carousel / review_widgets / similarity:
-
 * a tight grid of crops, two pixels apart, at a zoom step from ZOOM_STEPS,
   that loads as it is scrolled: it opens with a screen of crops plus a row
   and appends the next screenful whenever the bottom comes within a screen
@@ -18,7 +16,7 @@ Same behaviour as lookin.ui.carousel / review_widgets / similarity:
   and Save on the user's machine).
 
 The geometry is computed from the browser window the page reports with
-every request (Session.viewport), the way the original read page.width.
+every request (Session.viewport).
 """
 from __future__ import annotations
 
@@ -32,22 +30,75 @@ import numpy as np
 from lookin.core.embedding_analysis import nearest_neighbours, nearest_to_vector
 from lookin.core.point_coloring import categorical_colors
 from lookin.core.review import FrozenVersionError, REVIEW_STATUSES, STATUS_RELABEL
-from lookin.ui.carousel import (
-    BADGE_CHAR_PX, BADGE_MAX_CHARS, BADGE_MIN_CHARS, DEFAULT_ZOOM, INFO_GAP, INFO_MAX_WIDTH,
-    INFO_MIN_WIDTH, META_MAX_ROWS, MIN_TILE_SIZE, PREDICTION_KEYS, TILE_GAP,
-    ZOOM_STEPS, _short,
-)
-from lookin.ui.embedding_context import build_analysis_context
-from lookin.ui.review_widgets import (
-    NO_REASON, REASON_LABELS, STATUS_LABELS, record_decision,
-)
+from lookin.core.embedding_context import build_analysis_context
+from lookin.core.review_actions import NO_REASON, REASON_LABELS, STATUS_LABELS, record_decision
 from lookin.core.review import REVIEW_REASONS
-from lookin.ui.similarity import DEFAULT_K, K_CHOICES
 from lookin.web import html as h
 from lookin.web.views.base import NO_RENDER, Dialog
 from lookin.web.views.details import details_url
 from lookin.web.views.media import crop_url
 from lookin.web.views.widgets import class_select
+
+
+# The zoom ladder, in pixels of tile edge. Steps rather than a slider
+# because every step has to re-fetch and re-lay out a page of full-res
+# crops: a slider would do that on every drag frame.
+#
+# The top steps are larger than any tile this actually draws: what stops
+# the zoom is the window (see _tile_size), not the end of this tuple. A
+# ladder that stopped at 400px stopped there on a tall screen too, leaving
+# two rows of crops and a zoom-in button that refused to make it one.
+ZOOM_STEPS = (64, 88, 120, 160, 220, 300, 400, 540, 720, 960, 1280)
+DEFAULT_ZOOM = 2  # 120px -- a crop you can recognize, a screen you can scan
+TILE_GAP = 2   # "very little space between the images", i.e. a mosaic
+INFO_GAP = 10  # cards need to read as separate objects, tiles do not
+
+# A card in details mode is at least this wide, whatever the zoom: the
+# decision bar puts its four verdicts on one row and its two pickers plus
+# the reset button on the next, and below this they wrap -- "Uncertain"
+# drops onto a line of its own and reads as a different kind of answer
+# than the other three.
+INFO_MIN_WIDTH = 380
+
+# ...and never wider than this, however much room is left over: two cards
+# on a wide screen should not become two billboards.
+INFO_MAX_WIDTH = 520
+
+# Lines in that list at most. A row of a joined frame carries one score
+# column per class -- two thousand lines under every crop, and as many
+# controls, at that many classes; the columns that say something about a
+# crop (its metadata, the prediction) come first.
+META_MAX_ROWS = 60
+
+# AppState.merged's derived columns (keys, compared here, never reworded).
+PREDICTION_KEYS = ("predicted_label", "predicted_score", "correct")
+
+# Below this a crop is not a crop any more, so a window too short for even
+# one card stops shrinking the image and lets the grid scroll instead.
+MIN_TILE_SIZE = 48
+
+# A badge is only ever a corner of a tile, so a long class name is cut
+# rather than allowed to run past the crop and over its neighbours. The
+# tile cannot do the cutting: it puts no width constraint on the badge, so
+# an ellipsis overflow would never trigger, and the server has no way to
+# measure rendered text. Hence a character budget from an estimated
+# average glyph width -- approximate on purpose, and only ever wrong by a
+# few pixels of a badge.
+BADGE_MAX_CHARS = 12
+BADGE_MIN_CHARS = 4
+BADGE_CHAR_PX = 4.9  # at BADGE_TEXT_SIZE, for the app's font
+
+
+def _short(label, budget: int) -> str:
+    """A class label cut to what fits in a badge. Never used as a key --
+    the label the code compares against is always the record's own
+    value."""
+    text = str(label)
+    return text if len(text) <= budget else text[:max(1, budget - 3)] + "..."
+
+
+DEFAULT_K = 48
+K_CHOICES = (12, 24, 48, 96)
 
 # What the dialog takes around the mosaic: its title bar, footer, padding
 # and the toolbar over the grid.
@@ -61,7 +112,6 @@ INFO_META_HEIGHT = 76
 INFO_BAR_HEIGHT = 118
 SIMILAR_BTN_HEIGHT = 30
 CARD_PADDING = 16
-
 STATUS_ICON = {"ok": "check", "relabel": "edit", "exclude": "x", "uncertain": "info"}
 STATUS_CLS = {"ok": "c-ok", "relabel": "c-acc", "exclude": "c-err", "uncertain": "c-warn"}
 
@@ -570,7 +620,7 @@ class SimilarityDialog(Dialog):
         self.summary = ""
         self.message = ("", "info")
         if not self.experiment:
-            self.message = ("No loaded experiment has an embeddings sidecar attached -- add one on the Data tab.", "info")
+            self.message = ("No loaded experiment has an embeddings sidecar attached -- add one on the Sources tab.", "info")
             return
         try:
             context = build_analysis_context(s.state, self.experiment)

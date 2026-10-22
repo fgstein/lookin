@@ -1,16 +1,16 @@
 """The shape of a manual page: blocks of content, and the page that holds
 them.
 
-Deliberately in core/ and free of Flet, for the same reason the chart style
-is (see core/chart_style.py): the text of a page is data, and the widget
+Deliberately in core/ and free of HTML, for the same reason the chart style
+is (see core/chart_style.py): the text of a page is data, and the dialog
 that draws it is not. That split is what lets a test walk every equation in
 the manual and typeset it without a window, and what would let an exported
 report reuse a page's prose later.
 
 The blocks are a small closed set rather than Markdown on purpose. Markdown
 would hand us a string with `$...$` in it and no way to know which parts are
-mathematics until render time, and Flet has no Markdown renderer that
-typesets mathematics at all (see ui/mathtext.py for what does). A block
+mathematics until render time, and the equations have to be typeset by
+matplotlib to stay offline (see web/mathtext.py). A block
 list says, up front, what each piece *is*.
 """
 from __future__ import annotations

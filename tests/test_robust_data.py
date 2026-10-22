@@ -85,7 +85,7 @@ def test_rows_with_no_label_are_left_out_of_the_metrics(tmp_path):
     error in accuracy and precision, and its NaN broke every place that
     sorts the classes it sees (slices, the Embeddings map, prototypes)."""
     from lookin.core import slices as sl
-    from lookin.ui.embedding_context import build_analysis_context
+    from lookin.core.embedding_context import build_analysis_context
 
     dataset = _dataset(["a", None, "b", "b"])
     results = pd.DataFrame({"uuid": ["u0", "u1", "u2", "u3"], "a": [0.9, 0.9, 0.2, 0.3],

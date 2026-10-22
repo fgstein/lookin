@@ -33,15 +33,15 @@ Restoring recomputes
 --------------------
 Everywhere else in the app an expensive rebuild waits behind a banner the
 user clicks, because a data change is not a request to spend minutes (see
-AppContext.notify_change). Opening a snapshot *is* that request: it is an
+Session.notify_change). Opening a snapshot *is* that request: it is an
 explicit "show me this again", and a restored Embeddings tab that comes back
 as an empty map under a "Run projection" button is not the view that was
 saved. The filters it carries would also have nothing to act on.
 
 So restore() puts the controls back, switches to the tab, and then asks each
 restored view to recompute through recompute_after_restore(). Those runs go
-through each view's existing BackgroundRebuild, so they are off the UI
-thread and report progress exactly as a manual click would -- several at
+through each view's own background job (RebuildView.rebuild), so they run off the
+request thread and report progress exactly as a manual click would -- several at
 once is fine, each view has its own job queue.
 
 Keys
@@ -65,8 +65,7 @@ METRICS = "metrics"
 CALIBRATION = "calibration"
 COMPARE = "compare"
 CLEANING = "cleaning"
-# The Filter tab of `lookin web`. Not registered by `lookin ui`, which has
-# no such tab: restoring there says the filter was not applied.
+# The Filter tab.
 DATASET_FILTER = "dataset_filter"
 
 # The app-wide block, and the keys inside it.
@@ -86,13 +85,12 @@ def _log(msg: str) -> None:
 class ViewStateRegistry:
     """Collects the view state of a session, and puts one back.
 
-    Lives on the AppContext so that anything can reach it, and is populated
-    by app.py once every view exists -- the same wiring as the tab-to-tab
-    jumps beside it.
+    Lives on the session so that anything can reach it, and is populated
+    once every view of the session exists.
     """
 
-    def __init__(self, ctx):
-        self.ctx = ctx
+    def __init__(self, session):
+        self.session = session
         self._views: dict = {}
         self._get_tab: Optional[Callable[[], int]] = None
         self._set_tab: Optional[Callable[[int], None]] = None
@@ -102,7 +100,7 @@ class ViewStateRegistry:
 
     def set_tab_accessors(self, getter, setter) -> None:
         """How to read and write the selected tab. Passed in rather than
-        reaching for the Tabs control, which app.py owns."""
+        reaching into the page layout, which the session owns."""
         self._get_tab, self._set_tab = getter, setter
 
     # ---- capture --------------------------------------------------------
@@ -120,11 +118,11 @@ class ViewStateRegistry:
         return {APP: self._capture_app(), VIEWS: views}
 
     def _capture_app(self) -> dict:
-        ctx, state = self.ctx, self.ctx.state
+        session, state = self.session, self.session.state
         return {
             TAB: int(self._get_tab()) if self._get_tab else 0,
-            DISPLAY_LUT: ctx.display_lut,
-            DISPLAY_ROLL_COL: ctx.display_roll_col,
+            DISPLAY_LUT: session.display_lut,
+            DISPLAY_ROLL_COL: session.display_roll_col,
             USE_REVIEWED_LABELS: bool(state.use_reviewed_labels),
             REVIEW_VERSION_ID: state.review_version_id or "",
         }
@@ -146,11 +144,6 @@ class ViewStateRegistry:
         if not isinstance(views, dict):
             return warnings + ["The snapshot could not be read."]
         restored = []
-        saved_filter = views.get(DATASET_FILTER)
-        if DATASET_FILTER not in self._views and isinstance(saved_filter, dict) \
-                and (saved_filter.get("conditions") or saved_filter.get("query")):
-            warnings.append("This snapshot filters the dataset (Filter tab of `lookin web`); "
-                            "the filter is not applied here, so every row is shown.")
         for key, view in self._views.items():
             saved = views.get(key)
             if not isinstance(saved, dict):
@@ -204,14 +197,14 @@ class ViewStateRegistry:
         every view below draws, so applying them afterwards would leave the
         first views rendered against the wrong ones."""
         warnings = []
-        ctx, state = self.ctx, self.ctx.state
+        session, state = self.session, self.session.state
 
         lut = app.get(DISPLAY_LUT)
         if isinstance(lut, str) and lut:
-            ctx.display_lut = lut
+            session.display_lut = lut
         roll_col = app.get(DISPLAY_ROLL_COL)
         if isinstance(roll_col, str) and roll_col:
-            ctx.display_roll_col = roll_col
+            session.display_roll_col = roll_col
 
         # The review overlay changes every number in the app, so a snapshot
         # that cannot restore the version it was taken at must not silently

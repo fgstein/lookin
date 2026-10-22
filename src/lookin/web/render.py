@@ -35,10 +35,9 @@ TABS = (
 TAB_KEYS = [t[0] for t in TABS]
 TAB_TITLES = {t[0]: t[1] for t in TABS}
 
-# A snapshot records the selected tab *by index*, in the order the original
-# UI numbered its tabs (see lookin.ui.view_state) -- a file format shared
-# with `lookin ui`, so it does not move when a tab is added here. A tab the
-# original UI does not have is saved as the one it sits under.
+# A snapshot records the selected tab *by index* (core/view_state.TAB), in
+# this fixed order -- a file format, so it does not move when a tab is added
+# to TABS. A tab that is not in it is saved as the one it sits under.
 SNAPSHOT_TABS = ("sources", "statistics", "gallery", "metrics", "calibration", "confidence",
                  "compare", "embeddings", "prototypes", "cleaning")
 _SNAPSHOT_ALIASES = {"filter": "sources"}
@@ -79,9 +78,9 @@ class _LazyView:
 
 
 def _wire(session) -> None:
-    """Register every view's state with the snapshot registry -- the same
-    keys and the same order as the original UI (see app.py there)."""
-    from lookin.ui import view_state as vs
+    """Register every view's state with the snapshot registry, in the order
+    they restore (core/view_state.py)."""
+    from lookin.core import view_state as vs
 
     from lookin.web.session import SNAPSHOT_VIEWS
 
@@ -374,7 +373,7 @@ def filter_chip(session) -> str:
 
 
 def save_chips(session) -> str:
-    from lookin.ui import save_status
+    from lookin.web import save_status
 
     st = save_status.compute(session)
 
@@ -382,10 +381,10 @@ def save_chips(session) -> str:
         if not st.has_data:
             return f'<button type="button" class="sv"{h.act("app", "workspaces")} title="Nothing loaded yet.">{h.icon(icon_name, 13)}--</button>'
         if saved:
-            label = save_status._elide(name) if name else saved_word
+            label = save_status.elide(name) if name else saved_word
             tip = f"{saved_tip} ({name})" if name else saved_tip
             return f'<button type="button" class="sv ok"{h.act("app", "workspaces")} title="{h.e(tip)}">{h.icon(icon_name, 13)}{h.e(label)}</button>'
-        label = f"{save_status._elide(name)} *" if name else unsaved_word
+        label = f"{save_status.elide(name)} *" if name else unsaved_word
         tip = f"{unsaved_tip} (last: {name})" if name else unsaved_tip
         return f'<button type="button" class="sv warn"{h.act("app", "workspaces")} title="{h.e(tip)}">{h.icon(icon_name, 13)}{h.e(label)}</button>'
 
@@ -461,7 +460,7 @@ class AppActions(Handler):
         """The app bar's Save: write what is loaded into the workspace open
         in this tab -- or, with none open, make it one."""
         from lookin.core import library as lib
-        from lookin.ui import save_status
+        from lookin.web import save_status
         from lookin.web.views.workspaces import WorkspacesDialog
 
         workspace = self.s.current_workspace

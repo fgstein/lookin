@@ -1,6 +1,7 @@
 // Cleaning tab: the triage panel's keyboard (views/triage.py).
 // Acts only while the triage panel is the top dialog and focus is not in a
-// field; sends the key under the original's Flet key names.
+// field; sends the key by name ("Space", "Arrow Right"), as views/triage.py
+// expects it.
 (function () {
   "use strict";
 

@@ -43,7 +43,7 @@ PAGES = (
             Para(
                 "The network names its classes its own way -- its score columns -- and its prototypes "
                 "carry those names. Before they are drawn, each is renamed to the dataset class the "
-                "Data tab's class mapping assigns its column, so a relabelled class keeps its "
+                "Sources tab's class mapping assigns its column, so a relabelled class keeps its "
                 "prototype. Several network classes mapped onto one dataset class become subcenters "
                 "of it."
             ),

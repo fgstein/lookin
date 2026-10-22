@@ -183,7 +183,7 @@ def save_triage_cursor(dataset_path, version_id: str, uuid: str) -> bool:
     if not version_id:
         return False
     # Read-change-write under the file's lock: two triage queues open at
-    # once (two tabs, or `lookin ui` beside `lookin web`) would otherwise
+    # once (two tabs, or two servers on one machine) would otherwise
     # each write back the other's cursor as it was before.
     with fileio.locked(triage_path()):
         return _save_triage_cursor(dataset_path, version_id, uuid)

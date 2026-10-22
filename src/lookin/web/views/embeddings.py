@@ -1,5 +1,4 @@
-"""Embeddings: the 2D projection of an experiment's embeddings -- the port
-of lookin.ui.projection_view.
+"""Embeddings: the 2D projection of an experiment's embeddings.
 
 Two renderings of the very same projected coordinates: the interactive
 map (drawn in the browser by static/js/projection.js: hover for the crop,
@@ -9,16 +8,17 @@ projection once; colour, display filters and overlays only redraw. The last
 run of each experiment is kept and put back when it is selected again.
 Class overlap is measured below the settings.
 
-Every key the original compares is kept as is: projection methods (`pca`,
-`tsne`, `umap`, `umap_circle`), the positional colour keys ("0", "1", ...,
-`source`), PROTO_FROM_* (`model`, `dataset`), the overlap focus criteria.
+Keys compared in code, never reworded (see CLAUDE.md): projection methods
+(`pca`, `tsne`, `umap`, `umap_circle`), the positional colour keys ("0",
+"1", ..., `source`), PROTO_FROM_* (`model`, `dataset`), the overlap focus
+criteria.
 """
 from __future__ import annotations
 
 import json
 import time
 import traceback
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -32,24 +32,213 @@ from lookin.core import point_filters as pf
 from lookin.core.chart_style import short_name, subplots
 from lookin.core.class_focus import FOCUS_MAX
 from lookin.core.data_manager import DATASET_SOURCE_GROUP
-from lookin.ui.class_matrix import short_column_labels
-from lookin.ui.components import INLINE_DPI, blues_color, crop_display
-from lookin.ui.embedding_context import build_analysis_context, coverage_note, experiments_with_embeddings
-from lookin.ui.interactive_projection import MIN_PLOT_SIZE, POINT_KIND_DISC, POINT_KIND_SQUARE
-from lookin.ui.projection_view import (
-    CHROME_HEIGHT, CLASS_COLOR_KEY, CLASS_COLORING_LABEL, MAP_MAX, OVERLAP_CELL, OVERLAP_FOCUS_CRITERIA,
-    OVERLAP_LABEL_WIDTH, PROTO_CLASSES_MAX, PROTO_FROM_DATASET, PROTO_FROM_MODEL, SOURCE_COLOR_KEY,
-    SOURCE_COLORING_LABEL, SUBCENTER_MARKERS, _OverlayLayer, _RunResult, overlay_dimension_problem,
-    overlay_indices,
-)
-from lookin.ui.prototype_source import KMEANS_COLOR, MODEL_COLOR
+from lookin.core.chart_style import INLINE_DPI, blues_color
+from lookin.core.images import crop_display
+from lookin.core.embedding_context import build_analysis_context, coverage_note, experiments_with_embeddings
+from lookin.core.prototype_source import KMEANS_COLOR, MODEL_COLOR
 from lookin.web import html as h
 from lookin.web.session import checkpoint
 from lookin.web.views.base import StaleTracking, View
 from lookin.web.views.carousel import open_carousel
 from lookin.web.views.files import menu
+from lookin.web.views.common import short_column_labels
 from lookin.web.views.media import fig_html
 from lookin.web.views.widgets import ClassFocus, ClassPicker
+
+
+MIN_PLOT_SIZE = 420
+
+# What a point of each *source* is drawn as. Keys, compared in code, never
+# shown: the dataset's own crops are round dots, and anything overlaid onto
+# the map from elsewhere (a simple inference -- see core/data_manager.py)
+# is a slightly larger square. Shape rather than color, because color is
+# already spent on whatever "Color by" means: with both, a square in the
+# middle of a cluster says "this crop is not from the dataset" *and* keeps
+# saying what its confidence or its sensor was.
+#
+# Both are drawn by the same fast path as before -- a Points shape whose
+# stroke cap turns a zero-length segment into a dot -- so a second marker
+# shape costs nothing per point: ROUND gives a disc, SQUARE a square.
+POINT_KIND_DISC = "disc"
+POINT_KIND_SQUARE = "square"
+
+# The "Color by" dropdown's entry for the true label, and the names the two
+# colorings that are not columns are captioned with. Display strings only:
+# what code compares is the dropdown *key*, and CLASS_COLOR_KEY is the only
+# one of those spelled out here -- see _rebuild_color_options for why the
+# column entries are keyed positionally instead.
+CLASS_COLOR_KEY = "0"
+
+# The other coloring that is not a column: where a point comes from -- the
+# dataset, or one of the loaded simple inferences. Its key is a word rather
+# than a number precisely *because* the column entries are keyed
+# positionally ("1", "2", ...): no column can ever produce this key, so a
+# CSV column called "source" cannot collide with it.
+SOURCE_COLOR_KEY = "source"
+
+# Most classes whose prototypes go on one map, when "every class" is asked
+# for: the markers are drawn one per subcenter and fitted with the points.
+PROTO_CLASSES_MAX = 300
+
+# Where the map's prototypes come from -- dropdown keys, compared below.
+# "model" is the network's imported set, renamed through the Sources tab's
+# class mapping; "dataset" is built from the dataset's own labels (class
+# means, or the k-means estimate when the Prototypes tab made one active).
+PROTO_FROM_MODEL = "model"
+PROTO_FROM_DATASET = "dataset"
+CLASS_COLORING_LABEL = "class"
+SOURCE_COLORING_LABEL = "source"
+
+# In the projection a prototype takes the color of the class it belongs to
+# (so it can be matched to its own cloud of points), which means color is
+# no longer free to distinguish one subcenter of that class from another --
+# the marker shape carries that instead. Cycles if a model ever has more
+# subcenters than there are shapes here.
+SUBCENTER_MARKERS = ["*", "P", "X", "D", "^", "v", "s", "p"]
+
+# What the window loses to everything that is not the map: the app bar and
+# the tab strip (~130), this tab's padding, the renderer switch and the
+# caption under it, and the map's own toolbar. Subtracted from the window
+# height to get the square the map may occupy.
+#
+# Measured against the running app at 1440x900 rather than estimated: with
+# the controls on one line the map's top edge sits 193px down, and a value
+# below that does not make the map bigger, it makes the bottom of it fall
+# off the window -- invisible in the layout, a cropped scatter on screen.
+#
+# The rest is one spare line of toolbar. Everything above the map fits one
+# row until a lasso adds "Show selection" and "Clear", at which point it
+# wraps; reserving the row here costs ~44px of map and is what keeps that
+# wrap from pushing the bottom of the plot out of the window.
+CHROME_HEIGHT = 250
+
+# A square bigger than this stops adding information and starts costing
+# coordinates, however large the screen is.
+MAP_MAX = 1100
+
+# Which classes the overlap grid shows past FOCUS_MAX (see ClassFocus).
+OVERLAP_FOCUS_CRITERIA = (
+    (cf.FOCUS_MOST_OVERLAPPING, "Most overlapping pairs"),
+    (cf.FOCUS_LEAST_SEPARATED, "Least separated"),
+    (cf.FOCUS_LARGEST_SUPPORT, "Largest support"),
+    (cf.FOCUS_MANUAL, "Hand-picked"),
+)
+
+# Class-overlap grid, sized like the confusion matrices it is read beside.
+OVERLAP_CELL = 40
+OVERLAP_LABEL_WIDTH = 104
+
+# How many points one overlaid inference may put on the map. Not a sample
+# in the statistical sense -- these are the points the user came to look
+# at, so they are all drawn -- but a set of a million crops would freeze
+# the canvas, and evenly spaced indices thin it without reordering it.
+OVERLAY_MAX_POINTS = 20_000
+
+
+def overlay_indices(n: int, cap: int = OVERLAY_MAX_POINTS) -> np.ndarray:
+    """Which rows of an overlaid inference get drawn.
+
+    All of them, until there are more than the canvas can carry -- and then
+    every k-th one rather than a random sample or the first k: an evenly
+    spaced subset keeps the shape of the set (a random one is fine too, but
+    would change from render to render, and a head would silently show only
+    whatever the CSV happened to list first)."""
+    n = int(n)
+    if n <= cap:
+        return np.arange(n)
+    return np.arange(0, n, -(-n // cap))[:cap]
+
+
+def overlay_dimension_problem(inference, dim: int, exp_name: str) -> str:
+    """Why this inference cannot be drawn on this experiment's map, or "".
+
+    The only mismatch that can be checked at all: an embedding of a
+    different width did not come from the same model, so there is no shared
+    space to place it in. Same width and a different model is undetectable
+    and stays the user's responsibility -- which is why the Sources tab says
+    so where the file is loaded."""
+    width = int(inference.embeddings.shape[1])
+    if width == dim:
+        return ""
+    return (f"'{inference.name}' has {width}-dimensional embeddings and '{exp_name}' has {dim} -- "
+            f"they have to come from the same model to share a map.")
+
+
+@dataclass
+class _RunResult:
+    """One computed projection, kept so it can be *re-rendered* without
+    being recomputed.
+
+    The split matters because the two things a run produces cost wildly
+    different amounts: the coordinates are tens of seconds of t-SNE/UMAP,
+    while everything downstream of them -- the colors, the legend, the
+    figure, the canvas -- is a redraw. Changing what the color means is
+    only affordable because this is held onto.
+
+    A run is also kept per experiment (ProjectionView._runs) so that
+    switching experiment and coming back is a redraw too. Those copies
+    carry ctx=None: the context holds a copy of the whole embedding matrix
+    and of the joined frame, and one of those per experiment is exactly
+    the kind of thing that makes a big dataset run out of memory. Only the
+    cheap half is kept, and _rebind puts a freshly built context back
+    under it -- which also picks up any relabelling done since the run.
+    """
+    ctx: dict | None
+    exp_name: str
+    method: str
+    idx: np.ndarray                # which rows of ctx were sampled
+    proj: np.ndarray               # (n, 2) projected coordinates
+    labels: np.ndarray             # (n,) class label per plotted point
+    all_classes: list
+    class_filter: list
+    pool_size: int                 # rows the sample was drawn from, for the caption
+    proto_proj: object = None      # (m, 2) prototypes in the same space, or None
+    proto_labels: list = field(default_factory=list)
+    proto_ks: list = field(default_factory=list)
+    n_subcenters: int = 0
+    source_key: object = None
+    source_color: object = None
+    source_note: str = ""
+    # What the run was asked for, so the controls can be put back the way
+    # they were when it is restored, and the uuids of the sampled rows, so
+    # `idx` can be checked against a rebuilt context before being reused.
+    n_sample: int = 0
+    # Whose prototypes were fitted and drawn: None for every class (capped,
+    # see _run_projection), else those classes only.
+    proto_filter: list | None = None
+    sample_uuids: np.ndarray | None = None
+    run_generation: int = 0
+    # The fitted projection itself, kept so that points which were not part
+    # of it can be placed onto it afterwards without moving anything that
+    # is already on screen -- see ea.ProjectionFit. None for a restored run
+    # whose fit was never computed.
+    fit: object = None
+    # Which simple inferences were overlaid, and whether they were part of
+    # the fit. Both are properties of *this run*, not of the checkboxes:
+    # the caption has to say what the map was actually fitted on, and the
+    # user is free to tick another one afterwards.
+    overlay_names: list = field(default_factory=list)
+    refit_with_overlay: bool = False
+    # name -> (n, 2) coordinates, and name -> which rows of that inference
+    # they are. Filled by the run when the overlay was part of the fit, and
+    # lazily by the renderer (through fit.transform) when it was not, so
+    # ticking a set on costs a transform rather than a projection.
+    overlay_proj: dict = field(default_factory=dict)
+    overlay_rows: dict = field(default_factory=dict)
+
+
+@dataclass
+class _OverlayLayer:
+    """One simple inference as it appears on one rendered map: where its
+    points landed, which of its rows they are, and everything the shared
+    crop widgets need to show them."""
+    name: str
+    coords: np.ndarray            # (n, 2) in the projection's own space
+    uuids: np.ndarray             # (n,) for the hover label and "find similar"
+    records: list                 # (n,) row dicts, keyed like a dataset row
+    rows: np.ndarray              # (n,) positions in the inference's frame
+    total: int                    # rows the set holds, for the "thinned to" note
+
 
 METHOD_OPTIONS = [("pca", "PCA"), ("tsne", "t-SNE"), ("umap", "UMAP"), ("umap_circle", "UMAP (spherical)")]
 METHOD_MANUAL_PAGES = {"pca": "pca", "tsne": "tsne", "umap": "umap", "umap_circle": "umap"}
@@ -159,9 +348,9 @@ class EmbeddingsView(StaleTracking, View):
         self._computing = False
 
     def refresh_controls(self) -> None:
-        """The original's refresh(): the experiment list, then everything
-        around the map (class / colour / filter / overlay controls), which
-        needs the joined frame -- so off the request thread."""
+        """The experiment list, then everything around the map (class /
+        colour / filter / overlay controls), which needs the joined frame --
+        so off the request thread."""
         def work():
             self._refresh_experiment_dropdown()
             self._render()
@@ -186,7 +375,7 @@ class EmbeddingsView(StaleTracking, View):
         if state.dataset is None or not experiments_with_embeddings(state):
             self.controls_ready = False
             self.status_html = h.banner(
-                "Attach an embeddings .npz sidecar to at least one loaded experiment in the Data tab "
+                "Attach an embeddings .npz sidecar to at least one loaded experiment in the Sources tab "
                 "(uuid + embeddings arrays) to unlock this tab.", "info")
             return
         self.controls_ready = True
@@ -296,7 +485,7 @@ class EmbeddingsView(StaleTracking, View):
                                        "one per class.")
         elif covered < len(classes):
             self._proto_source_note = (f"The network's prototypes cover {covered:,} of the dataset's {len(classes):,} classes "
-                                       f"(after the Data tab's class mapping).")
+                                       f"(after the Sources tab's class mapping).")
         else:
             self._proto_source_note = ""
 
@@ -1169,7 +1358,7 @@ class EmbeddingsView(StaleTracking, View):
         context = self._analysis_context(exp_name)
         if context is None:
             self.overlap_busy = False
-            self.overlap_html = h.banner(f"'{exp_name}' has no embeddings attached -- add a sidecar on the Data tab.", "info")
+            self.overlap_html = h.banner(f"'{exp_name}' has no embeddings attached -- add a sidecar on the Sources tab.", "info")
             return
         all_classes = sorted(set(context["labels"].tolist()))
         overlap = ea.class_overlap(context["embeddings"], context["labels"], class_order=all_classes)
@@ -1559,7 +1748,7 @@ class EmbeddingsView(StaleTracking, View):
             return
         self.on_run()
 
-    # ---- snapshots (see ui/view_state.py) ----
+    # ---- snapshots (see core/view_state.py) ----
 
     def view_state(self) -> dict:
         filters = {}
@@ -1571,7 +1760,7 @@ class EmbeddingsView(StaleTracking, View):
                                "window": [float(f.window[0]), float(f.window[1])],
                                "include_missing": bool(f.include_missing)}
         if not self.experiment:
-            # The original's dropdown is filled on every data change, shown or not.
+            # The dropdown is filled on every data change, shown or not.
             self._refresh_experiment_dropdown()
         return {
             "experiment": self.experiment or "",
@@ -1625,7 +1814,7 @@ class EmbeddingsView(StaleTracking, View):
                                  if isinstance(saved, dict) and isinstance(saved.get(c), dict)}
         self._filters = {}
         self._pending_color_column = str(state.get("color_column") or "")
-        # The original's refresh(), synchronously: recompute_after_restore
+        # refresh_controls(), synchronously: recompute_after_restore
         # runs right after and reads the controls this sets.
         self.built = True
         self._refresh_experiment_dropdown()

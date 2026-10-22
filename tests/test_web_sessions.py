@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from lookin.ui import view_state as vs
+from lookin.core import view_state as vs
 from lookin.web import render
 from lookin.web.server import WebApp
 from lookin.web.session import RequestScope
@@ -156,7 +156,7 @@ def test_the_filter_reaches_every_tab_and_is_saved(example, tmp_path):
     """Applied from the Filter tab: the merge, the mount a workspace saves,
     and the snapshot all carry it; a snapshot without one removes it."""
     from lookin.core import library as lib
-    from lookin.ui import view_state as vs
+    from lookin.core import view_state as vs
 
     s = _session(WebApp(), "i" * 24)
     _load(s, example, [("baseline", str(example / "baseline_cnn_results.csv"))])
@@ -178,7 +178,7 @@ def test_the_filter_reaches_every_tab_and_is_saved(example, tmp_path):
 
     captured = s.view_state.capture()
     assert captured[vs.VIEWS][vs.DATASET_FILTER]["conditions"]
-    # The Filter tab is saved as the tab it sits under: the index is shared with `lookin ui`.
+    # The Filter tab is saved as the tab it sits under (see render.SNAPSHOT_TABS).
     with RequestScope(s):
         s.goto("filter")
     assert s.view_state.capture()[vs.APP][vs.TAB] == 0

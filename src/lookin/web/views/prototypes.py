@@ -1,7 +1,7 @@
 """Prototypes: prototype-space diagnostics for experiments that have a
-raw-feature sidecar attached -- the web port of lookin.ui.prototypes_view.
+raw-feature sidecar attached.
 
-Same panels, same computations, same texts: the sidecar summary with the
+The panels: the sidecar summary with the
 k-means estimate per experiment, the role (composition) bar of every
 prototype, the neighbor explorer (nearest / farthest / impostors), and,
 with the model's own prototypes, compactness & separation, the
@@ -10,8 +10,7 @@ per-prototype table, the most confused class pairs, the assignment matrix
 
 Which prototype source is active, the k-means estimates and the global
 nearest-prototype assignment live in session.prototype_source (see
-lookin.ui.prototype_source), which this view subscribes to the way the
-original app wires PrototypesView.refresh.
+core/prototype_source.py), which this view subscribes to.
 
 Everything the panels draw is computed in a background rebuild and cached
 as HTML plus the payloads the clicks need (the uuids behind a role segment,
@@ -27,26 +26,59 @@ import pandas as pd
 from lookin.core import class_focus as cf
 from lookin.core import embedding_analysis as ea
 from lookin.core.chart_style import subplots
-from lookin.ui.components import GRID_NONE, blues_color, style_axes
-from lookin.ui.embedding_context import build_analysis_context, coverage_note, experiments_with_embeddings
-from lookin.ui.prototypes_view import (
-    MARGIN_COLOR_LIMIT,
-    MAX_GRID_PROTOTYPES,
-    MAX_PROTOTYPE_TABLE_ROWS,
-    MAX_ROLE_BARS,
-    OTHER_COLORS,
-    OWN_COLOR,
-    PROTOTYPE_FOCUS_CRITERIA,
-    REST_COLOR,
-    SIMILARITY_AXIS_LIMITS,
-    THUMB,
-)
+from lookin.core.chart_style import GRID_NONE, blues_color, style_axes
+from lookin.core.embedding_context import build_analysis_context, coverage_note, experiments_with_embeddings
 from lookin.web import html as h
 from lookin.web.views.base import Dialog, RebuildView
 from lookin.web.views.carousel import open_carousel
 from lookin.web.views.media import crop_img, fig_html
 from lookin.web.views.widgets import ClassFocus
 
+
+OWN_COLOR = "#3b7d5c"
+OTHER_COLORS = ["#c9762f", "#b0472e", "#a04ec9"]
+REST_COLOR = "#9aa0a6"
+THUMB = 84
+
+# Both grids below are per *prototype*, not per class: a class with K
+# subcenters contributes K columns, and the proximity matrix is prototypes x
+# prototypes. So "Classes in the matrix" alone does not bound their size --
+# at K=8 the default 31 classes means a 248x248 grid, i.e. ~61k clickable
+# cells in one update, which does not render at all (the web client stalls
+# before drawing anything). The real budget is a number of prototypes per
+# axis, and the class count is derived from it; the setting stays a class
+# count because that is what the user picks classes by.
+# Which classes the panels show past FOCUS_MAX (see ClassFocus).
+PROTOTYPE_FOCUS_CRITERIA = (
+    (cf.FOCUS_WORST_MARGIN, "Worst margin"),
+    (cf.FOCUS_LEAST_PURE, "Least pure prototypes"),
+    (cf.FOCUS_LARGEST_SUPPORT, "Largest support"),
+    (cf.FOCUS_MANUAL, "Hand-picked"),
+)
+
+MAX_GRID_PROTOTYPES = 64
+
+# One bar per (class, subcenter) in the role panel -- linear in K rather
+# than quadratic, so the cap is much higher, but it still needs one: a
+# thousand classes x 8 subcenters is 8,000 bars with clickable segments.
+MAX_ROLE_BARS = 600
+
+# Same shape of problem for the per-prototype table, which is sorted worst
+# margin first -- so the tail is the part that can be dropped.
+MAX_PROTOTYPE_TABLE_ROWS = 400
+
+# Compactness and separation are both cosine similarities, so the
+# compactness-vs-separation scatter gets a fixed, absolute scale instead of
+# one fitted to whatever happens to be loaded -- otherwise a compactness
+# range of 0.47-0.50 fills the whole plot height and looks like a huge
+# spread, and no two experiments can be compared by eye.
+SIMILARITY_AXIS_LIMITS = (0.0, 1.0)
+
+# ...and the margin color scale is fixed and symmetric around 0, so red
+# always means "negative margin" (the nearest other class is closer than
+# the class's own prototype) rather than merely "the lowest value present".
+# Margins beyond this are clipped, which the colorbar flags with arrows.
+MARGIN_COLOR_LIMIT = 0.5
 GRID_CELL_SIZE = 34
 GRID_LABEL_WIDTH = 110
 DEFAULT_MATRIX_N = "31"
@@ -66,7 +98,7 @@ def _fmt(value: float, spec: str) -> str:
 
 
 class MatrixSettingsDialog(Dialog):
-    """The original's "Proximity matrix settings" dialog."""
+    """"Proximity matrix settings"."""
 
     width = 420
     title = "Proximity matrix settings"
@@ -114,8 +146,7 @@ class PrototypesView(RebuildView):
         self.cases_busy = False
         self.built = False
         self._own_source_change = False
-        # The original app subscribes PrototypesView.refresh to the registry:
-        # an attach, a source selection or an estimate redraws every panel.
+        # An attach, a source selection or an estimate redraws every panel.
         self.s.prototype_source.subscribe(self._on_source_changed)
 
     # ---- lifecycle -------------------------------------------------------
@@ -127,7 +158,7 @@ class PrototypesView(RebuildView):
 
     def on_data_change(self) -> None:
         # Nothing drawn yet (no sidecar until now): there is nothing to call
-        # out of date, so draw it, as the original's refresh did.
+        # out of date, so draw it.
         if self.built and "ctx" not in self.result:
             self.rebuild()
         else:
@@ -191,7 +222,7 @@ class PrototypesView(RebuildView):
 
     def _cached(self, kind: str, compute, *inputs):
         """compute(), remembered for these exact input objects (by identity),
-        one result per kind -- as in the original."""
+        one result per kind."""
         hit = self._memo.get(kind)
         if hit is not None and len(hit[0]) == len(inputs) and all(a is b for a, b in zip(hit[0], inputs)):
             return hit[1]
@@ -522,8 +553,7 @@ class PrototypesView(RebuildView):
                 f'<tbody>{rows}</tbody></table></div>')
 
     def _build_compactness_scatter(self, class_labels, compactness, separation, margins):
-        """Same as the original: fixed absolute similarity scale, fixed
-        colour scale centred on 0."""
+        """Fixed absolute similarity scale, fixed colour scale centred on 0."""
         fig, ax = subplots(figsize=(5.6, 5.6))
         sc = ax.scatter(
             separation, compactness, s=22, c=margins, cmap="RdYlGn",
@@ -610,13 +640,13 @@ class PrototypesView(RebuildView):
         state = self.state
         self.on_shown()
         intro = ('<div class="muted small">Needs an embeddings sidecar on a loaded experiment, plus the model\'s own '
-                 'prototypes for the scored diagnostics -- both attach in the Data tab.</div>')
+                 'prototypes for the scored diagnostics -- both attach in the Sources tab.</div>')
         head = h.section("Prototype-space analysis", intro + self._sidecars_html(), manual="prototypes")
         parts = [self.stale_html(), head]
         res = self.result
         if state.dataset is None or not experiments_with_embeddings(state):
             parts.append(h.banner(
-                "Attach an embeddings .npz sidecar to at least one loaded experiment in the Data tab "
+                "Attach an embeddings .npz sidecar to at least one loaded experiment in the Sources tab "
                 "(uuid + embeddings arrays) to unlock this tab.", "info"))
             return f'<div class="stack pr">{"".join(p for p in parts if p)}</div>'
         parts.append(self.progress_html())
@@ -646,12 +676,12 @@ class PrototypesView(RebuildView):
         for name, exp in experiments.items():
             embed_line = (
                 f"Embeddings: {len(exp.embeddings_uuids):,} loaded ({exp.embeddings_path})" if exp.has_embeddings()
-                else "Embeddings: not loaded -- set the path in the Data tab (auto-detected next to the results CSV)"
+                else "Embeddings: not loaded -- set the path in the Sources tab (auto-detected next to the results CSV)"
             )
             proto_line = (
                 f"Model prototypes: {len(exp.model_prototypes.class_labels):,} classes ({exp.model_prototypes_path})"
                 if exp.model_prototypes is not None
-                else "Model prototypes: not loaded -- set the path in the Data tab (auto-detected next to the results CSV)"
+                else "Model prototypes: not loaded -- set the path in the Sources tab (auto-detected next to the results CSV)"
             )
             k_value = self.kmeans_k.get(name, DEFAULT_K)
             kmeans = (f'<form class="row-nw"{h.on_submit(self.name, "kmeans", exp=name)}>'

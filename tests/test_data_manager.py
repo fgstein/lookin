@@ -261,7 +261,7 @@ def test_reorder_tolerates_a_stale_name_list(loaded_state, results_csv):
 
 
 def test_colors_follow_the_experiment_not_its_position(loaded_state, results_csv):
-    from lookin.ui.components import color_for_experiment
+    from lookin.core.chart_style import color_for_experiment
     loaded_state.add_experiment(str(results_csv), "b")
     loaded_state.add_experiment(str(results_csv), "c")
     before = {n: color_for_experiment(n, loaded_state.color_slots) for n in loaded_state.experiments}
@@ -486,7 +486,7 @@ def test_crop_details_gives_the_row_and_every_experiment_prediction(loaded_state
 
 
 def test_an_experiment_keeps_the_color_it_is_given(loaded_state, results_csv):
-    from lookin.ui.components import color_for_experiment
+    from lookin.core.chart_style import color_for_experiment
     loaded_state.add_experiment(str(results_csv), "b")
     palette = color_for_experiment("b", loaded_state.color_slots)
     assert loaded_state.set_experiment_color("b", "#FF8800")

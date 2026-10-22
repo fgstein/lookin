@@ -2,13 +2,12 @@
 
 The listing of a tracking server is the same whoever looks at it, so it is
 fetched once per process rather than once per open tab: ten workspaces open
-in ten tabs must not list the same server ten times (the original UI went
-to some length to avoid exactly that, see ui/home_view.HomeView.on_shown).
-What the user *does* with it -- a selection, an expanded run -- stays in
+in ten tabs must not list the same server ten times. What the user *does* with it -- a selection, an expanded run -- stays in
 their own session.
 
-The settings are the user's own home_view.json (core/home_config.py), the
-same file `lookin ui` reads and writes: edits in either show up in both.
+The settings are the user's own home_view.json (core/home_config.py), read
+back whenever it changes on disk: an edit by hand, or by another server on
+the same machine, shows up in every tab.
 
 Every server call runs on a worker thread; a server that is slow or down
 never blocks a page, and one that is down shows its last cached listing,
@@ -27,8 +26,8 @@ from lookin.core import mlflow_cache
 from lookin.core import mlflow_client as mlf
 from lookin.core import workspace_sources as wss
 from lookin.core.home_config import HomeConfig
-from lookin.ui.home_view import ServerState
-from lookin.ui.mlflow_panel import UNSUCCESSFUL_STATUSES, _default_tracking_uri
+from lookin.core.mlflow_client import UNSUCCESSFUL_STATUSES, default_tracking_uri
+from lookin.web.home_model import ServerState
 
 CONFIG_POLL_S = 2.0
 PROGRESSIVE_DRAW_S = 0.4
@@ -48,7 +47,7 @@ class MlflowHub:
             return cls._instance
 
     def __init__(self):
-        self.config = HomeConfig(fallback_uri=_default_tracking_uri())
+        self.config = HomeConfig(fallback_uri=default_tracking_uri())
         self.servers: dict = {}
         self.lock = threading.RLock()
         self._listeners: dict = {}

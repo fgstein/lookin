@@ -2,11 +2,11 @@
 they are made from beside them.
 
 The workspaces table is the main thing -- grouped by the user's own groups
-(core/board.py, the same board.json `lookin ui` shows as columns), each
+(core/board.py, one board.json per library), each
 group collapsible, filterable, regroupable by dataset or tag. A run (or one
 of its CSVs) dragged onto a workspace row adds it there; a workspace dragged
-onto a group header moves it. Everything the original Home did per
-workspace is here: open (in a tab of its own), download what it needs, set
+onto a group header moves it. Everything a workspace can be asked is on its
+row: open (in a tab of its own), download what it needs, set
 its dataset, rename, details/export/snapshots, delete, and remove one of its
 experiments.
 
@@ -28,7 +28,7 @@ from lookin.core import library as lib
 from lookin.core import mlflow_cache
 from lookin.core import mlflow_client as mlf
 from lookin.core import workspace_sources as wss
-from lookin.ui.home_view import csv_key, parse_key, run_key, workspace_color
+from lookin.web.home_model import csv_key, parse_key, run_key, workspace_color
 from lookin.web import html as h
 from lookin.web.home_index import HomeIndex, hash_dataset_later
 from lookin.web.mlflow_hub import MlflowHub
@@ -815,7 +815,7 @@ class HomeView(View):
     def add_keys(self, ws, keys: list, on_done=None) -> None:
         """Add runs and CSVs to `ws`. A run's CSVs have to be known first, so
         any run whose artifacts are not listed yet is listed -- then this
-        comes back round (see HomeView.add_keys in the original UI)."""
+        comes back round."""
         hub = self.hub
         pending = []
         for key in keys:

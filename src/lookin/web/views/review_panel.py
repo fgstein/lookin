@@ -1,16 +1,14 @@
-"""The review version manager and the export that consumes it -- the web
-twin of lookin.ui.review_panel.ReviewPanel, embedded at the top of the
-Cleaning tab.
+"""The review version manager and the export that consumes it, embedded at
+the top of the Cleaning tab.
 
-Three cards, same controls and texts as the original:
+Three cards:
 
 * Review version -- the active version, New version / Freeze, the counts,
   reasons and the bulk actions of the version (each undoable as a batch),
   and the overlay switch with the version the metrics are scored against;
 * What changed between two versions -- diff_versions, resolved decisions;
 * Export for training -- the enriched CSV (and the excluded uuids) written
-  to a folder on the machine running Lookin, picked with FileBrowserDialog
-  exactly like the original's ServerFileBrowser.
+  to a folder on the machine running Lookin, picked with FileBrowserDialog.
 
 This is a component, not a view: its controls are declared as
 `<owner>:<action>` with an `op` argument and the owner forwards them to
@@ -25,14 +23,17 @@ from lookin.core.review import (
     NO_PARENT, REVIEW_STATUSES, STATUS_UNREVIEWED, diff_versions,
     export_enriched_dataset, export_excluded_uuids,
 )
-from lookin.ui.review_panel import ACTIVE_VERSION
-from lookin.ui.review_widgets import REASON_LABELS, STATUS_LABELS
+from lookin.core.review_actions import REASON_LABELS, STATUS_LABELS
 from lookin.web import html as h
 from lookin.web.views.base import Dialog
 from lookin.web.views.common import saved_path_message
 from lookin.web.views.files import FileBrowserDialog
 
-# The original's STATUS_COLORS, as CSS classes (green / accent / red / orange).
+
+# The "no pin" entry of the overlay version picker. A key, compared in code.
+ACTIVE_VERSION = "__active__"
+
+# A colour per review status, as CSS classes (green / accent / red / orange).
 STATUS_TONE = {"ok": "ok", "relabel": "acc", "exclude": "err", "uncertain": "warn"}
 
 
@@ -47,7 +48,7 @@ def count_pill(label: str, value, tone: str = "") -> str:
 
 
 class NewVersionDialog(Dialog):
-    """The original's "New review version" dialog: name, parent, note."""
+    """"New review version": name, parent, note."""
 
     width = 500
 
@@ -138,7 +139,7 @@ class ReviewPanel:
             return "dataset_reviewed.csv"
         return f"{Path(dataset.csv_path).stem}_reviewed.csv"
 
-    # ---- keeping the pickers consistent with the store (the original's refresh) ----
+    # ---- keeping the pickers consistent with the store ----
     def _sync(self) -> None:
         store, dataset = self.store(), self.s.state.dataset
         if store is None or dataset is None:
@@ -163,7 +164,7 @@ class ReviewPanel:
     def render(self) -> str:
         has_dataset = self.s.state.dataset is not None and self.store() is not None
         if not has_dataset:
-            return h.banner("Load a dataset on the Data tab to start reviewing -- decisions are stored next to its CSV.",
+            return h.banner("Load a dataset on the Sources tab to start reviewing -- decisions are stored next to its CSV.",
                             "info")
         self._sync()
         return (f'<div class="cl-review">{self._version_card()}'
@@ -354,7 +355,8 @@ class ReviewPanel:
 
     def _op_overlay_version(self, args):
         """Pin the version the metrics resolve through -- separate from the
-        active version on purpose (see the original)."""
+        active version on purpose: one model scored against v1's labels
+        while the review carries on into v2."""
         value = args.get("value")
         store = self.store()
         names = list(store.versions) if store is not None else []

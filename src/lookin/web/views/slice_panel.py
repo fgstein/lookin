@@ -1,5 +1,5 @@
-"""The Metrics tab's per-slice breakdown -- see lookin.ui.slice_panel for
-the reasoning; this is the same panel in HTML. Nothing is computed until a
+"""The Metrics tab's per-slice breakdown (core/slices.py, and the manual's
+slices chapter for the reasoning). Nothing is computed until a
 column is picked; metric / class / order / row floor only reshuffle what is
 computed; clicking a slice's error count opens its errors in the carousel.
 
@@ -14,18 +14,79 @@ import numpy as np
 
 from lookin.core import slices as sl
 from lookin.core.chart_style import short_name, subplots
-from lookin.ui.components import (
+from lookin.core.chart_style import (
     GRID_MAJOR, GRID_NONE, color_for_experiment, legend_below, legend_columns,
     legend_height_inches, reserve_legend_space, style_axes,
-)
-from lookin.ui.slice_panel import (
-    BINNING_LABELS, COUNT_AXIS_COLOR, COUNT_BAR_COLOR, MAX_CHART_SLICES, METRIC_ACCURACY,
-    METRIC_LABELS, METRIC_MEAN_CONFIDENCE, SLICE_METRICS, SORT_LABELS, _counts_agree, _fmt,
 )
 from lookin.web import html as h
 from lookin.web.views.carousel import CarouselDialog
 from lookin.web.views.media import fig_html
 from lookin.web.views.widgets import class_select
+
+
+# The metric keys themselves live in core/slices.py, beside the code that
+# computes them; re-exported here because this is where the rest of the UI
+# has always asked for them.
+METRIC_ACCURACY = sl.METRIC_ACCURACY
+METRIC_MACRO_F1 = sl.METRIC_MACRO_F1
+METRIC_MEAN_CONFIDENCE = sl.METRIC_MEAN_CONFIDENCE
+
+# Metrics offered per slice, and the labels beside them (keys first, labels
+# second -- see CLAUDE.md). Accuracy first and by default: it is a plain
+# proportion, so its confidence interval means something, which is what
+# makes a small slice legible instead of alarming. The per-class half of the
+# list is spelled "... (one class)" so the class picker that appears beside
+# it does not look like it came from nowhere.
+SLICE_METRICS = (
+    (METRIC_ACCURACY, "Accuracy"),
+    (METRIC_MACRO_F1, "Macro F1"),
+    (METRIC_MEAN_CONFIDENCE, "Mean confidence"),
+    (sl.METRIC_RECALL, "Recall (one class)"),
+    (sl.METRIC_PRECISION, "Precision (one class)"),
+    (sl.METRIC_F1, "F1 (one class)"),
+    (sl.METRIC_FALSE_ALARM, "False alarm rate (one class)"),
+    (sl.METRIC_MISS_RATE, "Miss rate (one class)"),
+    (sl.METRIC_SUPPORT, "Support (one class)"),
+    (sl.METRIC_PREDICTED, "Predicted as (one class)"),
+)
+
+METRIC_LABELS = dict(SLICE_METRICS)
+
+SORT_LABELS = (
+    (sl.SORT_WORST, "Worst first"),
+    (sl.SORT_VALUE, "By value"),
+    (sl.SORT_SIZE, "By size"),
+)
+
+BINNING_LABELS = (
+    (sl.BINNING_AUTO, "Automatic"),
+    (sl.BINNING_VALUES, "One bar per value"),
+    (sl.BINNING_QUANTILE, "Quantile bins"),
+)
+
+# Slices drawn in the chart. A hundred-value categorical column is
+# legitimate in the table (it scrolls) but unreadable as a chart.
+MAX_CHART_SLICES = 30
+
+# The count bars are background, not a series: a neutral grey that no
+# experiment color can be confused with, and an axis labelled in the same
+# grey so the eye reads it as the context it is.
+COUNT_BAR_COLOR = "#ccd1d9"
+COUNT_AXIS_COLOR = "#7b828d"
+
+
+def _fmt(value: float, digits: int = 3) -> str:
+    return f"{value:.{digits}f}" if value == value else "—"
+
+
+def _counts_agree(rows_by_name: dict, names: list, values: list) -> bool:
+    """Whether every experiment holds the same number of crops in every
+    slice, which is the normal case -- n comes from the dataset, not from
+    the model. They only diverge when the experiments join different
+    subsets of it (partial uuid overlap)."""
+    if not values:
+        return True
+    return all(len({rows_by_name[name][v].n for name in names}) == 1 for v in values)
 
 
 def _log(msg: str) -> None:

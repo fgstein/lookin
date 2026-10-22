@@ -2,9 +2,9 @@
 
 Measures how each tab's core operations scale with (a) dataset row count and
 (b) metadata column count, by calling lookin's own production code directly
-(AppState, StatsView, GalleryView, MetricsView) rather than reimplementing
-the logic -- the numbers this produces are exactly what the real app does,
-minus the browser round-trip.
+(AppState, and the Statistics, Gallery and Metrics views of a `lookin web`
+session) rather than reimplementing the logic -- the numbers this produces
+are exactly what the server does, minus the browser round-trip.
 
 Generated CSVs land OUTSIDE this repo (see --out, defaults to a sibling
 directory of the repo) since the high end of the sweep is hundreds of MB --
@@ -28,12 +28,10 @@ import pandas as pd
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from lookin.core import images  # noqa: E402
 from lookin.core.data_manager import AppState, ColumnConfig  # noqa: E402
-from lookin.ui import components as ui_components  # noqa: E402
-from lookin.ui.gallery_view import GalleryView  # noqa: E402
-from lookin.ui.interactive_projection import InteractiveProjection  # noqa: E402
-from lookin.ui.metrics_view import MetricsView  # noqa: E402
-from lookin.ui.stats_view import StatsView  # noqa: E402
+from lookin.web.server import WebApp  # noqa: E402
+from lookin.web.session import RequestScope  # noqa: E402
 
 CLASSES = ["airplane", "automobile", "bird", "cat", "deer", "dog", "frog", "horse", "ship", "truck"]
 EXAMPLE_CROPS_DIR = REPO_ROOT / "src" / "lookin" / "data" / "example" / "crops"
@@ -48,22 +46,18 @@ QUICK_ROW_SWEEP = [0, 1_000, 20_000]
 QUICK_COL_SWEEP = [0, 10]
 QUICK_FIXED_ROWS = 20_000
 
-# The Embeddings tab's interactive map is measured in *points on the map*
-# (its "Sample size" field), not dataset rows -- a million-row dataset drawn
-# at the default 1,500-point sample costs what 1,500 points cost.
-POINT_SWEEP = [1_500, 10_000, 50_000, 200_000]
-QUICK_POINT_SWEEP = [1_500, 50_000]
+# Crops in the first page of the gallery mosaic, each fetched by the
+# browser from /img once the page's HTML has arrived.
+GALLERY_PAGE_CROPS = 60
 
 
-class FakeCtx:
-    """Just enough of AppContext for the view classes to render without a
-    live Flet page -- every .update() call in the real views is already
-    guarded by `if control.page:`, so it's skipped safely here, and no
-    render path touches ctx.page during a pure render (only click handlers
-    that this benchmark never invokes do)."""
-    def __init__(self, state):
-        self.state = state
-        self.page = None
+def _session(state: AppState):
+    """A `lookin web` session (one browser tab) holding `state`, with no
+    browser attached: its views compute and render exactly as they do for
+    a request."""
+    session = WebApp().store.get("b" * 24, create=True)
+    session.state = state
+    return session
 
 
 def _column_spec(n_extra_cols: int):
@@ -131,85 +125,54 @@ def bench_experiment_load(state: AppState, csv_path: Path):
 
 
 def bench_stats_all_charts(state: AppState):
-    ctx = FakeCtx(state)
-    view = StatsView.__new__(StatsView)
-    StatsView.__init__(view, ctx)
+    session = _session(state)
+    view = session.view("statistics")
     cols_cfg = state.dataset.columns
     kinds = state.dataset.column_kinds()
     view.active_columns = [cols_cfg.label_col] + kinds.numeric + kinds.binary + kinds.categorical
     t0 = time.perf_counter()
-    view._render()
+    with RequestScope(session):
+        view.compute()
     dt = time.perf_counter() - t0
     return dt, len(view.active_columns)
 
 
 def bench_gallery_filters(state: AppState):
-    ctx = FakeCtx(state)
-    view = GalleryView.__new__(GalleryView)
-    GalleryView.__init__(view, ctx)
+    session = _session(state)
+    view = session.view("gallery")
     cols_cfg = state.dataset.columns
     kinds = state.dataset.column_kinds()
     view.active_filter_cols = [cols_cfg.label_col] + kinds.categorical + kinds.binary + kinds.numeric
     t0 = time.perf_counter()
-    view._rebuild_filters()
+    with RequestScope(session):
+        view._rebuild_filters()
     dt = time.perf_counter() - t0
-    return dt, view
+    return dt, session, view
 
 
-def bench_gallery_grid(view: GalleryView):
-    ui_components._IMAGE_CACHE.clear()  # force cold image reads, same as a never-before-seen page
+def bench_gallery_grid(session, view):
+    """The mosaic's first page: the HTML, then every crop on it, cold."""
+    images._CROP_CACHE.clear()  # force cold image reads, same as a never-before-seen page
     t0 = time.perf_counter()
-    view._render_grid()
+    with RequestScope(session):
+        view._render_grid()
+        view.render()
+    if view._filtered is not None:
+        dataset = session.state.dataset
+        crop_col = dataset.columns.crop_col
+        for value in view._filtered[crop_col].head(GALLERY_PAGE_CROPS):
+            images.crop_bytes(str(dataset.resolve_crop_path(value)), images.LUT_NONE, 0)
     return time.perf_counter() - t0
 
 
 def bench_metrics(state: AppState):
-    ctx = FakeCtx(state)
-    view = MetricsView.__new__(MetricsView)
-    MetricsView.__init__(view, ctx)
-    view._rebuild_experiment_checks()
+    session = _session(state)
+    view = session.view("metrics")
     t0 = time.perf_counter()
-    view._render()
+    with RequestScope(session):
+        view._refresh_now()
+        view.render()
     return time.perf_counter() - t0
-
-
-def bench_projection_frame(n_points: int) -> dict:
-    """One frame of the interactive projection: what a pan, a wheel zoom or
-    a window resize costs, at `n_points` points on the map.
-
-    Two numbers per frame, because they are two different bottlenecks --
-    building the canvas shapes (Python and numpy) and serializing the
-    coordinates to JSON (what actually goes over the websocket, and what
-    the browser then has to parse). A "draft" frame is the thinned one the
-    map serves while a gesture is still moving; the full frame is what
-    lands once it stops. See ui/interactive_projection._RedrawPump.
-    """
-    rng = np.random.default_rng(0)
-    view = InteractiveProjection.__new__(InteractiveProjection)
-    view.points = rng.normal(size=(n_points, 2))
-    colors = [f"#{i:02x}4c78" for i in rng.integers(0, len(CLASSES), n_points)]
-    view.point_colors = colors
-    view._color_array = np.asarray(colors)
-    view.point_groups = np.asarray([CLASSES[i] for i in rng.integers(0, len(CLASSES), n_points)])
-    view.prototypes = None
-    view.size = 820
-    view._hidden_groups = set()
-    view._selected = np.array([], dtype=int)
-    view._last_frame = None
-    view._fit()
-    view.sx, view.sy = view._to_screen(view.points[:, 0], view.points[:, 1])
-
-    result = {"n_points": n_points}
-    for kind, draft in (("full", False), ("draft", True)):
-        t0 = time.perf_counter()
-        shapes = view._point_shapes(draft=draft)
-        result[f"{kind}_build_s"] = time.perf_counter() - t0
-        t0 = time.perf_counter()
-        payload = json.dumps([shape.points for shape in shapes])
-        result[f"{kind}_json_s"] = time.perf_counter() - t0
-        result[f"{kind}_kb"] = len(payload) / 1024
-        result[f"{kind}_points"] = sum(len(shape.points) for shape in shapes)
-    return result
 
 
 def run_variant(label: str, out_dir: Path, n_rows: int, n_cols: int, crop_pool: list, keep_csv: bool) -> dict:
@@ -239,11 +202,11 @@ def run_variant(label: str, out_dir: Path, n_rows: int, n_cols: int, crop_pool: 
     result["stats_n_charts"] = n_charts
     print(f"[bench]   stats ({n_charts:2d} charts): {dt:8.3f}s", flush=True)
 
-    dt, gallery_view = bench_gallery_filters(state)
+    dt, session, gallery_view = bench_gallery_filters(state)
     result["gallery_filters_s"] = dt
     print(f"[bench]   gallery filters:   {dt:8.3f}s", flush=True)
 
-    dt = bench_gallery_grid(gallery_view)
+    dt = bench_gallery_grid(session, gallery_view)
     result["gallery_grid_page_s"] = dt
     print(f"[bench]   gallery grid page: {dt:8.3f}s", flush=True)
 
@@ -276,7 +239,7 @@ def main():
     col_sweep = QUICK_COL_SWEEP if args.quick else COL_SWEEP
     col_sweep_rows = QUICK_FIXED_ROWS if args.quick else COL_SWEEP_FIXED_ROWS
 
-    results = {"row_sweep": [], "col_sweep": [], "projection_sweep": [],
+    results = {"row_sweep": [], "col_sweep": [],
                "row_sweep_fixed_cols": row_sweep_cols, "col_sweep_fixed_rows": col_sweep_rows}
     results_path = args.out / "results.json"
 
@@ -290,16 +253,6 @@ def main():
         label = f"cols_{n_cols}"
         r = run_variant(label, args.out, col_sweep_rows, n_cols, crop_pool, args.keep_csv)
         results["col_sweep"].append(r)
-        results_path.write_text(json.dumps(results, indent=2))
-
-    for n_points in (QUICK_POINT_SWEEP if args.quick else POINT_SWEEP):
-        r = bench_projection_frame(n_points)
-        results["projection_sweep"].append(r)
-        print(f"[bench] === projection map: {n_points:,} points ===", flush=True)
-        for kind in ("full", "draft"):
-            print(f"[bench]   {kind:5s} frame: build {r[f'{kind}_build_s'] * 1000:6.1f}ms + "
-                  f"json {r[f'{kind}_json_s'] * 1000:6.1f}ms, {r[f'{kind}_kb']:7.0f} KB "
-                  f"({r[f'{kind}_points']:,} points drawn)", flush=True)
         results_path.write_text(json.dumps(results, indent=2))
 
     print(f"[bench] done. results written to {results_path}", flush=True)

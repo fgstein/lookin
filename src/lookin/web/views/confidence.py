@@ -3,7 +3,7 @@ margin between the top two scores and entropy of the softmax-normalized
 score distribution (see core/confidence.py), independent of whether a
 prediction was actually correct.
 
-Same behaviour as lookin.ui.confidence_view: a summary row, the
+The tab draws a summary row, the
 correct/incorrect distributions of margin and entropy (for every row, then
 for one true class), the per-class means (a ClassFocus past FOCUS_MAX
 classes), the margin vs. entropy scatter (sampled), and the confidently
@@ -22,25 +22,50 @@ import numpy as np
 from lookin.core import class_focus as cf
 from lookin.core.chart_style import subplots
 from lookin.core.confidence import MARGIN_COL, NORMALIZED_ENTROPY_COL, compute_confidence, confident_and_wrong
-from lookin.ui.components import ACCENT, GRID_NONE, style_axes
-from lookin.ui.confidence_view import (
-    CHART_WIDTH, CONFIDENCE_FOCUS_CRITERIA, CORRECT_COLOR, INCORRECT_COLOR,
-    PERCLASS_BAR_COLOR, SCATTER_MAX_POINTS_DEFAULT, SCATTER_SEED, _chart_box,
-)
+from lookin.core.chart_style import ACCENT, GRID_NONE, style_axes
 from lookin.web import html as h
 from lookin.web.views.base import RebuildView
 from lookin.web.views.common import score_diagnostics_banner, uuid_overlap_banner
 from lookin.web.views.media import fig_html
 from lookin.web.views.widgets import ClassFocus, class_select
 
-# What a redraw can be asked for; "all" is the original's _render().
+
+# Which classes the per-class chart shows past FOCUS_MAX (see ClassFocus).
+CONFIDENCE_FOCUS_CRITERIA = (
+    (cf.FOCUS_LEAST_CONFIDENT, "Least confident"),
+    (cf.FOCUS_HIGHEST_ENTROPY, "Highest entropy"),
+    (cf.FOCUS_LARGEST_SUPPORT, "Largest support"),
+    (cf.FOCUS_MANUAL, "Hand-picked"),
+)
+
+# Same red/blue pairing calibration_view.py and prototypes_view.py use for
+# wrong/bad vs. right/good (e.g. "#d62728" for a wrong prediction's bar in
+# the calibration histogram) -- one meaning for these two colors everywhere
+# in the app, rather than a third pair invented for this tab.
+CORRECT_COLOR = "#4c72b0"
+INCORRECT_COLOR = "#d62728"
+PERCLASS_BAR_COLOR = "#e8590c"
+CHART_WIDTH = 860
+SCATTER_MAX_POINTS_DEFAULT = 3000
+SCATTER_SEED = 0
+CHART_MAX_WIDTH = 1000
+CHART_PX_PER_INCH = 90
+
+
+def _chart_box(fig) -> dict:
+    """width/height that keep `fig`'s own aspect ratio."""
+    fig_w, fig_h = fig.get_size_inches()
+    width = min(CHART_MAX_WIDTH, max(600.0, fig_w * CHART_PX_PER_INCH))
+    return {"width": int(width), "height": int(width * fig_h / fig_w)}
+
+
+# What a redraw can be asked for; "all" is the whole tab.
 PART_REFRESH = "refresh"
 PART_ALL = "all"
 PART_CLASS = "class"
 PART_PERCLASS = "perclass"
 PART_SCATTER = "scatter"
 PART_WRONG = "wrong"
-
 METRIC_OPTIONS = (("margin", "Margin (top1 - top2)"), ("entropy", "Entropy (normalized)"))
 
 
@@ -63,8 +88,7 @@ def _float(text, default: float) -> float:
 
 
 def _boxed(chart: str, width: int) -> str:
-    """A chart at most `width` pixels wide (the original's image width),
-    narrower when the card is."""
+    """A chart at most `width` pixels wide, narrower when the card is."""
     return f'<div class="conf-chart" style="max-width:{int(width)}px">{chart}</div>'
 
 
@@ -126,14 +150,14 @@ class ConfidenceView(RebuildView):
         self._refresh_in_background()
 
     def _refresh_in_background(self) -> None:
-        """The original's "Update now": the experiment list again, every
-        part redrawn, the stale banner gone."""
+        """"Update now": the experiment list again, every part redrawn, the
+        stale banner gone."""
         self.progress_text = "Computing confidence diagnostics..."
         self._queue(PART_REFRESH)
 
     def _redraw(self, part: str) -> None:
-        """One part again from the cache (the original's per-control
-        redraws), leaving the stale banner as it was."""
+        """One part again from the cache (a control changed), leaving the
+        stale banner as it was."""
         if not self.progress_text:
             self.progress_text = "Updating..."
         self._queue(part)
@@ -199,7 +223,7 @@ class ConfidenceView(RebuildView):
         self.dirty = True
 
     def rename_experiment(self, old_name: str, new_name: str) -> None:
-        """The numbers are unchanged, only the label is (see the original)."""
+        """The numbers are unchanged, only the label is."""
         if old_name in self._confidence_cache:
             self._confidence_cache[new_name] = self._confidence_cache.pop(old_name)
         if self._drawn_for == old_name:
@@ -237,7 +261,7 @@ class ConfidenceView(RebuildView):
             self._confidence_cache[name] = compute_confidence(merged, exp.score_cols, exp.class_labels)
         return self._confidence_cache[name]
 
-    # ---- the whole tab (the original's _render) ----------------------
+    # ---- the whole tab ----------------------------------------------
 
     def _clear_parts(self) -> None:
         self.warnings = []
@@ -249,7 +273,7 @@ class ConfidenceView(RebuildView):
         self._clear_parts()
         self.empty_msg = ""
         if state.dataset is None or not state.experiments:
-            self.empty_msg = "Load a dataset and at least one experiment (results CSV) in the 'Data' tab first."
+            self.empty_msg = "Load a dataset and at least one experiment (results CSV) in the 'Sources' tab first."
             self.class_focus.hide()
             self._drawn_for = None
             return

@@ -314,7 +314,7 @@ class ClassCounts:
 
 
 # Metrics a slice can be measured with. Keys, compared in code and held by
-# the panel's dropdown; the labels beside them live in ui/slice_panel.py.
+# the panel's dropdown; the labels beside them live in web/views/slice_panel.py.
 METRIC_ACCURACY = "accuracy"
 METRIC_MACRO_F1 = "macro_f1"
 METRIC_MEAN_CONFIDENCE = "mean_confidence"

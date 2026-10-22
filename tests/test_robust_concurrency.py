@@ -1,7 +1,7 @@
 """Several Lookin sessions writing the same files.
 
-Every browser tab of `lookin web` is a session, `lookin ui` and `lookin web`
-run side by side, and two people can share one library on a mount. Each
+Every browser tab of `lookin web` is a session, two servers can run on one
+machine, and two people can share one library on a mount. Each
 test here forces one interleaving that used to lose somebody's write.
 
 The cross-process tests start a real second process (spawn, as on Windows
@@ -63,7 +63,7 @@ def _start(target, *args):
 
 
 # ---------------------------------------------------------------------------
-# review decisions: lookin ui and lookin web on one dataset
+# review decisions: two sessions on one dataset
 # ---------------------------------------------------------------------------
 
 def _review_paths(tmp_path):
@@ -175,7 +175,7 @@ def test_a_version_named_like_one_frozen_elsewhere_is_not_unfrozen(tmp_path):
 
 
 def test_a_decision_that_cannot_be_saved_is_reported(tmp_path, monkeypatch):
-    from lookin.ui.review_widgets import record_decision
+    from lookin.core.review_actions import record_decision
 
     paths = _review_paths(tmp_path)
     store = ReviewStore.load(*paths)
@@ -412,7 +412,7 @@ def test_reloading_the_page_while_a_snapshot_opens_does_not_load_it_twice(exampl
 
 
 def test_a_sidecar_broken_elsewhere_is_reported_not_overwritten(tmp_path):
-    from lookin.ui.review_widgets import record_decision
+    from lookin.core.review_actions import record_decision
 
     paths = _review_paths(tmp_path)
     store = ReviewStore.load(*paths)

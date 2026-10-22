@@ -168,8 +168,8 @@ class StaleTracking:
 class RebuildView(StaleTracking, View):
     """A view whose content is expensive to rebuild (charts over the whole
     dataset), on the session's job queue for this view, with its progress
-    shown in the view and in the top bar (see components.StaleBanner and
-    BackgroundRebuild in the original UI). What a data change does is
+    shown in the view and in the top bar (session.Job, session.Busy). What
+    a data change does is
     StaleTracking's; a redraw that is not a data update (a dropdown) gets
     its Cancel on the progress line."""
 

@@ -163,8 +163,8 @@ def _mutator(method):
     """
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):
-        # The lock file as well: `lookin ui` and `lookin web` run by one
-        # person share this file from two processes.
+        # The lock file as well: two `lookin web` servers run by one person
+        # share this file from two processes.
         with _FILE_LOCK, fileio.locked(self.path):
             if self.changed_on_disk():
                 self.reload()

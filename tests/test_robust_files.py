@@ -198,34 +198,33 @@ def _decoded(png: bytes):
 
 @pytest.mark.parametrize("lut", ["none", "minmax"])
 def test_cmyk_and_palette_images_render_as_colour(tmp_path, lut):
-    from lookin.ui.components import LUT_MINMAX, LUT_NONE, _load_and_encode_png
+    from lookin.core.images import LUT_MINMAX, LUT_NONE, load_and_encode_png
 
     rgb = (np.arange(48).reshape(4, 4, 3) * 5).astype(np.uint8)
     Image.fromarray(rgb).convert("CMYK").save(tmp_path / "cmyk.tif")
     Image.fromarray(rgb).convert("P", palette=Image.ADAPTIVE, colors=4).save(tmp_path / "pal.tif")
     chosen = LUT_NONE if lut == "none" else LUT_MINMAX
     for name in ("cmyk.tif", "pal.tif"):
-        assert _decoded(_load_and_encode_png(tmp_path / name, chosen)).mode == "RGB"
+        assert _decoded(load_and_encode_png(tmp_path / name, chosen)).mode == "RGB"
 
 
 def test_a_float_tiff_renders(tmp_path):
-    from lookin.ui.components import _load_and_encode_png
+    from lookin.core.images import load_and_encode_png
 
     data = np.linspace(0, 1, 16, dtype=np.float32).reshape(4, 4)
     data[0, 0] = np.nan
     Image.fromarray(data, mode="F").save(tmp_path / "f.tif")
-    out = np.array(_decoded(_load_and_encode_png(tmp_path / "f.tif")))
+    out = np.array(_decoded(load_and_encode_png(tmp_path / "f.tif")))
     assert out.dtype == np.uint8 and out.max() == 255
 
 
 def test_a_decompression_bomb_gets_the_placeholder(tmp_path, monkeypatch):
-    from lookin.ui.components import file_to_full_base64
-    from lookin.web.server import _PLACEHOLDER, crop_bytes
+    from lookin.core.images import PLACEHOLDER_SVG, crop_bytes
 
     Image.fromarray(np.zeros((100, 100), np.uint8)).save(tmp_path / "bomb.tif")
     monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 1000)
-    assert crop_bytes(str(tmp_path / "bomb.tif"), "", 0) == (_PLACEHOLDER, "image/svg+xml")
-    assert file_to_full_base64(tmp_path / "bomb.tif")
+    assert crop_bytes(str(tmp_path / "bomb.tif"), "", 0) == (PLACEHOLDER_SVG, "image/svg+xml")
+    assert crop_bytes(str(tmp_path / "bomb.tif"), "minmax", 0) == (PLACEHOLDER_SVG, "image/svg+xml")
 
 
 # ---- opening a workspace whose dataset is gone ------------------------------

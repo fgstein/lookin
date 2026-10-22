@@ -253,7 +253,7 @@ PAGES = (
             ),
             Callout(CALLOUT_PITFALL, "The number that moves when nothing changed", (
                 Para(
-                    "Filter the Data tab to a different split, or compare a validation pool against a "
+                    "Filter the Sources tab to a different split, or compare a validation pool against a "
                     "production sample, and the prevalence-dependent metrics move on their own. A "
                     "precision that fell from 0.9 to 0.6 between two pools may be the same detector "
                     "meeting a rarer class. Check the support column before reading it as a regression."

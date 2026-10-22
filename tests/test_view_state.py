@@ -12,8 +12,8 @@ from __future__ import annotations
 import pytest
 
 from lookin.core.data_manager import AppState
-from lookin.ui import view_state as vs
-from lookin.ui.view_state import ViewStateRegistry
+from lookin.core import view_state as vs
+from lookin.core.view_state import ViewStateRegistry
 
 
 class FakeView:
@@ -35,7 +35,7 @@ class FakeView:
         return self._warnings
 
 
-class FakeCtx:
+class FakeSession:
     def __init__(self):
         self.state = AppState()
         self.display_lut = "none"
@@ -44,9 +44,8 @@ class FakeCtx:
 
 @pytest.fixture
 def registry():
-    ctx = FakeCtx()
-    reg = ViewStateRegistry(ctx)
-    reg.ctx = ctx
+    session = FakeSession()
+    reg = ViewStateRegistry(session)
     return reg
 
 
@@ -64,8 +63,8 @@ def test_capture_collects_every_registered_view(registry):
 
 def test_capture_records_the_tab_and_the_display_settings(registry):
     registry.set_tab_accessors(lambda: 6, lambda i: None)
-    registry.ctx.display_lut = "viridis"
-    registry.ctx.display_roll_col = "roll"
+    registry.session.display_lut = "viridis"
+    registry.session.display_roll_col = "roll"
 
     app = registry.capture()[vs.APP]
 
@@ -188,9 +187,9 @@ def test_the_tab_is_captured(registry):
 def test_restore_applies_display_settings(registry):
     registry.restore({vs.APP: {vs.DISPLAY_LUT: "magma", vs.DISPLAY_ROLL_COL: "roll",
                                "display_roll_reverse": True}})
-    assert registry.ctx.display_lut == "magma"
-    assert registry.ctx.display_roll_col == "roll"
-    assert not hasattr(registry.ctx, "display_roll_reverse"), (
+    assert registry.session.display_lut == "magma"
+    assert registry.session.display_roll_col == "roll"
+    assert not hasattr(registry.session, "display_roll_reverse"), (
         "a workspace saved when the direction was still a setting restores "
         "everything else and drops that key")
 
@@ -203,24 +202,24 @@ def test_a_missing_review_version_is_reported_not_silently_ignored(registry):
     warnings = registry.restore({vs.APP: {vs.REVIEW_VERSION_ID: "v3"}})
 
     assert any("v3" in w for w in warnings)
-    assert registry.ctx.state.review_version_id is None
+    assert registry.session.state.review_version_id is None
 
 
 def test_a_known_review_version_is_pinned(registry):
     class FakeStore:
         versions = {"v2": object()}
 
-    registry.ctx.state.review = FakeStore()
+    registry.session.state.review = FakeStore()
     warnings = registry.restore({vs.APP: {vs.REVIEW_VERSION_ID: "v2"}})
 
-    assert registry.ctx.state.review_version_id == "v2"
+    assert registry.session.state.review_version_id == "v2"
     assert warnings == []
 
 
 def test_the_overlay_is_not_turned_on_without_a_review_store(registry):
     warnings = registry.restore({vs.APP: {vs.USE_REVIEWED_LABELS: True}})
 
-    assert registry.ctx.state.use_reviewed_labels is False
+    assert registry.session.state.use_reviewed_labels is False
     assert any("review store" in w for w in warnings)
 
 
@@ -228,9 +227,9 @@ def test_the_overlay_is_restored_when_there_is_a_store(registry):
     class FakeStore:
         versions = {}
 
-    registry.ctx.state.review = FakeStore()
+    registry.session.state.review = FakeStore()
     registry.restore({vs.APP: {vs.USE_REVIEWED_LABELS: True}})
-    assert registry.ctx.state.use_reviewed_labels is True
+    assert registry.session.state.use_reviewed_labels is True
 
 
 def test_display_settings_are_applied_before_the_views(registry):
@@ -240,84 +239,12 @@ def test_display_settings_are_applied_before_the_views(registry):
 
     class Recorder(FakeView):
         def restore_view_state(self, state):
-            seen["lut"] = registry.ctx.display_lut
+            seen["lut"] = registry.session.display_lut
             return []
 
     registry.register(vs.GALLERY, Recorder())
     registry.restore({vs.APP: {vs.DISPLAY_LUT: "magma"}, vs.VIEWS: {vs.GALLERY: {}}})
     assert seen["lut"] == "magma"
-
-
-# ---- the tab setter app.py hands the registry ---------------------------
-
-class FakeTabs:
-    def __init__(self, count=9):
-        self.tabs = list(range(count))
-        self.selected_index = 0
-
-
-class FakePane:
-    def __init__(self, visible=False):
-        self.visible = visible
-
-
-def fake_panes(count=9):
-    return [FakePane(visible=index == 0) for index in range(count)]
-
-
-class FakePage:
-    def __init__(self):
-        self.updates = 0
-
-    def update(self):
-        self.updates += 1
-
-
-def test_the_tab_setter_pushes_the_switch_to_the_client():
-    """Setting selected_index alone changes the model and nothing else --
-    the browser keeps showing the tab it was on."""
-    from lookin.app import make_tab_setter
-
-    tabs, page = FakeTabs(), FakePage()
-    make_tab_setter(tabs, fake_panes(), page, {})(6)
-
-    assert tabs.selected_index == 6
-    assert page.updates == 1, "without this the switch never reaches the browser"
-
-
-def test_the_tab_setter_shows_only_the_selected_pane():
-    """The tab bar carries no content (see app.main): selecting a tab
-    without showing its pane would leave the old tab on screen."""
-    from lookin.app import make_tab_setter
-
-    panes = fake_panes()
-    make_tab_setter(FakeTabs(), panes, FakePage(), {})(6)
-
-    assert [pane.visible for pane in panes] == [index == 6 for index in range(9)]
-
-
-def test_the_tab_setter_runs_the_handler_a_tab_needs_when_opened():
-    """Flet does not fire on_change for a value set from Python, so a view
-    saved on the Compare tab would reopen there with empty pickers."""
-    from lookin.app import make_tab_setter
-
-    shown = []
-    make_tab_setter(FakeTabs(), fake_panes(), FakePage(), {5: lambda: shown.append(5)})(5)
-
-    assert shown == [5]
-
-
-def test_the_tab_setter_ignores_an_index_that_does_not_exist():
-    """A snapshot from a version with more tabs must not select nothing."""
-    from lookin.app import make_tab_setter
-
-    tabs, page = FakeTabs(count=9), FakePage()
-    setter = make_tab_setter(tabs, fake_panes(), page, {})
-    for bad in (-1, 9, 99):
-        setter(bad)
-
-    assert tabs.selected_index == 0
-    assert page.updates == 0
 
 
 # ---- recomputing what the view was showing ------------------------------

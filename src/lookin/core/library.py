@@ -172,7 +172,7 @@ def library_root() -> Path:
 
 
 def set_library_root(path) -> None:
-    """Point the library elsewhere -- used by `lookin ui --library`."""
+    """Point the library elsewhere -- used by `lookin web --library`."""
     global _library_root
     _library_root = Path(path).expanduser() if path else None
 
@@ -182,7 +182,7 @@ def set_library_root(path) -> None:
 #
 # This is what a workspace records, and the shape UploadView both produces and
 # consumes -- so a workspace is restored by exactly the same code path as any
-# other load. It lived in core/prefs.py while the Data tab's session
+# other load. It lived in core/prefs.py while the Sources tab's session
 # history was its only consumer; that history is gone, and a "recent
 # session" was never a good name for the thing a workspace is built around.
 # ---------------------------------------------------------------------------
@@ -243,8 +243,6 @@ class Mount:
     dataset_size: int = 0
     dataset_mtime: float = 0.0
     # The Filter tab's filter (a core.dataset_filter spec; {} for none).
-    # Written by `lookin web`; `lookin ui` reads and keeps it, but does not
-    # apply it.
     dataset_filter: dict = field(default_factory=dict)
 
     def label(self) -> str:
@@ -587,8 +585,8 @@ def save_workspace(workspace: Workspace) -> bool:
 # Guards update_workspace's read-change-write. Every browser tab is a session
 # in this process, so a process lock is what keeps two of them from both
 # reading a manifest, each changing it, and the second write erasing the
-# first. The lock file (fileio.locked) does the same for `lookin ui` beside
-# `lookin web`, or a colleague on the same shared library.
+# first. The lock file (fileio.locked) does the same for a second server on
+# the same machine, or a colleague on the same shared library.
 _UPDATE_LOCK = threading.Lock()
 
 

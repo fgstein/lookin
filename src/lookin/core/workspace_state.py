@@ -1,7 +1,7 @@
 """Load a library workspace into an AppState with no UI.
 
-The Data tab restores a workspace through its own widgets (see
-UploadView.restore_mount), because there every step also fills a field and
+The Sources tab restores a workspace through its own widgets (see
+SourcesView.restore_mount), because there every step also fills a field and
 reports progress. Anything else that needs a workspace's numbers -- the MCP
 endpoint, a script -- comes through here instead, and gets the same state:
 the same columns, row filter, split kind and review version the workspace

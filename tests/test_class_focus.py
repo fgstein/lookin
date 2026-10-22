@@ -105,7 +105,7 @@ def test_ranking_2000_classes_is_quick():
 
 
 def test_column_headers_drop_the_shared_prefix_at_a_separator():
-    from lookin.ui.class_matrix import short_column_labels
+    from lookin.web.views.common import short_column_labels
 
     assert short_column_labels(["species_1247", "species_1246"], 8) == (["1247", "1246"], "species_")
     assert short_column_labels(["Quercus robur", "Quercus rubra"], 8) == (["robur", "rubra"], "Quercus ")

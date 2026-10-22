@@ -10,7 +10,7 @@ the largest off-diagonal cells (top_confused_pairs), and the whole matrix
 drawn as one picture.
 
 The other per-class views of the app (Confidence, Calibration, Compare,
-Embeddings, Prototypes) use the same focus set through ui/class_matrix.py's
+Embeddings, Prototypes) use the same focus set through web/views/widgets.py's
 ClassFocus, each with criteria of its own; rank_by and pairs_to_focus are
 the rankings they share. Everything here works over tables the tabs have
 already computed, so picking another criterion costs nothing a user would

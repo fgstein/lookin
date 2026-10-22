@@ -1,7 +1,7 @@
 """The Workspaces window -- every workspace, the snapshots saved inside
 them, their details -- and opening a workspace into a tab.
 
-Same behaviour as lookin.ui.workspace_panel:
+What it does:
 
 * editing a name, tags or description keeps the id (an id written into a
   report has to keep pointing at what it pointed at); saving the *view*
@@ -22,7 +22,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from lookin.core import library as lib
-from lookin.ui import save_status
+from lookin.web import save_status
 from lookin.web import html as h
 from lookin.web.views.base import ConfirmDialog, Dialog, MessageDialog
 from lookin.web.views.files import FileBrowserDialog
@@ -49,8 +49,8 @@ def provenance() -> dict:
     """Text to read later, never used to fetch anything."""
     try:
         from lookin.core.home_config import HomeConfig
-        from lookin.ui.mlflow_panel import _default_tracking_uri
-        servers = HomeConfig(fallback_uri=_default_tracking_uri()).servers
+        from lookin.core.mlflow_client import default_tracking_uri
+        servers = HomeConfig(fallback_uri=default_tracking_uri()).servers
         if servers:
             return {"mlflow_tracking_uri": str(servers[0]["uri"])}
     except Exception:  # noqa: BLE001

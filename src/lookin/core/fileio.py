@@ -1,8 +1,8 @@
 """Writing files that other Lookin sessions read and write as well.
 
 Several Lookin sessions routinely share files: every browser tab of
-`lookin web` is a session, `lookin ui` and `lookin web` run side by side on
-one machine, and two people point theirs at one library on a network mount.
+`lookin web` is a session, two servers can run side by side on one machine,
+and two people point theirs at one library on a network mount.
 Two rules follow, and this module is where both live.
 
 **Atomic writes** (`atomic_write`, `atomic_write_text`). A file is written

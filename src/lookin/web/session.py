@@ -11,11 +11,11 @@ The tab keeps its session id in sessionStorage, so a reload comes back to
 the same session with everything still loaded; a duplicated tab notices
 the clash and takes a new id (see static/app.js).
 
-The attributes below deliberately mirror lookin.ui.context.AppContext
-(`state`, `display_lut`, `display_roll_col`, `prototype_source`,
-`view_state`, `current_workspace`, ...): the Flet-free helpers of the
-original UI -- view_state.py, prototype_source.py, the crop encoders --
-take a "ctx" and read exactly those, so they work unchanged on a Session.
+The attributes below (`state`, `display_lut`, `display_roll_col`,
+`prototype_source`, `view_state`, `current_workspace`, ...) are what the
+helpers in core read off "a session" -- core/view_state.py,
+core/prototype_source.py, core/images.crop_display,
+core/review_actions.record_decision -- so they take a Session as it is.
 """
 from __future__ import annotations
 
@@ -29,9 +29,10 @@ from collections import OrderedDict, deque
 from typing import Callable, Optional
 
 from lookin.core.data_manager import AppState
-from lookin.ui.components import LUT_NONE, ROLL_NONE, _HEAVY_WORK_LOCK
-from lookin.ui.prototype_source import PrototypeSourceRegistry
-from lookin.ui.view_state import ViewStateRegistry
+from lookin.core.chart_style import HEAVY_WORK_LOCK
+from lookin.core.images import LUT_NONE, ROLL_NONE
+from lookin.core.prototype_source import PrototypeSourceRegistry
+from lookin.core.view_state import ViewStateRegistry
 
 # A session nobody has talked to for this long, with no page connected to
 # its event stream, is dropped -- the tab was closed.
@@ -54,7 +55,8 @@ def _log(msg: str) -> None:
 
 class Busy:
     """"Is anything still running?", answered in the top bar of every view
-    of the session (the web twin of components.BusyIndicator)."""
+    of the session: a tab's progress line is invisible from every other
+    tab, and this is what is not."""
 
     def __init__(self, session: "Session"):
         self.session = session
@@ -111,10 +113,9 @@ def checkpoint() -> None:
 
 
 class Job:
-    """One view's expensive rebuild, off the request thread -- the web twin
-    of components.BackgroundRebuild: one job per view at a time, the
-    *latest* request coalesced behind the running one rather than dropped,
-    and every job behind the process-wide heavy-work lock (matplotlib and
+    """One view's expensive rebuild, off the request thread: one job per
+    view at a time, the *latest* request coalesced behind the running one
+    rather than dropped, and every job behind the process-wide heavy-work lock (matplotlib and
     the CPU-bound rebuilds must not run three at once).
 
     cancel() drops the request waiting behind the running one and stops the
@@ -164,7 +165,7 @@ class Job:
         while True:
             entry = self.session.busy.begin(self.name)
             try:
-                with _HEAVY_WORK_LOCK:
+                with HEAVY_WORK_LOCK:
                     checkpoint()            # cancelled while it waited for the lock
                     work()
             except Cancelled:
@@ -203,7 +204,7 @@ class Session:
         self.lock = threading.RLock()        # one request at a time per tab
         self.closed = False
 
-        # ---- the AppContext half (see the module docstring) ----
+        # ---- what core reads off a session (see the module docstring) ----
         self.state = AppState()
         self.display_lut = LUT_NONE
         self.display_roll_col = ROLL_NONE
@@ -257,8 +258,8 @@ class Session:
 
     @property
     def upload_view(self):
-        """The Sources view -- what save_status and the workspace code call
-        "upload_view", after the original UI's Data tab."""
+        """The Sources view, under the name save_status and the workspace
+        code know it by: the view that holds what is loaded."""
         return self.view("sources")
 
     def goto(self, tab: str) -> None:
@@ -285,7 +286,7 @@ class Session:
                 traceback.print_exc()
 
     # ------------------------------------------------------------------
-    # change notification (the notify_* half of AppContext)
+    # change notification (every view's on_* hooks)
     # ------------------------------------------------------------------
 
     def notify_change(self) -> None:

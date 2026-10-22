@@ -5,7 +5,7 @@ columns); the dataset's classes are named the dataset's way. They used to
 be matched by spelling alone and the map always drew the network's set --
 so a relabelled dataset, or one whose classes the network does not have,
 got prototypes for some classes or none. Two things fix that: the network's
-set goes through the Data tab's class mapping, and the map can draw
+set goes through the Sources tab's class mapping, and the map can draw
 prototypes built from the dataset's own labels instead, which it does by
 default whenever the network's do not cover every class.
 """
@@ -15,8 +15,9 @@ import numpy as np
 import pytest
 
 from lookin.core import embedding_analysis as ea
-from lookin.ui.projection_view import PROTO_FROM_DATASET, PROTO_FROM_MODEL, ProjectionView
-from lookin.ui.prototype_source import PrototypeSourceRegistry
+from lookin.core.prototype_source import PrototypeSourceRegistry
+from lookin.web.server import WebApp
+from lookin.web.views.embeddings import PROTO_FROM_DATASET, PROTO_FROM_MODEL, EmbeddingsView
 
 
 # ---- core ----------------------------------------------------------------
@@ -90,77 +91,43 @@ def test_the_network_set_follows_the_class_mapping(state, tmp_path):
 
 # ---- the map -------------------------------------------------------------
 
-class FakePage:
-    width, height = 1440, 900
-
-    def run_thread(self, fn, *args):
-        fn(*args)
-
-    def open(self, *a):
-        pass
-
-    def close(self, *a):
-        pass
+CLASSES = ["cat", "dog"]   # the classes of the crops with an embedding
 
 
-class FakeCtx:
-    def __init__(self, state):
-        self.page = FakePage()
-        self.state = state
-        self.image_zoom = None
-        self.prototype_source = PrototypeSourceRegistry(state)
-
-
-def _view(state) -> ProjectionView:
-    view = ProjectionView(FakeCtx(state))
-    view.build()
-    view.refresh()
+def _view(state) -> EmbeddingsView:
+    session = WebApp().store.get("p" * 24, create=True)
+    session.state = state
+    session.prototype_source = PrototypeSourceRegistry(state)
+    view = EmbeddingsView(session)
+    view._sync_proto_source("exp", CLASSES)
     return view
-
-
-def _run(view):
-    view.projection_method.value = "pca"
-    view._on_run_projection(None)
-    return view._last_result
 
 
 def test_with_no_network_prototypes_none_are_drawn_unless_asked(state):
     view = _view(state)
-    assert [o.key for o in view.proto_source_dd.options] == [PROTO_FROM_DATASET]
-    assert view.proto_source_dd.value is None
-    result = _run(view)
-    assert result.source_key is None and not result.proto_labels
+    assert [key for key, _ in view._proto_source_options] == [PROTO_FROM_DATASET]
+    assert view._proto_source_for("exp", CLASSES) is None
 
-    view.proto_source_dd.value = PROTO_FROM_DATASET
-    view._on_proto_source_change(None)
-    result = _run(view)
-    assert result.source_key == PROTO_FROM_DATASET
-    # The four crops with an embedding are cats and dogs.
-    assert sorted(set(result.proto_labels)) == ["cat", "dog"]
+    view._proto_source_choice["exp"] = PROTO_FROM_DATASET
+    assert view._proto_source_for("exp", CLASSES) == PROTO_FROM_DATASET
 
 
 def test_a_network_that_covers_every_class_is_the_default(state, tmp_path):
     _attach(state, tmp_path, ["cat", "dog", "bird"])
     view = _view(state)
-    assert view.proto_source_dd.value == PROTO_FROM_MODEL
-    assert _run(view).source_key == PROTO_FROM_MODEL
+    assert view._proto_source_for("exp", CLASSES) == PROTO_FROM_MODEL
+    assert not view._proto_source_note
 
 
 def test_a_network_missing_a_dataset_class_defaults_to_the_dataset(state, tmp_path):
     _attach(state, tmp_path, ["cat", "bird"])
     view = _view(state)
-    assert view.proto_source_dd.value == PROTO_FROM_DATASET
-    assert "1 of the dataset's 2 classes" in view.proto_source_note.value
-    result = _run(view)
-    assert result.source_key == PROTO_FROM_DATASET
-    assert sorted(set(result.proto_labels)) == ["cat", "dog"]
+    assert view._proto_source_for("exp", CLASSES) == PROTO_FROM_DATASET
+    assert "1 of the dataset's 2 classes" in view._proto_source_note
 
 
 def test_the_network_can_still_be_picked(state, tmp_path):
     _attach(state, tmp_path, ["cat", "bird"])
     view = _view(state)
-    view.proto_source_dd.value = PROTO_FROM_MODEL
-    view._on_proto_source_change(None)
-    result = _run(view)
-    assert result.source_key == PROTO_FROM_MODEL
-    assert set(result.proto_labels) == {"cat"}
+    view._proto_source_choice["exp"] = PROTO_FROM_MODEL
+    assert view._proto_source_for("exp", CLASSES) == PROTO_FROM_MODEL

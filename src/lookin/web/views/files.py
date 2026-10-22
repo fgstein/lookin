@@ -3,8 +3,7 @@
 A browser's own file input never hands back a real path, only a bare file
 name (sandboxing, in every browser). Lookin runs on the machine whose files
 it loads, so this lists directories from the server process and the picked
-path is always the complete, absolute one. Same rules as
-lookin.ui.server_browser.
+path is always the complete, absolute one.
 """
 from __future__ import annotations
 

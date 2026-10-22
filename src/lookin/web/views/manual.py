@@ -3,8 +3,8 @@ search, and one typeset page at a time, with a back stack so following
 "see also" links and coming back lands where the reader started.
 
 Page content is data in core/manual/; formulas are typeset by
-ui/mathtext.render_math (matplotlib, so nothing is fetched) and embedded as
-PNG data URIs. Same structure as lookin.ui.manual_view.
+web/mathtext.render_math (matplotlib, so nothing is fetched) and embedded as
+PNG data URIs.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from lookin.core.manual.model import (
     CALLOUT_EXAMPLE, CALLOUT_PITFALL, CALLOUT_TIP, CALLOUT_WARNING,
     Bullets, Callout, Equation, Heading, HowToRead, Para, Table,
 )
-from lookin.ui.mathtext import DISPLAY_SIZE, MathRenderError, render_math
+from lookin.web.mathtext import DISPLAY_SIZE, MathRenderError, render_math
 from lookin.web import html as h
 from lookin.web.views.base import Dialog
 

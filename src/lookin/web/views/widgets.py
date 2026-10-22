@@ -1,7 +1,5 @@
 """Controls several tabs share: picking classes among thousands.
 
-Same behaviour as lookin.ui.class_matrix:
-
 * class_select -- a single-class picker, type-to-filter past FOCUS_MAX
   options (a native list over two thousand labels is not a way to find one);
 * ClassPicker -- a search field over class labels plus the picked ones as
@@ -135,9 +133,9 @@ class ClassPicker:
 
 
 class ClassFocus:
-    """Which classes a tab's per-class views show once there are too many.
-    See lookin.ui.class_matrix.ClassFocus: same criteria, same snapshot
-    shape (`criterion`, `classes`, `min_support`)."""
+    """Which classes a tab's per-class views show once there are too many:
+    a criterion from core/class_focus.py, or a manual pick. Saved in
+    snapshots as `criterion`, `classes`, `min_support`."""
 
     def __init__(self, target: str, action: str, criteria: tuple,
                  on_change: Callable[[], None], default=None, limit: int = FOCUS_MAX,
@@ -243,7 +241,7 @@ def experiment_color_menu(target: str, name: str, color: str, custom: bool, size
     swatches, "Other color..." (the browser's own picker -- nothing
     fetched), and "Automatic" to go back to its palette color. Each choice
     runs `target.on_color(name=, value=)`, value "" for Automatic."""
-    from lookin.ui.components import EXPERIMENT_PRESET_COLORS
+    from lookin.core.chart_style import EXPERIMENT_PRESET_COLORS
 
     swatches = "".join(
         f'<button type="button" class="swatch{" on" if c == color else ""}" style="background:{c}"'

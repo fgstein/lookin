@@ -1,31 +1,49 @@
-"""Triage: one crop at a time, decided from the keyboard, auto-advancing --
-the web twin of lookin.ui.triage_view.TriageView.
+"""Triage: one crop at a time, decided from the keyboard, auto-advancing.
 
-Same queue, same keys (Space / K keep, R relabel, X exclude, U uncertain,
-1-9 relabel to that class, left / right move, Z undo, Esc close), same
-pre-filled relabel target (the suggestion, else the current label), same
-reference crops for both classes in question, same resume-where-you-left-
-off cursor (core.prefs, keyed by dataset CSV and review version), and every
-decision written and saved at once through review_widgets.record_decision.
+The Cleaning tab's queue, one crop at a time: keys Space / K keep, R
+relabel, X exclude, U uncertain, 1-9 relabel to that class, left / right
+move, Z undo, Esc close; the relabel target pre-filled (the suggestion,
+else the current label); reference crops for both classes in question; a
+resume-where-you-left-off cursor (core.prefs, keyed by dataset CSV and
+review version); and every decision written and saved at once through
+core/review_actions.record_decision.
 
 The keys are read by static/js/cleaning.js, which only acts while this
 panel is the top dialog and focus is not in a field, and sends them as
-`key` actions with the original's Flet key names ("Space", "Arrow Right").
+`key` actions named the way cleaning.js names them ("Space", "Arrow Right").
 """
 from __future__ import annotations
 
 from lookin.core import prefs
-from lookin.core.review import FrozenVersionError, REVIEW_STATUSES, STATUS_RELABEL
-from lookin.ui.review_widgets import NO_REASON, STATUS_LABELS, record_decision
-from lookin.ui.triage_view import (
-    IMAGE_SIZE, KEY_TO_STATUS, MAX_REFERENCES, REFERENCE_THUMB, SHORTCUT_HINT,
+from lookin.core.review import (
+    FrozenVersionError, REVIEW_STATUSES, STATUS_EXCLUDE, STATUS_OK, STATUS_RELABEL, STATUS_UNCERTAIN,
 )
+from lookin.core.review_actions import NO_REASON, STATUS_LABELS, record_decision
 from lookin.web import html as h
 from lookin.web.views.base import Dialog
 from lookin.web.views.carousel import STATUS_CLS, STATUS_ICON, decision_summary, reason_options
 from lookin.web.views.details import details_url
 from lookin.web.views.media import crop_url
 from lookin.web.views.widgets import class_select
+
+
+IMAGE_SIZE = 380
+REFERENCE_THUMB = 74
+MAX_REFERENCES = 6
+
+# Keys arrive by name ("Space", "Arrow Right"), not by character.
+KEY_TO_STATUS = {
+    "Space": STATUS_OK,
+    "K": STATUS_OK,
+    "X": STATUS_EXCLUDE,
+    "U": STATUS_UNCERTAIN,
+    "R": STATUS_RELABEL,
+}
+
+SHORTCUT_HINT = (
+    "Space / K keep   ·   R relabel   ·   X exclude   ·   U uncertain   ·   "
+    "1-9 relabel to that class   ·   ← → move   ·   Z undo   ·   Esc close"
+)
 
 
 def _log(msg: str) -> None:
@@ -188,8 +206,8 @@ class TriageDialog(Dialog):
         if not self.candidates:
             return
         self.index = max(0, min(len(self.candidates) - 1, self.index + step))
-        # The original re-renders the crop on every move, which resets the
-        # relabel target from the evidence.
+        # Every move re-renders the crop, which resets the relabel target
+        # from the evidence.
         self._load_current()
         self._save_cursor()
 

@@ -23,7 +23,7 @@ import pandas as pd
 from lookin.core.metrics import ExperimentMetrics, compute_metrics
 
 # Outcome of one crop under the two models. Keys, compared in code and used
-# as dict keys below -- only their labels in ui/compare_view.py are display
+# as dict keys below -- only their labels in web/views/compare.py are display
 # text.
 OUTCOME_REGRESSION = "regression"    # baseline right, candidate wrong
 OUTCOME_FIX = "fix"                  # baseline wrong, candidate right
@@ -32,7 +32,7 @@ OUTCOME_BOTH_WRONG = "both_wrong"
 OUTCOMES = (OUTCOME_REGRESSION, OUTCOME_FIX, OUTCOME_BOTH_RIGHT, OUTCOME_BOTH_WRONG)
 
 # The three confusion matrices the Compare tab can show. Keys, compared in
-# code -- only their labels in ui/compare_view.py are display text.
+# code -- only their labels in web/views/compare.py are display text.
 # MATRIX_NET is the candidate-minus-baseline difference; the other two are
 # the gross flows it nets against each other, and they satisfy
 # moved_in - moved_out == net cell by cell (see movement_confusion).
@@ -44,7 +44,7 @@ MOVEMENTS = (MATRIX_MOVED_IN, MATRIX_MOVED_OUT)
 
 # The two things the provenance panel can show for the cell that is picked
 # in one of those matrices. Keys, compared in code -- only their labels in
-# ui/compare_view.py are display text.
+# web/views/compare.py are display text.
 FLOW_CELL = "cell"      # only the crops that touch the picked cell
 FLOW_CLASS = "class"    # every crop of the picked cell's true class
 FLOW_MODES = (FLOW_CELL, FLOW_CLASS)

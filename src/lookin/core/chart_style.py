@@ -1,16 +1,18 @@
-"""One look for every chart the app draws, and the two helpers that put it
-on an Axes.
+"""One look for every chart the app draws: the style, the helpers that put
+it on an Axes, and the colors that stand for an experiment or a value.
 
-In core rather than in ui/components.py because core/report_builder.py draws
-figures too, and that half of the app deliberately does not import Flet (see
-its module docstring) -- a style that only applied to the charts on screen
-would give the exported report a different typeface from the tab it was
-exported from.
+In core because three things draw charts -- the tabs, the exported report
+(core/report_builder.py) and the MCP endpoint -- and all three have to agree
+on what a Lookin chart looks like: a style that only applied to the charts
+on screen would give the exported report a different typeface from the tab
+it was exported from.
 
 Nothing here is fetched: see CHART_SERIF_FONTS below, and CLAUDE.md for why
 that matters.
 """
 from __future__ import annotations
+
+import threading
 
 import matplotlib
 matplotlib.use("Agg")
@@ -19,17 +21,19 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from matplotlib.ticker import AutoMinorLocator, NullLocator
 
+from lookin.core.point_coloring import QUALITATIVE
+
 
 def subplots(nrows: int = 1, ncols: int = 1, *, figsize=None, dpi=None, **kwargs):
     """``plt.subplots`` without pyplot's global figure registry.
 
-    Every browser tab is a session in the same server process, and Flet runs
-    event handlers on a thread pool -- so two tabs (or two handlers of one)
-    can draw at the same moment. pyplot keeps every figure in one global
-    registry that is not safe to touch from two threads at once, which is
-    why the heavy rebuilds already queue behind one lock (see
-    ui/components.BackgroundRebuild). A figure made here never enters that
-    registry, so it can be drawn from any thread without that queue.
+    Every browser tab is a session in the same server process, and requests
+    run on a thread pool -- so two tabs (or an MCP call and a tab) can draw
+    at the same moment. pyplot keeps every figure in one global registry
+    that is not safe to touch from two threads at once, which is why the
+    heavy rebuilds queue behind HEAVY_WORK_LOCK. A figure made here never
+    enters that registry, so it can be drawn from any thread without that
+    queue.
 
     The figure is otherwise identical: rcParams (the app style below) are
     read at creation as with pyplot, and plt.close() on it is a harmless
@@ -217,3 +221,83 @@ def legend_below(ax, handles=None, labels=None, ncol: int = 1, fontsize: int = 8
         kwargs["title"] = title
         kwargs["title_fontsize"] = fontsize
     return figure.legend(handles, labels, **kwargs)
+
+
+# Only one expensive rebuild runs at a time, process-wide.
+#
+# Two reasons, and either one alone would be enough. matplotlib's pyplot
+# keeps a *global* figure registry, so two threads calling plt.subplots()
+# concurrently can corrupt it -- and every heavy rebuild in this app ends in
+# matplotlib. And these jobs are CPU-bound to begin with: running three at
+# once would not finish any of them sooner, it would just make all three
+# slower and the machine less responsive.
+#
+# Reentrant, because a rebuild already holding it can reach code that takes
+# it again (a chart drawn inside another view's rebuild).
+HEAVY_WORK_LOCK = threading.RLock()
+
+# The resolution a chart is drawn at where it sits in the page.
+INLINE_DPI = 110
+
+# The app's accent, for the few charts that draw one series.
+ACCENT = "#6C5CE7"
+
+
+def blues_color(fraction: float) -> str:
+    """Interpolate from a light to a dark blue, like matplotlib's Blues cmap."""
+    fraction = max(0.0, min(1.0, fraction))
+    r0, g0, b0 = 224, 231, 255
+    r1, g1, b1 = 30, 58, 138
+    r = int(r0 + (r1 - r0) * fraction)
+    g = int(g0 + (g1 - g0) * fraction)
+    b = int(b0 + (b1 - b0) * fraction)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def diverging_color(improvement: float, max_abs: float) -> str:
+    """Green for better, red for worse, neutral in the middle.
+
+    Takes an *improvement*, not a raw difference: on a difference matrix's
+    diagonal more is better and everywhere else more is worse, so the sign
+    of the count change is not the sign of the news (see
+    core.comparison.cell_improvement). Callers convert first; this only
+    picks the color.
+    """
+    if not max_abs:
+        return "#2a2a30"
+    fraction = max(-1.0, min(1.0, improvement / max_abs))
+    neutral = (42, 42, 48)
+    target = (34, 139, 87) if fraction >= 0 else (190, 60, 60)  # sea green / brick
+    weight = abs(fraction)
+    r, g, b = (int(n + (t - n) * weight) for n, t in zip(neutral, target))
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def color_for_experiment(name: str, slots) -> str:
+    """One color per experiment, from its palette slot.
+
+    `slots` is AppState.color_slots (name -> slot): a slot is given when the
+    experiment is loaded and kept while it stays loaded, so reordering the
+    experiments (the Metrics tab lets that order be dragged around) leaves
+    every color where it was. A plain list of names is still accepted and
+    reads the slot from the position, for callers with no AppState.
+    """
+    if isinstance(slots, dict):
+        idx = slots.get(name, len(slots))
+        if isinstance(idx, str):
+            return idx          # the user's own choice (AppState.set_experiment_color)
+    else:
+        names = list(slots)
+        idx = names.index(name) if name in names else len(names)
+    # QUALITATIVE opens with exactly the ten tab10 colors this used to be
+    # limited to, then keeps going -- so the first ten experiments look
+    # unchanged, and an eleventh no longer silently reuses the first one's
+    # color in every legend and confusion-matrix header.
+    r, g, b = QUALITATIVE[idx % len(QUALITATIVE)]
+    return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
+
+
+# The ten an experiment's color menu offers first (the palette's own first
+# ten, so picking one of them is picking what an experiment could have been
+# given anyway); "Other color..." opens the full picker.
+EXPERIMENT_PRESET_COLORS = [f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}" for r, g, b in QUALITATIVE[:10]]

@@ -1,8 +1,7 @@
 """Cleaning: find the crops worth a human look, decide on them, and export
-the result as something you can train on -- the web twin of
-lookin.ui.cleaning_view.CleaningView.
+the result as something you can train on.
 
-Same three steps, same controls, same texts:
+Three steps:
 
 1. a candidate source proposes crops (score margin, confident errors, all
    errors, consensus, prototype flags, near-duplicates), through the class
@@ -29,17 +28,11 @@ from lookin.core.class_focus import FOCUS_MAX
 from lookin.core.comparison import IMPACT_METRICS, review_impact
 from lookin.core.data_manager import SPLIT_TRAIN
 from lookin.core.review import STATUS_EXCLUDE, STATUS_RELABEL, STATUS_UNCERTAIN
-from lookin.ui.cleaning_view import (
-    ALL_CLASSES, MATCH_LABELS, MAX_TABLE_ROWS, REFERENCE_COUNT, SOURCE_ALL_ERRORS, SOURCE_CONFIDENT,
-    SOURCE_CONSENSUS, SOURCE_DUPLICATES, SOURCE_LABELS, SOURCE_MARGIN, SOURCE_NEEDS_EXPERIMENT,
-    SOURCE_PROTOTYPES, SOURCE_REQUIREMENTS,
-)
-from lookin.ui.cleaning_view import CleaningView as _FletCleaningView
-from lookin.ui.components import diverging_color
-from lookin.ui.embedding_context import (
+from lookin.core.chart_style import diverging_color
+from lookin.core.embedding_context import (
     build_analysis_context, coverage_note, experiments_with_embeddings, experiments_with_model_prototypes,
 )
-from lookin.ui.review_widgets import NO_REASON, record_decision
+from lookin.core.review_actions import NO_REASON, record_decision
 from lookin.web import html as h
 from lookin.web.session import checkpoint
 from lookin.web.views.base import Dialog, StaleTracking, View
@@ -48,7 +41,60 @@ from lookin.web.views.media import crop_url
 from lookin.web.views.review_panel import ReviewPanel
 from lookin.web.views.triage import TriageDialog
 
-SOURCE_MANUAL_PAGES = _FletCleaningView.SOURCE_MANUAL_PAGES
+
+# Candidate source keys. Compared in code, so they are keys, not labels --
+# the readable name lives in SOURCE_LABELS.
+SOURCE_MARGIN = "margin"
+SOURCE_CONFIDENT = "confident_errors"
+SOURCE_ALL_ERRORS = "all_errors"
+SOURCE_CONSENSUS = "consensus"
+SOURCE_PROTOTYPES = "prototype_flags"
+SOURCE_DUPLICATES = "near_duplicates"
+
+SOURCE_LABELS = {
+    SOURCE_MARGIN: "Score margin (results CSV only)",
+    SOURCE_CONFIDENT: "Confident errors (results CSV only)",
+    SOURCE_ALL_ERRORS: "All errors, most confident first (results CSV only)",
+    SOURCE_CONSENSUS: "Consensus across experiments",
+    SOURCE_PROTOTYPES: "Prototype flags (embeddings)",
+    SOURCE_DUPLICATES: "Near-duplicates and leakage (embeddings)",
+}
+
+# Which sources cannot run without a named experiment loaded. Used to guard
+# the automatic re-run when a snapshot is restored: a search whose
+# experiment has gone should do nothing, not raise.
+SOURCE_NEEDS_EXPERIMENT = (SOURCE_MARGIN, SOURCE_CONFIDENT, SOURCE_ALL_ERRORS)
+
+SOURCE_REQUIREMENTS = {
+    SOURCE_MARGIN: "one loaded experiment",
+    SOURCE_CONFIDENT: "one loaded experiment",
+    SOURCE_ALL_ERRORS: "one loaded experiment",
+    SOURCE_CONSENSUS: "at least two loaded experiments",
+    SOURCE_PROTOTYPES: "embeddings + the model's real prototypes",
+    SOURCE_DUPLICATES: "embeddings",
+}
+
+MAX_TABLE_ROWS = 60
+REFERENCE_COUNT = 6
+
+# Class picker: "all classes" plus one positional key per class ("0", "1",
+# ...) -- see _render_class_picker for why the class label is never the key.
+ALL_CLASSES = "all"
+
+MATCH_LABELS = {
+    cand.MATCH_LABEL: "Annotated class",
+    cand.MATCH_SUGGESTION: "Suggested class",
+}
+
+# The manual page each candidate source is explained on.
+SOURCE_MANUAL_PAGES = {
+    SOURCE_MARGIN: "margin-candidates",
+    SOURCE_CONFIDENT: "margin-candidates",
+    SOURCE_ALL_ERRORS: "label-noise",
+    SOURCE_CONSENSUS: "consensus",
+    SOURCE_PROTOTYPES: "embedding-flags",
+    SOURCE_DUPLICATES: "near-duplicates",
+}
 
 BULK_OPTIONS = [
     (STATUS_EXCLUDE, "Exclude all"),
@@ -56,7 +102,7 @@ BULK_OPTIONS = [
     (STATUS_RELABEL, "Relabel all to the suggestion"),
 ]
 
-# Text fields of the search, with the original's defaults. The keys are the
+# Text fields of the search, with their defaults. The keys are the
 # snapshot keys (see view_state).
 FIELD_DEFAULTS = {"limit": "300", "margin": "0.0", "percentile": "2.0", "agree": "2", "similarity": "0.98"}
 FIELD_LABELS = {"limit": "max candidates", "margin": "min margin", "percentile": "percentile",
@@ -234,9 +280,9 @@ class CleaningView(StaleTracking, View):
             self._refresh_coverage()
 
     def _refresh_coverage(self) -> None:
-        """The original's refresh(): the "sidecar covers only some rows"
-        note for the selected experiment -- building the analysis context is
-        not cheap, so it runs in the background."""
+        """The "sidecar covers only some rows" note for the selected
+        experiment -- building the analysis context is not cheap, so it
+        runs in the background."""
         self._coverage_stale = False
         state = self.state
         self._sync_params()
@@ -259,8 +305,8 @@ class CleaningView(StaleTracking, View):
         self._bg("context", "Reading the embeddings...", work)
 
     def on_data_change(self) -> None:
-        # The original re-renders its controls from the new data (cheap,
-        # done by render here) and recomputes the coverage note.
+        # The controls follow the new data by themselves (render reads it)
+        # and the coverage note is computed again.
         self._coverage_stale = True
         if self.built and self.s.tab == self.name:
             self._refresh_coverage()
@@ -302,8 +348,8 @@ class CleaningView(StaleTracking, View):
         return []
 
     def _sync_params(self) -> list:
-        """The original's _render_params: the experiment follows what the
-        source can use, the class scope what the dataset holds."""
+        """The experiment follows what the source can use, the class scope
+        what the dataset holds."""
         names = self._available_experiments(self.source)
         if self.experiment not in names:
             self.experiment = names[0] if names else None
@@ -446,7 +492,7 @@ class CleaningView(StaleTracking, View):
         if analysis is None or exp is None or exp.model_prototypes is None:
             self._results_msg = (
                 "Attach both an embeddings .npz sidecar and the model's real prototypes .npz to "
-                "this experiment (Data tab): a kmeans estimate is not accepted for a scored "
+                "this experiment (Sources tab): a kmeans estimate is not accepted for a scored "
                 "diagnostic.", "info")
             return None
         flags = ea.flag_noisy_samples(
@@ -849,7 +895,7 @@ class CleaningView(StaleTracking, View):
             bulk_note = ("Bulk actions are available because this pool is marked as train."
                          if self._is_train() else
                          "Bulk actions are disabled on a test pool -- excluding many crops at once there fakes the metric. "
-                         "Mark the pool as train on the Data tab if you are cleaning a training set.")
+                         "Mark the pool as train on the Sources tab if you are cleaning a training set.")
         parts = [f'<div class="small cl-header">{h.e(header)}</div>' if header else "", buttons,
                  f'<div class="muted small"><i>{h.e(bulk_note)}</i></div>' if bulk_note else "",
                  self._progress("results")]
@@ -964,8 +1010,7 @@ class CleaningView(StaleTracking, View):
         return "".join(out)
 
     def _breakdown_html(self, impact) -> str:
-        """How the active version moved each metric -- see the original's
-        _active_version_breakdown."""
+        """How the active version moved each metric."""
         deltas = [abs(impact.delta(a)) for a, _ in IMPACT_METRICS if impact.delta(a) == impact.delta(a)]
         max_abs = max(deltas) if deltas else 1.0
         rows = []
@@ -994,7 +1039,7 @@ class CleaningView(StaleTracking, View):
         return (f'<div class="muted small">Where the finding is about the label set rather than about individual '
                 f'labels.</div><div class="stack cl-hints">{items}</div>')
 
-    # ---- snapshots (see ui/view_state.py) ----
+    # ---- snapshots (see core/view_state.py) ----
     def view_state(self) -> dict:
         """The search that was set up, not its results. `class_scope`
         stores the class *label*, never the positional key."""

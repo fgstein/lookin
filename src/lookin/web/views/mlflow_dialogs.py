@@ -1,7 +1,7 @@
 """The two big windows of Home -- All runs and All datasets -- and the small
 ones around them (add a server, columns, the settings file).
 
-All runs is the full MLflow table of the original Home page: every
+All runs is the full MLflow table, Home's runs panel at full size: every
 configured server, the experiments listed (and hidden) per server, the
 run search, MLflow's own filter syntax, failed/killed runs on demand,
 user-chosen param/metric columns, a run expanding to its results CSVs,
@@ -20,11 +20,11 @@ from lookin.core import mlflow_cache
 from lookin.core import mlflow_client as mlf
 from lookin.core import workspace_sources as wss
 from lookin.core.home_config import METRIC_PREFIX, PARAM_PREFIX, column_label, column_value
-from lookin.ui.home_view import (
+from lookin.web.home_model import (
     SELECTED_ALL, SELECTED_NONE, SELECTED_SOME, csv_key, csv_selected, parse_key, run_key, run_selection,
     set_selected, unselect_run, workspace_color,
 )
-from lookin.ui.mlflow_panel import UNSUCCESSFUL_STATUSES
+from lookin.core.mlflow_client import UNSUCCESSFUL_STATUSES
 from lookin.web import datasets as dsc
 from lookin.web import html as h
 from lookin.web.mlflow_hub import MlflowHub

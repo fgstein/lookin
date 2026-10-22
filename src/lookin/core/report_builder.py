@@ -2,8 +2,9 @@
 
 Split from core/report.py -- that one is a small, dumb HTML writer with no
 knowledge of this app; this one knows what a Lookin session contains and
-decides what is worth writing down. Neither imports Flet, so the whole
-report can be produced and tested without a UI.
+decides what is worth writing down. Neither knows about the web pages, so
+the whole report can be produced -- from a tab, or by an agent over MCP --
+and tested without a UI.
 """
 from __future__ import annotations
 

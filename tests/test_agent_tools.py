@@ -163,9 +163,10 @@ def _rpc(client, method, params=None, id_=1):
 def test_the_endpoint_serves_tools_next_to_the_ui(workspace, tmp_path):
     from starlette.testclient import TestClient
 
-    from lookin.mcp_server import TOOLS, build_asgi_app
+    from lookin.mcp_server import TOOLS
+    from lookin.web.server import WebApp, create_app
 
-    app = build_asgi_app(lambda page: None, assets_dir=str(tmp_path))
+    app = create_app(WebApp(), enable_mcp=True)
     with TestClient(app, base_url="http://lookin-server.lan:8550") as client:
         init = _rpc(client, "initialize", {
             "protocolVersion": "2025-11-25", "capabilities": {},

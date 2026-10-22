@@ -2,12 +2,12 @@
 correction. One session-wide setting (a LUT that applied in the carousel
 but not in the gallery would mean two views of the same crop disagreeing),
 display only -- no file is touched and nothing is computed through it.
-Same behaviour as lookin.ui.display_settings.
 """
 from __future__ import annotations
 
-from lookin.ui.components import LUT_DESCRIPTIONS, LUT_NONE, LUT_OPTIONS, ROLL_NONE
-from lookin.ui.display_settings import ROLL_NONE_KEY, roll_column_candidates
+from lookin.core.images import (
+    LUT_DESCRIPTIONS, LUT_NONE, LUT_OPTIONS, ROLL_NONE, ROLL_NONE_KEY, roll_column_candidates,
+)
 from lookin.web import html as h
 from lookin.web.views.base import Dialog
 

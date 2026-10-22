@@ -34,8 +34,8 @@ CATEGORICAL_MAX_UNIQUE = 20
 # category column, but a real-world "filename", "notes" or "session_id"
 # metadata column can easily have as many unique values as there are rows.
 # Without this cap, such a column silently generates hundreds of thousands
-# of Flet controls and looks exactly like a hang: no error, no progress,
-# just a browser/server that never comes back.
+# of checkboxes and looks exactly like a hang: no error, no progress, just
+# a browser that never comes back.
 HIGH_CARDINALITY_MAX_UNIQUE = 200
 # The same guard for the label column, set higher: real datasets have
 # thousands of classes (fine-grained species, product SKUs), and the views
@@ -47,7 +47,7 @@ LABEL_MAX_CLASSES = 5_000
 CHUNK_ROWS = 50_000
 
 # What pool is currently loaded. Keys, compared in code (see
-# ui/cleaning_view.py): predictions on a train pool are in-sample, which
+# web/views/cleaning.py): predictions on a train pool are in-sample, which
 # changes what a cleaning diagnostic is allowed to claim and gates the bulk
 # actions -- excluding hundreds of test crops in one click is how a metric
 # gets faked, so that only exists for train.
@@ -61,7 +61,7 @@ ProgressCallback = Callable[[int, int], None]  # (rows_done, rows_total)
 
 def _log(msg: str) -> None:
     """Every load phase prints here so a stuck/slow load is visible in the
-    terminal running `lookin ui` -- the UI only ever shows the last status
+    terminal running `lookin web` -- the UI only ever shows the last status
     line, which isn't enough to tell a hang from a merely-slow phase, or to
     tell which phase (row counting, CSV parsing, dtype downcasting, preview
     building...) is the one actually taking the time."""
@@ -371,7 +371,7 @@ class Dataset:
     columns: ColumnConfig
     base_dir: Path
     # Explicit override for where relative crop paths resolve from, set via
-    # the Data tab's "Image root path" field -- lets the CSV live somewhere
+    # the Sources tab's "Image root path" field -- lets the CSV live somewhere
     # other than the images themselves (e.g. CSV checked into a repo, images
     # on a separate mounted volume). Falls back to base_dir (the CSV's own
     # directory) when not set, which was the only behavior before.
@@ -885,7 +885,7 @@ class AppState:
         if self.dataset is not None and not self.dataset.columns.has_ids():
             raise ValueError(
                 "The dataset was loaded with no uuid column, so no results CSV can be matched to its "
-                "crops. Pick its uuid column in the Data tab and load the dataset again."
+                "crops. Pick its uuid column in the Sources tab and load the dataset again."
             )
         # Score columns parsed straight to float32, which is what they are
         # downcast to anyway: parsed as float64 first, a results file of two
@@ -1034,8 +1034,8 @@ class AppState:
 
         Views hold their own name-keyed caches and dropdown values, so the
         rename has to be announced to them too -- see
-        AppContext.notify_rename(), which every view mirrors into its own
-        state instead of recomputing.
+        Session.notify_rename(), which every view mirrors into its own state
+        instead of recomputing.
         """
         new_name = new_name.strip()
         if not new_name or new_name == old_name:

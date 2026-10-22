@@ -22,7 +22,6 @@ port does not.
 from __future__ import annotations
 
 import json
-from contextlib import AsyncExitStack
 from typing import Annotated
 
 from pydantic import Field
@@ -182,44 +181,3 @@ def build_server():
         server.add_tool(tool, structured_output=False, annotations=ToolAnnotations(
             read_only_hint=True, open_world_hint=tool is search_mlflow_runs))
     return server
-
-
-def build_asgi_app(session_handler, assets_dir: str, enable_mcp: bool = True):
-    """The Flet web UI at /, plus the MCP endpoint at MCP_PATH.
-
-    This assembles what flet's own `ft.app(view=WEB_BROWSER)` would serve
-    (flet_web.fastapi.serve_fastapi_web_app), with one more route in front
-    of the UI's catch-all mount. The MCP session manager needs a task group
-    for the life of the server; Flet's FastAPI subclass runs its startup and
-    shutdown hooks inside one lifespan task, which is what lets the group be
-    entered in one hook and left in the other.
-    """
-    import flet as ft
-    import flet_web.fastapi as flet_fastapi
-
-    stack = AsyncExitStack()
-    routes = []
-    if enable_mcp:
-        from mcp.server.transport_security import TransportSecuritySettings
-
-        server = build_server()
-        mcp_app = server.streamable_http_app(
-            streamable_http_path=MCP_PATH, stateless_http=True, json_response=True,
-            transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
-        )
-        routes = list(mcp_app.routes)
-
-        async def start_mcp():
-            await stack.enter_async_context(server.session_manager.run())
-    else:
-        async def start_mcp():
-            pass
-
-    app = flet_fastapi.FastAPI(on_startup=[start_mcp], on_shutdown=[stack.aclose],
-                               docs_url=None, redoc_url=None, openapi_url=None)
-    app.router.routes.extend(routes)
-    app.mount("/", flet_fastapi.app(
-        session_handler, assets_dir=assets_dir, web_renderer=ft.WebRenderer.CANVAS_KIT,
-        route_url_strategy="path", use_color_emoji=False,
-    ))
-    return app

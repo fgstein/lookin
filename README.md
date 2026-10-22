@@ -11,21 +11,22 @@ Requires [uv](https://docs.astral.sh/uv/).
 
 ```bash
 uv tool install .
-lookin ui
+lookin web
 ```
 
-This opens the web interface at `http://127.0.0.1:8550`. Use `--host` /
-`--port` to change where it binds:
+This serves the interface at `http://127.0.0.1:8560` -- a plain HTML page
+served by the Python process, nothing fetched from the network. Use
+`--host` / `--port` to change where it binds:
 
 ```bash
-lookin ui --host 0.0.0.0 --port 8080
+lookin web --host 0.0.0.0 --port 8080
 ```
 
 Point it at data on startup instead of typing/browsing for it in the UI,
 with `--dataset` and (optionally, repeatable) `--experiment NAME=PATH`:
 
 ```bash
-lookin ui --dataset /path/to/dataset.csv \
+lookin web --dataset /path/to/dataset.csv \
   --experiment baseline=/path/to/results_baseline.csv \
   --experiment finetuned=/path/to/results_finetuned.csv
 ```
@@ -33,42 +34,23 @@ lookin ui --dataset /path/to/dataset.csv \
 Without installing, you can also run it directly from the project directory:
 
 ```bash
-uv run lookin ui
+uv run lookin web
 ```
 
-### The new browser interface: `lookin web`
-
-```bash
-lookin web                      # http://127.0.0.1:8560
-lookin web --dataset /path/to/dataset.csv --experiment baseline=/path/to/results.csv
-```
-
-The same tool, redesigned as a plain HTML page served by the Python process
-(no Flet, nothing fetched from the network). It takes the same options as
-`lookin ui` (including `--no-mcp`: it serves the same MCP endpoint at
-`/mcp`) and reads the same library, so workspaces, snapshots and review
-decisions are shared between the two -- both can run at the same time.
 Every browser tab is its own session: open several workspaces side by side
-and nothing in one affects the others. See `src/lookin/web/README.md` for how
-it is built.
+and nothing in one affects the others. Two servers can run at once on one
+machine (on two ports), and share the same library, workspaces, snapshots
+and review decisions. See `src/lookin/web/README.md` for how the interface
+is built.
 
-It also has a light and a dark mode: the sun / moon button in the top bar
+It has a light and a dark mode: the sun / moon button in the top bar
 switches between them, and this browser remembers the choice (until then it
 follows the system's setting). Charts and the Embeddings map stay on white
 in both, like the PNGs they are exported as.
 
-It also has a **Filter** tab, right after Sources, that `lookin ui` does not:
-remove rows from the loaded dataset by conditions on its columns (pick
-values, a numeric range, contains / regex, empty or not) or by a query
-written like a pandas one (`width >= 32 and label in ['cat', 'dog']`,
-`` `object size`.between(0.2, 0.8) ``, `crop.str.contains('cam2/')`). The
-query is parsed and checked, never run as Python. Once applied, every other
-tab works on the rows kept, the bar above them says how many, and the filter
-is saved with the workspace and in each snapshot.
-
 ## What it does
 
-1. **Data tab** -- load a dataset CSV (one row per cropped image: an id,
+1. **Sources tab** -- load a dataset CSV (one row per cropped image: an id,
    a path to the crop, a label, and any number of metadata columns;
    the three roles are guessed from the file's own values -- an id is
    uuid-shaped, a crop is a path, a label is a short string -- and each is
@@ -89,12 +71,20 @@ is saved with the workspace and in each snapshot.
    acquisitions, images from another source), as a CSV with an id column
    and a path to each image, plus an embeddings `.npz`. No label is
    expected. See the Embeddings tab below.
-2. **Statistics tab** -- a histogram or value-count chart for every column.
-3. **Gallery tab** -- a filterable, paginated image mosaic (label,
+2. **Filter tab** -- remove rows from the loaded dataset by conditions on
+   its columns (pick values, a numeric range, contains / regex, empty or
+   not) or by a query written like a pandas one (`width >= 32 and label in
+   ['cat', 'dog']`, `` `object size`.between(0.2, 0.8) ``,
+   `crop.str.contains('cam2/')`). The query is parsed and checked, never
+   run as Python. Once applied, every other tab works on the rows kept, the
+   bar above them says how many, and the filter is saved with the workspace
+   and in each snapshot.
+3. **Statistics tab** -- a histogram or value-count chart for every column.
+4. **Gallery tab** -- a filterable, paginated image mosaic (label,
    categorical/binary metadata checkboxes, numeric range sliders), with
    adjustable rows x columns. Click an image for a full-resolution,
    paginated carousel view with all of its metadata.
-4. **Metrics tab** -- per-class precision/recall/F1, ROC and
+5. **Metrics tab** -- per-class precision/recall/F1, ROC and
    Precision-Recall curves, and clickable confusion matrices (a cell opens
    the image carousel for that exact true/predicted combination) --
    overlaid across every experiment you select, for direct comparison.
@@ -102,25 +92,25 @@ is saved with the workspace and in each snapshot.
    accuracy is recomputed per slice of it -- per sensor, per site, per crop
    size -- so "the model is at 94%" becomes "94%, except 61% on this
    sensor". See below.
-5. **Calibration tab** -- whether the confidence can be believed, and what
+6. **Calibration tab** -- whether the confidence can be believed, and what
    refusing to answer buys: reliability diagrams, ECE/MCE, the
    risk-coverage curve, a threshold explorer that runs both directions, and
    temperature scaling. See below.
-6. **Compare tab** -- two experiments head to head: how many crops each
+7. **Compare tab** -- two experiments head to head: how many crops each
    one broke and fixed, a differential confusion matrix (candidate minus
    baseline, coloured by whether the change is good news rather than by
    the sign of the count), a per-class breakdown, and the regressed and
    fixed crops themselves, most-confident first, openable in the image
    carousel. The accuracy delta only shows the net; a model can gain a
    point overall while breaking hundreds of crops it used to get right.
-7. **Embeddings tab** -- a 2D projection of an experiment's embeddings,
+8. **Embeddings tab** -- a 2D projection of an experiment's embeddings,
    plus a class-overlap matrix: mean cosine similarity within and between
    classes, measured on the crops themselves. The confusion matrix says the
    model mixes two classes up; this says whether they genuinely sit on top
    of each other, which is the difference between a model that needs more
    training and a taxonomy that needs rewriting. Simple inferences loaded
-   on the Data tab can be overlaid on the same map -- see below.
-8. **Cleaning tab** -- find the crops worth a human look, decide on them,
+   on the Sources tab can be overlaid on the same map -- see below.
+9. **Cleaning tab** -- find the crops worth a human look, decide on them,
    and export a versioned dataset you can train on. See below.
 
 **Display LUTs.** Greyscale crops often use a narrow slice of the available
@@ -155,7 +145,7 @@ label -- a crop whose neighbours are mostly another class is either
 mislabelled or genuinely ambiguous.
 
 **Simple inferences: crops that are not in the dataset.** Load a CSV of
-image paths and an embeddings `.npz` from the same model (Data tab, section
+image paths and an embeddings `.npz` from the same model (Sources tab, section
 3), and the Embeddings tab can draw those crops on the same map as the
 dataset's own, as squares. They carry no label and never enter a metric,
 the confusion matrix, the cleaning queue or the review -- the tool has no
@@ -201,7 +191,7 @@ Every section that shows a number, a curve or a table carries a small **(i)**
 on its right. It opens one window -- the reference manual -- at the page for
 what you were looking at, with the table of contents of the whole manual
 down the side, so the neighbouring pages are one click away. The book icon
-in the app bar opens the same window at its front page, and the search box
+in the top bar opens the same window at its front page, and the search box
 filters the contents.
 
 A page starts with a two-sentence summary, then gives the definition with
@@ -216,10 +206,10 @@ section carries one line saying what it is or how to drive it, and the theory
 lives one click away behind its (i).
 
 Equations are typeset with matplotlib's mathtext engine and drawn as images,
-in the same serif face as the charts -- there is no MathJax, no web view and
-nothing fetched (see *Runs fully offline*). The content lives in
+in the same serif face as the charts -- there is no MathJax and nothing
+fetched (see *Runs fully offline*). The content lives in
 `src/lookin/core/manual/`, one module per chapter, as data rather than
-markup; `src/lookin/ui/manual_view.py` draws it.
+markup; `src/lookin/web/views/manual.py` draws it.
 
 ## Where the average comes from: slicing by metadata
 
@@ -344,7 +334,7 @@ time with reference crops of both classes in question, decided from the
 keyboard (`Space`/`K` keep, `R` relabel, `X` exclude, `U` uncertain, `1-9`
 relabel to that class, `Z` undo). Bulk actions -- excluding a whole noisy
 subcenter at once -- exist only when the pool is marked as **train** on the
-Data tab, and are undoable as a single batch.
+Sources tab, and are undoable as a single batch.
 
 **Exporting.** The export writes your dataset CSV back out unchanged --
 every row, every column, in order -- plus two columns per version:
@@ -364,7 +354,7 @@ kind of near-miss that loses an afternoon of judgement.
 
 Training then filters `review_status_v2 != "exclude"` and reads
 `label_review_v2`. The source CSV is re-read in full, so a row filter on the
-Data tab never truncates the export. Loading an exported CSV back into
+Sources tab never truncates the export. Loading an exported CSV back into
 Lookin picks its versions up again, so the enriched file is a complete
 exchange format on its own.
 
@@ -399,7 +389,7 @@ dependency, which is what the rest of this project avoids.
 
 ## Home: MLflow runs and workspaces
 
-Lookin opens on its **Home** page (the "Home" link in the app bar brings it
+Lookin opens on its **Home** page (the "Home" link in the top bar brings it
 back at any time):
 
 - **On the left, your MLflow runs** -- every run of every configured tracking
@@ -416,14 +406,14 @@ back at any time):
   it. A run with several CSVs asks which ones. The workspaces sit in
   groups you name (a project, a stage...); each group's **+** creates one
   in it. The dataset is optional at creation: set it on the card, in the
-  Data tab once the workspace is open, or let the first run added bring it
+  Sources tab once the workspace is open, or let the first run added bring it
   (its `datamodule/configs/database/csv_path` parameter, configurable). A
   run evaluated on another dataset is refused.
 - **An open workspace follows its card.** A dataset or a run added on Home
   -- in this tab or another -- shows up in the tab where the workspace is
   open within a few seconds.
-- **Saving is explicit.** What you load or change in the Data tab is not
-  written into the workspace until you click **Save** in the app bar, which
+- **Saving is explicit.** What you load or change in the Sources tab is not
+  written into the workspace until you click **Save** in the top bar, which
   appears as soon as the two differ (or **Save as workspace** when no
   workspace is open). Snapshots of the view are saved separately, from the
   Workspaces window.
@@ -444,7 +434,7 @@ shown greyed, and workspaces keep working from what was downloaded.
 
 Workspaces live in `~/.config/lookin/library` (or `--library` /
 `$LOOKIN_LIBRARY`, e.g. a shared mount). The Workspaces window (the box icon
-on Home, or the chips in the app bar) is where one is exported, imported,
+on Home, or the chips in the top bar) is where one is exported, imported,
 renamed and its snapshots managed. Workspaces used to be called
 *bundles*; existing ones load as they are.
 
@@ -453,11 +443,10 @@ experiments and snapshots -- under a new id, right below the original;
 changing one never changes the other.
 
 An experiment's color is its dot's to change: click it (Metrics tab, or the
-Experiments table on Sources) for ten preset colors, any other color
-(`lookin web`), or *Automatic* to go back to its palette one. Every chart
+Experiments table on Sources) for ten preset colors, any other color, or *Automatic* to go back to its palette one. Every chart
 follows, and the color is saved with the workspace.
 
-For a one-off look without a workspace, the Data tab's **Add from MLflow...**
+For a one-off look without a workspace, the Sources tab's **Add from MLflow...**
 loads a single CSV from a run into the session on screen.
 
 A bundled CIFAR-10-based example dataset loads by default so the tool is
@@ -504,29 +493,30 @@ nothing, and exposes nothing the UI does not. `--no-mcp` turns it off.
 
 ```bash
 uv sync              # install into a local .venv, including dev deps
-uv run lookin ui     # run from source
+uv run lookin web    # run from source
 uv run pytest        # run the test suite
 ```
 
-Tests cover `src/lookin/core/` -- the pure-computation layer with no Flet
-dependency: the versioned review store (cumulative resolution, tombstones,
-freezing, and the export/adopt round-trip), the metrics (including the
-hand-written Brier decomposition and calibration error, checked against
-their defining identities), the slice machinery (quantile bins that stay
-comparable across experiments, the Wilson interval, the small-slice guard),
-selective prediction (that the two threshold queries agree with each other,
-including on tied confidences, and that temperature scaling never moves an
-argmax), and the data model (column typing, the dataset<->experiment join,
-and its cache invalidation).
+Most tests cover `src/lookin/core/` -- the computation layer, which knows
+nothing of HTML: the versioned review store (cumulative resolution,
+tombstones, freezing, and the export/adopt round-trip), the metrics
+(including the hand-written Brier decomposition and calibration error,
+checked against their defining identities), the slice machinery (quantile
+bins that stay comparable across experiments, the Wilson interval, the
+small-slice guard), selective prediction (that the two threshold queries
+agree with each other, including on tied confidences, and that temperature
+scaling never moves an argmax), and the data model (column typing, the
+dataset<->experiment join, and its cache invalidation).
 
-A few tests render a view instead: the slice panel and the Calibration tab
-are built against an `AppState` and a context with no Flet page, which is
-enough to check the wiring those two add on top of `core/` -- every
-`.update()` in a view is already guarded by `if control.page:`, so a
-pageless context renders the whole thing and skips the pushes.
+The rest drive the browser interface without a browser: a `lookin web`
+session is a Python object, so a test opens one, calls a view's actions and
+reads the HTML it renders -- every tab renders, two tabs never share state,
+every snapshot view restores what it saved (`tests/test_web_sessions.py`).
+The MCP tools are called both as functions and over HTTP
+(`tests/test_agent_tools.py`, `tests/test_mcp_write.py`).
 
-None of it needs a browser, a server or the bundled data -- everything is
-built in `tmp_path`.
+Everything is built in `tmp_path`; the bundled example data is copied there
+before a test writes next to it.
 
 Regenerate the bundled example data (`src/lookin/data/example/`):
 
@@ -545,14 +535,14 @@ uv run python scripts/generate_stress_test.py --rows 120000 --experiments 5
 
 ```
 src/lookin/
-  app.py            Flet app entry point (run_ui)
   cli.py            `lookin` command (argparse)
-  core/             data model, metrics, MLflow REST client -- no UI deps
+  mcp_server.py     the MCP endpoint: tool descriptions for AI agents
+  core/             data model, metrics, charts, MLflow REST client -- no HTML
   core/manual/      the reference manual's text, one module per chapter
-  ui/               one module per tab, plus shared components/carousel
   web/              `lookin web`: FastAPI server, per-tab sessions, HTML views
+  web/static/       the page's CSS, JavaScript and fonts -- all local
   data/example/     bundled CIFAR-10-based example dataset
-scripts/            one-off data-generation scripts (not shipped in the package)
+scripts/            data generation and benchmarks (not shipped in the package)
 ```
 
 ## Scale notes
@@ -572,27 +562,19 @@ Update, like every other cache in the app.
 
 ## Runs fully offline
 
-Flet's web client normally reaches out to the internet in three places, all
-eliminated here:
+Lookin is used on machines with no route to the internet, so nothing it
+serves comes from anywhere else:
 
-1. It fetches its own `flet-web` package via pip if the installed version
-   doesn't match `flet` exactly -- `flet` and `flet-web` are pinned to the
-   exact same version in `pyproject.toml`, so that check always passes
-   locally.
-2. Its bundled Flutter app streams the CanvasKit (Skia/WASM) renderer from
-   `gstatic.com/flutter-canvaskit` on page load -- `lookin ui` patches the
-   installed Flet web assets, once, to serve a CanvasKit copy bundled
-   inside this package instead. This has to be patched in *two* places:
-   `flutter_bootstrap.js`'s own loader config, and a second, independent
-   default read from the engine-init config inside the compiled
-   `main.dart.js` itself.
-3. The app's base UI font (Roboto) and CanvasKit's fallback fonts for
-   other scripts (CJK, Arabic, etc.) are both fetched from
-   `fonts.gstatic.com` through that same engine-init config. Roboto is
-   bundled locally and served from a local `fonts/` directory; the
-   (unneeded) fallback-script fonts simply 404 locally instead of
-   reaching Google.
+- The page is plain HTML, CSS and JavaScript written for it, in
+  `src/lookin/web/static/` -- no framework, no CDN.
+- Its fonts (IBM Plex Sans and Mono, under their open licence) ship in
+  `static/fonts/`; charts and equations use the serif faces bundled inside
+  matplotlib.
+- Charts, equations and crops are drawn on the server (matplotlib, Pillow)
+  and sent as images; the Embeddings map is drawn on a canvas by
+  `static/js/projection.js`.
+- Nothing is installed or downloaded at runtime. The only outbound calls
+  are to the MLflow servers you configure yourself.
 
-See `src/lookin/_offline_assets.py` for the implementation. You can confirm
-this yourself by opening your browser's Network tab while running
-`lookin ui`: every request should stay on `localhost`.
+You can confirm this by opening your browser's Network tab while running
+`lookin web`: every request stays on the Lookin server.

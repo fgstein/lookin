@@ -1,6 +1,6 @@
 """Compare: two experiments, head to head, crop by crop.
 
-Same tab as lookin.ui.compare_view, as HTML. A baseline picker and a
+A baseline picker and a
 candidate picker, and an explicit Compare click (a comparison is a full
 pass over every crop of both experiments) that runs in the background.
 Then, in the order the question is asked:
@@ -23,23 +23,69 @@ from __future__ import annotations
 
 from lookin.core import class_focus as cf
 from lookin.core import comparison as cmp
-from lookin.ui.class_matrix import short_column_labels
-from lookin.ui.compare_view import (
-    CELL_SIZE, CHANGED_CELLS_SHOWN, COMPARE_FOCUS_CRITERIA, CROP_LIST_PAGE, FLOW_CELL_SIZE,
-    FLOW_COLUMN_WIDTH, FLOW_LABEL_COL_WIDTH, FLOW_MODE_LABELS, LABEL_COL_WIDTH, MATRIX_LABELS,
-    OUTCOME_LABELS, PLACEHOLDER_PANEL_WIDTH, _signed,
-)
-from lookin.ui.components import (
-    diverging_color, matrix_cell_size, matrix_label_chars, matrix_text_size,
-)
+from lookin.core.chart_style import diverging_color
 from lookin.web import html as h
 from lookin.web.views.base import RebuildView
 from lookin.web.views.carousel import CarouselDialog
-from lookin.web.views.common import status_line
+from lookin.web.views.common import (
+    matrix_cell_size, matrix_label_chars, matrix_text_size, short_column_labels, status_line,
+)
 from lookin.web.views.widgets import ClassFocus
 
-# The original's Flet colours (RED_400, GREEN_400, ON_SURFACE_VARIANT,
-# ORANGE_400), as the page's CSS values.
+
+CELL_SIZE = 38
+FLOW_CELL_SIZE = 34      # the provenance matrix sits beside the main one, so its cells are tighter
+LABEL_COL_WIDTH = 96
+FLOW_LABEL_COL_WIDTH = 84
+FLOW_COLUMN_WIDTH = 88   # "came from" / "went to" in the panel's focused reading
+PLACEHOLDER_PANEL_WIDTH = 300  # the provenance panel before a cell is picked
+CROP_LIST_PAGE = 24  # rows shown per outcome list before "open all in the carousel"
+
+# Display labels for core.comparison's outcome keys. The keys themselves are
+# compared in code and must not be reworded (see CLAUDE.md).
+# Which classes the matrix and the per-class table show past FOCUS_MAX
+# (see ClassFocus).
+COMPARE_FOCUS_CRITERIA = (
+    (cf.FOCUS_MOST_CHANGED, "Most changed cells"),
+    (cf.FOCUS_LARGEST_SUPPORT, "Largest support"),
+    (cf.FOCUS_MANUAL, "Hand-picked"),
+)
+
+# Rows of the most-changed-cells table.
+CHANGED_CELLS_SHOWN = 15
+
+OUTCOME_LABELS = {
+    cmp.OUTCOME_REGRESSION: "Broken by the candidate",
+    cmp.OUTCOME_FIX: "Fixed by the candidate",
+    cmp.OUTCOME_BOTH_RIGHT: "Right in both",
+    cmp.OUTCOME_BOTH_WRONG: "Wrong in both",
+}
+
+# Display labels for the three confusion matrices, keyed by
+# core.comparison's MATRIX_VIEWS keys (compared in code, see CLAUDE.md).
+MATRIX_LABELS = {
+    cmp.MATRIX_NET: "Net change",
+    cmp.MATRIX_MOVED_IN: "Moved in",
+    cmp.MATRIX_MOVED_OUT: "Moved out",
+}
+
+# Display labels for the provenance panel's two readings, keyed by
+# core.comparison's FLOW_MODES keys (compared in code, see CLAUDE.md).
+FLOW_MODE_LABELS = {
+    cmp.FLOW_CELL: "This cell only",
+    cmp.FLOW_CLASS: "The whole class",
+}
+
+
+def _signed(value: int) -> str:
+    """A count written as what it does to a cell: an arrival adds, a
+    departure subtracts. Zero gets no sign, since nothing moved and "+0"
+    would claim a direction the number does not have."""
+    return "0" if not value else f"{value:+,d}"
+
+
+# One colour per outcome: red for a regression, green for a fix, muted for
+# a crop both got right, orange for one both got wrong.
 OUTCOME_COLORS = {
     cmp.OUTCOME_REGRESSION: "#E53935",
     cmp.OUTCOME_FIX: "#2E9E4F",
@@ -48,21 +94,19 @@ OUTCOME_COLORS = {
 }
 FIX_COLOR = OUTCOME_COLORS[cmp.OUTCOME_FIX]
 BROKEN_COLOR = OUTCOME_COLORS[cmp.OUTCOME_REGRESSION]
-# The original's dark cell for "this crop never moved" in the class-wide grid.
+# The dark cell for "this crop never moved" in the class-wide grid.
 UNMOVED_CELL = "#232329"
-# ON_SURFACE_VARIANT of the original's dark theme: the muted text on those
-# dark cells (the page's own --muted would vanish on them).
+# The muted text on those dark cells (the page's own --muted would vanish
+# on them).
 ON_DARK_MUTED = "#9d9aa6"
-
-PLACEHOLDER_NO_DATA = ("Load a dataset and at least two experiments in the 'Data' tab -- "
+PLACEHOLDER_NO_DATA = ("Load a dataset and at least two experiments in the 'Sources' tab -- "
                        "this tab compares one against another.")
 PLACEHOLDER_PICK = "Pick a baseline and a candidate above, then click Compare."
 STALE_DATA = "Data has changed -- this comparison is out of date."
 STALE_PAIR = "Pair changed -- click Compare to update."
 
-# Icons the shared set does not have (Flet's TRENDING_DOWN/UP,
-# CHECK_CIRCLE_OUTLINE, REMOVE_CIRCLE_OUTLINE, SWAP_HORIZ, COMPARE_ARROWS,
-# CALL_SPLIT, LOGIN, LOGOUT, TOUCH_APP), drawn inline like html.icon.
+# Icons the shared set does not have (trends, outcomes, arrows in and out,
+# a pointer), drawn inline like html.icon.
 _ICONS = {
     "trend-down": '<path d="M3 7l6 6 4-4 8 8M15 17h6v-6"/>',
     "trend-up": '<path d="M3 17l6-6 4 4 8-8M15 7h6v6"/>',
@@ -141,8 +185,8 @@ class CompareView(RebuildView):
     # ---- experiment pickers ---------------------------------------------
 
     def _sync_pair(self) -> None:
-        """The original's _rebuild_dropdowns: keep the user's choice while
-        it survives, default to the first two experiments."""
+        """Keep the user's choice while it survives, default to the first two
+        experiments."""
         names = list(self.state.experiments)
         for attr, default_index in (("baseline_value", 0), ("candidate_value", 1)):
             value = getattr(self, attr)
@@ -452,8 +496,8 @@ class CompareView(RebuildView):
         return f"{head}{diff.candidate} - {diff.baseline} = {value:+d}\n({diagonal_note})"
 
     def _caption(self, text: str) -> str:
-        """The original's caption, kept whole but clamped to two lines (the
-        full text is on hover): a tab carries one line under a chart."""
+        """A caption, kept whole but clamped to two lines (the full text is
+        on hover): a tab carries one line under a chart."""
         return f'<div class="cmp-cap" title="{h.e(text)}">{h.e(text)}</div>'
 
     def _matrix_switch(self, diff) -> str:
@@ -793,7 +837,7 @@ class CompareView(RebuildView):
         self._sync_pair()
         self.refresh()
 
-    # ---- snapshots (see ui/view_state.py) ---------------------------------------------
+    # ---- snapshots (see core/view_state.py) ---------------------------------------------
 
     def view_state(self) -> dict:
         return {"baseline": self.baseline_value or "", "candidate": self.candidate_value or "",

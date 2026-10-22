@@ -8,21 +8,25 @@ different image.
 """
 from __future__ import annotations
 
-import base64
 import io
 
 import numpy as np
 import pytest
 from PIL import Image
 
-from lookin.ui.components import (
+from lookin.core.images import (
     LUT_EQUALIZE, LUT_MINMAX, LUT_NONE, LUT_OPTIONS, LUT_PERCENTILE,
-    _apply_lut, file_to_full_base64,
+    _apply_lut, crop_bytes,
 )
 
 
-def _decode(b64: str) -> np.ndarray:
-    return np.array(Image.open(io.BytesIO(base64.b64decode(b64))))
+def _served(path, lut: str = LUT_NONE, turns: int = 0) -> bytes:
+    """What the browser is sent for this crop (see core/images.crop_bytes)."""
+    return crop_bytes(str(path), lut, turns % 4)[0]
+
+
+def _decode(data: bytes) -> np.ndarray:
+    return np.array(Image.open(io.BytesIO(data)))
 
 
 @pytest.fixture
@@ -110,23 +114,23 @@ def test_alpha_is_carried_through_untouched():
 
 def test_no_lut_serves_the_file_untouched(dim_grey):
     original = dim_grey.read_bytes()
-    served = base64.b64decode(file_to_full_base64(dim_grey, LUT_NONE))
+    served = _served(dim_grey, LUT_NONE)
     assert served == original, "a PNG with no LUT is passed through byte for byte"
 
 
 def test_a_lut_changes_what_is_shown_but_not_the_file(dim_grey):
     before = dim_grey.read_bytes()
-    shown = _decode(file_to_full_base64(dim_grey, LUT_PERCENTILE))
+    shown = _decode(_served(dim_grey, LUT_PERCENTILE))
     assert shown.max() > 200, "the dim crop is stretched for display"
     assert dim_grey.read_bytes() == before, "the file on disk is untouched"
 
 
 def test_the_cache_is_keyed_on_the_lut(dim_grey):
     """Switching LUT must not return the previous rendering."""
-    plain = file_to_full_base64(dim_grey, LUT_NONE)
-    stretched = file_to_full_base64(dim_grey, LUT_MINMAX)
+    plain = _served(dim_grey, LUT_NONE)
+    stretched = _served(dim_grey, LUT_MINMAX)
     assert plain != stretched
-    assert file_to_full_base64(dim_grey, LUT_NONE) == plain, "and back again"
+    assert _served(dim_grey, LUT_NONE) == plain, "and back again"
 
 
 def test_sixteen_bit_is_brought_down_even_with_no_lut(tmp_path):
@@ -135,7 +139,7 @@ def test_sixteen_bit_is_brought_down_even_with_no_lut(tmp_path):
     arr = np.linspace(0, 65535, 64 * 64).reshape(64, 64).astype(np.uint16)
     path = tmp_path / "deep.tif"
     Image.fromarray(arr, mode="I;16").save(path)
-    shown = _decode(file_to_full_base64(path, LUT_NONE))
+    shown = _decode(_served(path, LUT_NONE))
     assert shown.dtype == np.uint8
     assert shown.min() == 0 and shown.max() == 255
 
@@ -143,11 +147,11 @@ def test_sixteen_bit_is_brought_down_even_with_no_lut(tmp_path):
 def test_an_unreadable_image_falls_back_instead_of_raising(tmp_path):
     broken = tmp_path / "broken.png"
     broken.write_bytes(b"not a png")
-    assert file_to_full_base64(broken, LUT_MINMAX)
+    assert _served(broken, LUT_MINMAX)
 
 
 def test_every_offered_option_is_implemented(dim_grey):
     """The dropdown and the implementation must not drift apart."""
     for key, label in LUT_OPTIONS:
         assert label
-        assert file_to_full_base64(dim_grey, key)
+        assert _served(dim_grey, key)

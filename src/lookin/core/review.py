@@ -51,7 +51,7 @@ from lookin.core import fileio
 # -- statuses -------------------------------------------------------------
 # These are *keys*, compared in code and written into files that outlive any
 # wording of the UI. The human-readable label for each lives in the view
-# layer (see ui/review_widgets.py STATUS_LABELS) and can be reworded freely;
+# layer (see core/review_actions.py STATUS_LABELS) and can be reworded freely;
 # these strings can never be.
 STATUS_UNREVIEWED = "unreviewed"
 STATUS_OK = "ok"
@@ -541,8 +541,8 @@ class ReviewStore:
         # Read-merge-write as one step: two tabs saving at the same instant
         # would otherwise both merge against the same file and the second
         # write would drop the first. The process lock covers the tabs of
-        # one `lookin web`; the lock file covers `lookin ui` beside it, and a
-        # colleague reviewing the same dataset on a shared mount.
+        # one `lookin web`; the lock file covers a second server beside it, and
+        # a colleague reviewing the same dataset on a shared mount.
         with _SAVE_LOCK, fileio.locked(decisions_path):
             if self._disk_signature and _signature(decisions_path, versions_path) != self._disk_signature:
                 self._merge_from_disk(decisions_path, versions_path)
@@ -1005,7 +1005,7 @@ def export_enriched_dataset(
 
     The source CSV is re-read here *in full* rather than taken from the
     loaded DataFrame, and that is the whole point: the app is usually
-    holding one split (the Data tab's row filter), so exporting the loaded
+    holding one split (the Sources tab's row filter), so exporting the loaded
     frame would hand back a training file with every other split silently
     missing. Decisions are uuid-keyed, so applying them to the complete
     file costs nothing.

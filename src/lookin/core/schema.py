@@ -11,7 +11,7 @@ three roles have shapes that barely overlap:
 * the label is a short string with few distinct values.
 
 So the shape decides and the name only breaks ties. Every guess is a
-starting point: the Data tab shows them in dropdowns listing every column
+starting point: the Sources tab shows them in dropdowns listing every column
 in the file, and the user overrides any of them in one click.
 
 Only the first few hundred rows are read. A guess that needs the whole file

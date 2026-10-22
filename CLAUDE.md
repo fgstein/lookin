@@ -11,13 +11,12 @@ Concretely, when adding a feature:
 - **No CDN, ever.** No `<script src="https://...">`, no remote stylesheet,
   no webfont fetched at runtime, no map tiles, no remote favicon. A
   JavaScript charting library (Plotly, Bokeh, D3, deck.gl, ...) is only
-  acceptable if its full bundle is vendored under `src/lookin/data/` and
-  served locally -- see `_offline_assets.py`, which already does exactly
-  this for CanvasKit and Roboto because Flet fetched both from Google.
+  acceptable if its full bundle is vendored under `src/lookin/web/static/`
+  and served locally -- the page's fonts (IBM Plex, `static/fonts/`) and
+  the Embeddings map's canvas code (`static/js/projection.js`) already are.
 - **No install-on-demand.** Nothing may shell out to `pip`, `uv`, or a
-  package downloader at runtime. This is why `flet` and `flet-web` are
-  pinned to the same exact version in `pyproject.toml` (see the comment
-  there); dependencies get declared, not fetched lazily.
+  package downloader at runtime; dependencies get declared in
+  `pyproject.toml`, not fetched lazily.
 - **No model/dataset/asset download at runtime.** Everything a feature
   needs must ship in the wheel or come from a path the user provides.
 - Outbound calls to a host the *user* configured (an MLflow tracking
@@ -25,8 +24,9 @@ Concretely, when adding a feature:
   those are explicitly opt-in and are expected to fail gracefully. The
   rule is about implicit fetches the user never asked for.
 
-The cheapest way to check: run the UI with networking cut off, exercise the
-feature, and confirm no request goes out and nothing renders blank.
+The cheapest way to check: run `lookin web` with networking cut off,
+exercise the feature, and confirm in the browser's Network tab that every
+request stays on the Lookin server and nothing renders blank.
 
 ## Everything is in English — code *and* interface
 
@@ -35,9 +35,9 @@ This project is written entirely in English, and must stay that way.
 **Code**: identifiers, comments, docstrings, log messages.
 
 **User-visible text**: every string a user can read in the running app —
-Flet widget labels, button text, tooltips, section titles, status and error
-messages, `info_banner` copy, `DataTable` column headers, dropdown *labels*,
-and everything matplotlib draws (axis labels, titles, legend entries and
+labels, button text, tooltips (`title=`), section titles, status and error
+messages, `h.banner` copy, table headers, dropdown *labels*, what an MCP
+tool answers or describes, and everything matplotlib draws (axis labels, titles, legend entries and
 legend titles, colorbar labels).
 
 The UI used to have French text mixed in; it was fully translated to English
@@ -47,8 +47,8 @@ files.
 
 ## The one trap when touching display strings
 
-Some strings are **keys**, not text. A `ft.dropdown.Option(key, label)` takes
-the key first and the label second: the key is a technical identifier that
+Some strings are **keys**, not text. An option of `h.select` is a
+`(key, label)` pair, key first and label second: the key is a technical identifier that
 code compares against, the label is what the user reads. Only the label is
 translatable.
 
@@ -62,34 +62,38 @@ Keys that are compared somewhere and must never be reworded:
   `worst_margin`, `least_pure`, `lowest_coverage`, `most_predicted` -- also
   stored in snapshots
 - prototype source: `model`, `kmeans`; the Embeddings map's "Prototypes from"
-  dropdown (`ui/projection_view.py` `PROTO_FROM_*`): `model`, `dataset`
+  dropdown (`web/views/embeddings.py` `PROTO_FROM_*`): `model`, `dataset`
 - cleaning strategies: `closer_to_other_class`, `percentile`
 - candidate class filter (`core/candidates.py` `MATCH_*`): `label`, `suggestion`;
-  and the candidate source keys in `ui/cleaning_view.py`, e.g. `all_errors`
+  and the candidate source keys in `web/views/cleaning.py`, e.g. `all_errors`
 - dataframe columns built in `AppState.merged`: `predicted_label`,
   `predicted_score`, `correct`
 - `MACRO_AVERAGE` in `core/metrics.py` — a dropdown value *and* a comparison
-- `NO_UUID_KEY` in `ui/upload_view.py`: the uuid picker's "None" choice
+- `NO_UUID_KEY` in `web/views/sources.py`: the uuid picker's "None" choice
+- review statuses and reasons (`core/review.py`): `ok`, `relabel`, `exclude`,
+  `uncertain`, `blurred`, ... -- written into the review files and accepted
+  as is by the MCP tools; their labels live in `core/review_actions.py`
 - class labels themselves come from the user's CSV: never translate or
   normalize them
 - manual page ids (`core/manual/pages_*.py`, e.g. `f1`, `roc-auc`): every
   (i) button in the UI names one, and `tests/test_manual.py` fails on a
   rename that leaves a button behind
 
-The case-study dropdown in `ui/embeddings_view.py` sidesteps this by keying
-its options positionally (`"0"`, `"1"`, ...) and keeping the class label in
-`_case_study_scope_map`, because a user's class label could otherwise collide
-with any separator baked into a composite key.
+The Embeddings map's "Color by" dropdown sidesteps this by keying its column
+entries positionally (`"1"`, `"2"`, ...) and keeping the column name aside
+(see `_rebuild_color_options` in `web/views/embeddings.py`), because a
+user's column name could otherwise collide with a key the code reserves.
 
 ## The reference manual behind the (i) buttons
 
 Every section showing a number carries an (i) that opens
-`ui/manual_view.py` at one page of `core/manual/`. Adding a page is: write
+`web/views/manual.py` at one page of `core/manual/`. Adding a page is: write
 it in the right `pages_*.py` module as blocks (not Markdown -- the renderer
 has to know which parts are mathematics), and point an (i) at its id with
-`section_title(..., ctx=self.ctx, manual="that-id")`. Where the section
-draws different things depending on a dropdown, pass a method instead of a
-string and resolve the id at click time (see `MetricsView._perclass_manual_page`).
+`h.section(title, body, manual="that-id")` (or `h.info_btn("that-id")`).
+Where the section draws different things depending on a dropdown, resolve
+the id from a `*_MANUAL_PAGES` table (see `PERCLASS_MANUAL_PAGES` in
+`web/views/metrics.py`) -- `tests/test_manual.py` reads those tables too.
 
 This is also where explanations belong. A section on a tab carries at most
 one line -- what it is, or how to drive it -- and anything that defines a
@@ -98,7 +102,7 @@ instead of under the chart. Before deleting such a paragraph from a view,
 check its page actually says what the paragraph said, and add it there if it
 does not.
 
-Equations go through `ui/mathtext.py`, which typesets them with matplotlib
+Equations go through `web/mathtext.py`, which typesets them with matplotlib
 -- so no `\underbrace`, and no `align`/`cases`/`array` environments; a
 derivation is one `Equation` block per line. `tests/test_manual.py` typesets
 every formula in the manual, so a mistake fails there rather than in a

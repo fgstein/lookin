@@ -57,8 +57,7 @@
   --toast-neutral: #3A4150;
   --tile-chip: rgba(255, 255, 255, .82);
   /* Charts and the Embeddings map are drawn on white in both themes, like
-   * the figures they are exported as (and like `lookin ui`, whose dark
-   * window shows them on white too). */
+   * the figures they are exported as. */
   --paper: #FFFFFF;
   color-scheme: light;
 }

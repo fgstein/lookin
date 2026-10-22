@@ -1,5 +1,5 @@
 """Metrics: classification metrics per loaded experiment, overlaid on the
-same charts -- the port of lookin.ui.metrics_view.
+same charts.
 
 * the experiment picker is the order every table, legend and chart reads
   (the arrows move a row); the order lives on AppState.experiments, so
@@ -29,25 +29,57 @@ from lookin.core.metrics import MACRO_AVERAGE, compute_curves, compute_metrics
 from lookin.core.report import Report
 from lookin.core.report_builder import build_report, default_report_name
 from lookin.core.report_pptx import PptxReport
-from lookin.ui.class_matrix import PAIRS_SHOWN, short_column_labels
-from lookin.ui.components import (
+from lookin.core.chart_style import (
     GRID_NONE, blues_color, color_for_experiment, legend_below, legend_columns, legend_height_inches,
-    matrix_cell_size, matrix_label_chars, matrix_text_size, reserve_legend_space, style_axes,
-)
-from lookin.ui.metrics_view import (
-    CELL_SIZE, COUNT_METRICS, LABEL_COL_WIDTH, METRIC_OPTIONS, OVERVIEW_SIZE, _class_tick_labels,
+    reserve_legend_space, style_axes,
 )
 from lookin.web import html as h
 from lookin.web.views.base import RebuildView
 from lookin.web.views.carousel import CarouselDialog
 from lookin.web.views.common import (
-    confused_pairs_table, overview_image, overview_zoom, saved_path_message, score_diagnostics_banner,
+    PAIRS_SHOWN, confused_pairs_table, matrix_cell_size, matrix_label_chars, matrix_text_size,
+    overview_image, overview_zoom, saved_path_message, score_diagnostics_banner, short_column_labels,
     status_line, uuid_overlap_banner,
 )
 from lookin.web.views.files import FileBrowserDialog
 from lookin.web.views.media import fig_html
 from lookin.web.views.slice_panel import SlicePanel
 from lookin.web.views.widgets import ClassFocus, class_select, experiment_color_menu
+
+
+# Every per-class column compute_metrics() produces, so the chart below can
+# show any of them -- "support" included, which is a count rather than a
+# rate and so is the one that needs its own y-axis (see _render_perclass_bars).
+METRIC_OPTIONS = ["f1", "precision", "recall", "specificity", "roc_auc", "average_precision", "support"]
+COUNT_METRICS = {"support"}
+CELL_SIZE = 34
+LABEL_COL_WIDTH = 96
+OVERVIEW_SIZE = 420
+
+
+def _class_tick_labels(labels_union: list, per_class_by_name: dict) -> tuple:
+    """"car" -> "car [126]", where 126 is that class's support (ground-truth
+    row count) in the first selected experiment that has it. Also returns
+    the subset of labels_union whose support is not the same number in
+    every selected experiment, so the caller can flag that the single count
+    shown is not universal -- this happens when experiments don't share the
+    exact same uuid overlap with the dataset."""
+    tick_labels = []
+    uneven = set()
+    for label in labels_union:
+        supports = [
+            int(pc.loc[label, "support"])
+            for pc in per_class_by_name.values()
+            if label in pc.index and pc.loc[label, "support"] == pc.loc[label, "support"]
+        ]
+        if supports:
+            tick_labels.append(f"{label} [{supports[0]}]")
+            if len(set(supports)) > 1:
+                uneven.add(label)
+        else:
+            tick_labels.append(label)
+    return tick_labels, uneven
+
 
 PERCLASS_MANUAL_PAGES = {
     "f1": "f1",
@@ -232,7 +264,7 @@ class MetricsView(RebuildView):
         state = self.state
         self._sync_checks()
         if state.dataset is None or not state.experiments:
-            self._clear_out("Load a dataset and at least one experiment (results CSV) in the 'Data' tab first.")
+            self._clear_out("Load a dataset and at least one experiment (results CSV) in the 'Sources' tab first.")
             self.slice_panel.set_experiments([])
             return
         selected = self._selected_names()
@@ -722,7 +754,7 @@ class MetricsView(RebuildView):
             self.rebuild(self._render_pass, clear_stale=False)
         self.refresh()
 
-    # ---- snapshots (see ui/view_state.py) ----
+    # ---- snapshots (see core/view_state.py) ----
 
     def view_state(self) -> dict:
         return {

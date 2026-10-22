@@ -460,7 +460,7 @@ PAGES = (
                 "two columns per review version: the reviewed label and the decision's status. A "
                 "training pipeline filters the status column to drop the exclusions and reads the "
                 "reviewed label instead of the original one. The source CSV is re-read in full, so "
-                "a row filter left on the Data tab cannot truncate the export."
+                "a row filter left on the Sources tab cannot truncate the export."
             ),
             Bullets((
                 "*Relabelled crops* carry their new class in the label column.",

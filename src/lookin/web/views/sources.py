@@ -1,7 +1,7 @@
 """The Sources tab: what a workspace is made of -- one dataset, the
 experiments scored on it, and optional simple inferences.
 
-The web twin of lookin.ui.upload_view, with the same behaviour:
+What it does:
 
 * the three roles (id, image, label) are guessed from the file's values and
   offered as dropdowns of its columns, "None (no id)" included;
@@ -35,7 +35,7 @@ from lookin.core.data_manager import (
     SPLIT_OTHER, SPLIT_TEST, SPLIT_TRAIN, ColumnConfig, sidecar_paths_for_csv,
 )
 from lookin.core.schema import sniff_csv
-from lookin.ui.components import color_for_experiment
+from lookin.core.chart_style import color_for_experiment
 from lookin.web import html as h
 from lookin.web.views.base import View
 from lookin.web.views.files import FileBrowserDialog

@@ -11,15 +11,15 @@ selected and what has already been computed from it.
 This used to be private state on the Embeddings view, which worked exactly
 as long as a single view needed it. It no longer is: the Prototypes tab
 picks the source and reports on it, the Embeddings tab's 2D projection
-draws the active prototypes over the point cloud, and the Data tab and the
-MLflow panel both attach sidecars -- an attach that has to invalidate what
+draws the active prototypes over the point cloud, and the Sources tab and
+the runs dialog both attach sidecars -- an attach that has to invalidate what
 was computed from the previous ones. Rather than have one view reach into
 another's attributes, all four talk to this registry.
 
 It also owns the sidecar loading itself, for the same reason: loading is
 what invalidates the caches, so the code that does one does the other, and
-every caller gets identical behaviour whether the load came from the Data
-tab, the MLflow panel or anywhere else.
+every caller gets identical behaviour whether the load came from the
+Sources tab, the runs dialog or anywhere else.
 
 Nothing here builds or touches controls -- views subscribe() and re-render
 themselves.
@@ -32,7 +32,7 @@ from typing import Callable
 import numpy as np
 
 from lookin.core import embedding_analysis as ea
-from lookin.ui.embedding_context import build_analysis_context
+from lookin.core.embedding_context import build_analysis_context
 
 # The two sources are colored consistently wherever either is drawn (the
 # role bars, the projection overlay), so the colors belong with the source
@@ -117,7 +117,7 @@ class PrototypeSourceRegistry:
 
     def model_set_for_dataset(self, name: str):
         """The model's imported prototypes with each network class renamed
-        to the dataset class the Data tab's class mapping assigns it, or
+        to the dataset class the Sources tab's class mapping assigns it, or
         None when none are loaded. The sidecar's labels are the network's
         own class names, i.e. the score columns; matched to the dataset by
         spelling alone, a relabelled class or a network trained under other
@@ -171,7 +171,7 @@ class PrototypeSourceRegistry:
 
     def load_embeddings_for(self, name: str, path: str) -> tuple[bool, str]:
         """Attach an embeddings .npz sidecar, dropping whatever was derived
-        from the previous embeddings. Called from the Data tab's per-row
+        from the previous embeddings. Called from the Sources tab's per-row
         action and from the MLflow panel's sidecar auto-attach, so both
         paths share the exact same invalidation. Returns (success, message)
         -- message is either the loaded count or the error text."""

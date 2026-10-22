@@ -18,7 +18,7 @@ PAGES = (
             "in the app is computed on the *intersection* -- so the first number to check is how many "
             "rows survived that join."
         ),
-        shown_in="Data tab, and the banner above every metric",
+        shown_in="Sources tab, and the banner above every metric",
         blocks=(
             Heading("What can be loaded"),
             Table(
@@ -97,7 +97,7 @@ PAGES = (
             )),
             Heading("Filters and splits"),
             Para(
-                "The row filter on the Data tab (for example *split = test*) applies to everything "
+                "The row filter on the Sources tab (for example *split = test*) applies to everything "
                 "downstream: every metric, every curve, every slice. This is what makes it possible to "
                 "evaluate on a held-out split, and also what makes two numbers incomparable when the "
                 "filter changed between them. If a number moved and nothing else did, check the filter "

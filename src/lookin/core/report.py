@@ -11,7 +11,7 @@ is in the document, so the file opens with no network, no server and no
 sibling directory. It is also why this is HTML rather than PDF -- a PDF
 writer would be a new dependency, and a browser prints this to PDF anyway.
 
-Nothing here imports Flet: the report is built from the same core objects
+Nothing here knows about the web pages: the report is built from the same core objects
 the views render, so it can be produced (and tested) without a UI.
 """
 from __future__ import annotations
