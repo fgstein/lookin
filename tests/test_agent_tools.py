@@ -175,7 +175,8 @@ def test_the_endpoint_serves_tools_next_to_the_ui(workspace, tmp_path):
 
         listed = _rpc(client, "tools/list", id_=2)["result"]["tools"]
         assert {t["name"] for t in listed} == {t.__name__ for t in TOOLS}
-        assert all(t["annotations"]["readOnlyHint"] for t in listed)
+        hints = {t["name"]: t["annotations"]["readOnlyHint"] for t in listed}
+        assert hints["get_metrics"] and not hints["create_workspace"]
 
         called = _rpc(client, "tools/call", {"name": "get_metrics", "arguments": {"workspace_id": workspace.id}},
                       id_=3)["result"]

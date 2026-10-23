@@ -26,13 +26,10 @@ import numpy as np
 import pandas as pd
 
 from lookin.core import calibration as cal
+from lookin.core import charts
 from lookin.core import class_focus as cf
-from lookin.core.chart_style import (
-    legend_below, legend_columns, legend_height_inches, reserve_legend_space, short_name, style_axes,
-    subplots,
-)
-from lookin.core.metrics import compute_reliability, diagnose_scores
 from lookin.core.chart_style import color_for_experiment
+from lookin.core.metrics import compute_reliability, diagnose_scores
 from lookin.web import html as h
 from lookin.web.views.base import RebuildView
 from lookin.web.views.carousel import CarouselDialog
@@ -335,76 +332,19 @@ class CalibrationView(RebuildView):
     # ---- charts ------------------------------------------------------------
 
     def _reliability_chart(self, name: str, data, color) -> Optional[_Chart]:
-        """Reliability diagram: a bar per confidence bin with its actual
-        accuracy, the mean confidence per bin in red, the diagonal for
-        perfect calibration; below, the bins' share of all predictions on a
-        log scale (the same binning ECE/MCE are computed from)."""
-        if data.disabled_reason:
+        fig = charts.reliability_diagram(name, data, color)
+        if fig is None:
             return None
-        width = 1.0 / len(data.bin_centers)
-        fig, (ax1, ax2) = subplots(2, 1, figsize=(4.6, 5.4),
-                                   gridspec_kw={"height_ratios": [3, 1]}, sharex=True)
-        ax1.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1, label="perfect calibration")
-        ax1.bar(data.bin_centers, np.nan_to_num(data.bin_accuracy), width=width * 0.9,
-                color=color, edgecolor="black", linewidth=0.4, label="accuracy")
-        ax1.plot(data.bin_centers, data.bin_confidence, color="#d62728", marker="o",
-                 markersize=3, linewidth=1.2, label="mean confidence")
-        ax1.set_xlim(0, 1)
-        ax1.set_ylim(0, 1)
-        ax1.set_ylabel("accuracy")
-        ax1.set_title(f"{short_name(name)} — ECE={data.ece:.3f} · MCE={data.mce:.3f}", fontsize=11)
-        ax1.legend(fontsize=7, loc="upper left")
-
-        ax2.bar(data.bin_centers, data.bin_fraction, width=width * 0.9, color=color)
-        ax2.set_yscale("log")
-        ax2.set_xlabel("predicted confidence")
-        ax2.set_ylabel("fraction\n(log)", fontsize=9)
-        ax2.set_xlim(0, 1)
-        style_axes(ax1)
-        style_axes(ax2)
-        fig.tight_layout()
         return _Chart(fig_png(fig), f"Calibration — {name}", RELIABILITY_WIDTH)
 
     def _histogram_chart(self, name: str, bundle: ExperimentCalibration, color) -> _Chart:
-        """Where the correct and the wrong predictions sit on the confidence
-        axis: two separated humps mean an operating point exists."""
-        hist = bundle.histogram
-        centers = (hist.edges[:-1] + hist.edges[1:]) / 2
-        width = (hist.edges[1] - hist.edges[0]) * 0.9
-
-        fig, ax = subplots(figsize=(4.6, 3.4))
-        ax.bar(centers, hist.correct, width=width, color=color, label="correct")
-        ax.bar(centers, hist.wrong, width=width, bottom=hist.correct,
-               color="#d62728", label="wrong")
-        ax.set_yscale("log")
-        ax.set_xlabel("predicted confidence")
-        ax.set_ylabel("crops (log)")
-        ax.set_title(f"{short_name(name)} — confidence of right vs. wrong", fontsize=10)
-        style_axes(ax)
-        ax.legend(fontsize=7)
-        fig.tight_layout()
+        fig = charts.confidence_split_histogram(name, bundle.histogram, color)
         return _Chart(fig_png(fig), f"Confidence distribution — {name}", HISTOGRAM_WIDTH)
 
     def _curve_chart(self, bundles: dict, all_names: list) -> _Chart:
-        fig, ax = subplots(figsize=(
-            7.4, 4.4 + legend_height_inches(len(bundles), legend_columns(len(bundles)))))
-        for name, bundle in bundles.items():
-            curve = bundle.curve
-            if not len(curve.coverage):
-                continue
-            ax.plot(curve.coverage, curve.risk, color=color_for_experiment(name, self.state.color_slots),
-                    label=f"{short_name(name)} (AURC={curve.aurc:.4f})")
-        ax.set_xlabel("Coverage -- share of crops the model is allowed to decide")
-        ax.set_ylabel("Selective risk -- error rate among those")
-        ax.set_title("Risk-coverage: what abstaining buys")
-        ax.set_xlim(0, 1)
-        style_axes(ax)
-        # One entry per experiment, under the plot: the interesting part of
-        # a risk-coverage curve is its right-hand end.
-        reserve_legend_space(fig, len(bundles), legend_columns(len(bundles)))
-        legend_below(ax, ncol=legend_columns(len(bundles)))
-        width = _chart_width(fig)
-        return _Chart(fig_png(fig), "Risk-coverage", width)
+        colors = {name: color_for_experiment(name, self.state.color_slots) for name in bundles}
+        fig = charts.risk_coverage({name: bundle.curve for name, bundle in bundles.items()}, colors)
+        return _Chart(fig_png(fig), "Risk-coverage", _chart_width(fig))
 
     def _chart_html(self, chart: _Chart) -> str:
         png_w, _ = png_size(chart.png)

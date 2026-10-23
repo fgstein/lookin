@@ -20,19 +20,15 @@ import time
 import traceback
 from pathlib import Path
 
-import numpy as np
 
+from lookin.core import charts
 from lookin.core import class_focus as cf
 from lookin.core import library
-from lookin.core.chart_style import short_name, subplots
 from lookin.core.metrics import MACRO_AVERAGE, compute_curves, compute_metrics
 from lookin.core.report import Report
 from lookin.core.report_builder import build_report, default_report_name
 from lookin.core.report_pptx import PptxReport
-from lookin.core.chart_style import (
-    GRID_NONE, blues_color, color_for_experiment, legend_below, legend_columns, legend_height_inches,
-    reserve_legend_space, style_axes,
-)
+from lookin.core.chart_style import blues_color, color_for_experiment
 from lookin.web import html as h
 from lookin.web.views.base import RebuildView
 from lookin.web.views.carousel import CarouselDialog
@@ -51,34 +47,9 @@ from lookin.web.views.widgets import ClassFocus, class_select, experiment_color_
 # show any of them -- "support" included, which is a count rather than a
 # rate and so is the one that needs its own y-axis (see _render_perclass_bars).
 METRIC_OPTIONS = ["f1", "precision", "recall", "specificity", "roc_auc", "average_precision", "support"]
-COUNT_METRICS = {"support"}
 CELL_SIZE = 34
 LABEL_COL_WIDTH = 96
 OVERVIEW_SIZE = 420
-
-
-def _class_tick_labels(labels_union: list, per_class_by_name: dict) -> tuple:
-    """"car" -> "car [126]", where 126 is that class's support (ground-truth
-    row count) in the first selected experiment that has it. Also returns
-    the subset of labels_union whose support is not the same number in
-    every selected experiment, so the caller can flag that the single count
-    shown is not universal -- this happens when experiments don't share the
-    exact same uuid overlap with the dataset."""
-    tick_labels = []
-    uneven = set()
-    for label in labels_union:
-        supports = [
-            int(pc.loc[label, "support"])
-            for pc in per_class_by_name.values()
-            if label in pc.index and pc.loc[label, "support"] == pc.loc[label, "support"]
-        ]
-        if supports:
-            tick_labels.append(f"{label} [{supports[0]}]")
-            if len(set(supports)) > 1:
-                uneven.add(label)
-        else:
-            tick_labels.append(label)
-    return tick_labels, uneven
 
 
 PERCLASS_MANUAL_PAGES = {
@@ -330,29 +301,8 @@ class MetricsView(RebuildView):
         n_all_classes = len(labels_union)
         if self._many_classes:
             labels_union = [l for l in self._focus if l in set(labels_union)]
-        n_exp = len(metrics_by_name)
-        fig_width = max(6.0, min(18.0, len(labels_union) * (0.5 + 0.13 * n_exp)))
-        legend_cols = legend_columns(n_exp)
-        fig, ax = subplots(figsize=(fig_width, 4.3 + legend_height_inches(n_exp, legend_cols)))
-        width = 0.8 / max(n_exp, 1)
-        x = np.arange(len(labels_union))
-        for i, (name, m) in enumerate(metrics_by_name.items()):
-            per_class = per_class_by_name[name]
-            values = [per_class[metric_key].get(l, np.nan) for l in labels_union]
-            offset = (i - (n_exp - 1) / 2) * width
-            ax.bar(x + offset, values, width, label=short_name(name), color=color_for_experiment(name, self.state.color_slots))
-        ax.set_xticks(x)
-        tick_labels, uneven_support = _class_tick_labels(labels_union, per_class_by_name)
-        ax.set_xticklabels(tick_labels, rotation=45, ha="right")
-        ax.set_ylabel(metric_key)
-        if metric_key in COUNT_METRICS:
-            ax.set_ylabel(f"{metric_key} (rows)")
-        else:
-            ax.set_ylim(0, 1.05)
-        ax.set_title(f"Per-class {metric_key} by experiment")
-        style_axes(ax, x=GRID_NONE)
-        reserve_legend_space(fig, n_exp, legend_cols)
-        legend_below(ax, ncol=legend_cols)
+        colors = {name: color_for_experiment(name, self.state.color_slots) for name in metrics_by_name}
+        fig, uneven_support = charts.per_class_bars(per_class_by_name, metric_key, labels_union, colors)
         notes = ["[n] under each class name is its support -- the number of ground-truth examples used to compute that class's metrics."]
         if self._many_classes:
             notes.insert(0, f"{len(labels_union)} of {n_all_classes:,} classes -- the ones picked under "
@@ -387,25 +337,8 @@ class MetricsView(RebuildView):
         if excluded:
             notes.append(f"Macro-average taken over the classes whose score column varies; "
                          f"excluded: {', '.join(excluded)}.")
-        n_curves = len(drawable)
-        legend_cols = min(2, n_curves)
-        fig, (ax1, ax2) = subplots(1, 2, figsize=(11, 4.4 + legend_height_inches(n_curves, legend_cols)))
-        ax1.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1)
-        for name, curve in drawable.items():
-            color = color_for_experiment(name, self.state.color_slots)
-            ax1.plot(curve.fpr, curve.tpr, color=color, label=f"{short_name(name)} (AUC={curve.roc_auc:.3f})")
-            ax2.plot(curve.recall, curve.precision, color=color, label=f"{short_name(name)} (AP={curve.average_precision:.3f})")
-        ax1.set_xlabel("False positive rate")
-        ax1.set_ylabel("True positive rate")
-        ax1.set_title(f"ROC curve — {target}")
-        ax2.set_xlabel("Recall")
-        ax2.set_ylabel("Precision")
-        ax2.set_title(f"Precision-Recall curve — {target}")
-        style_axes(ax1)
-        style_axes(ax2)
-        reserve_legend_space(fig, n_curves, legend_cols)
-        for ax in (ax1, ax2):
-            legend_below(ax, ncol=legend_cols, fontsize=7)
+        colors = {name: color_for_experiment(name, self.state.color_slots) for name in drawable}
+        fig = charts.roc_pr_curves(drawable, target, colors)
         return (fig_html(self.s, fig, f"ROC & Precision-Recall — {target}")
                 + "".join(f'<div class="muted small"><i>{h.e(n)}</i></div>' for n in notes))
 

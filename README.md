@@ -454,40 +454,82 @@ usable immediately.
 
 ## AI agents: the MCP endpoint
 
-`lookin ui` also serves an [MCP](https://modelcontextprotocol.io) endpoint
-at `/mcp`, on the same host and port as the web interface. An agent pointed
-at it can read your workspaces and their results on its own: "check my
-results", "which experiment has the best macro F1, and what does it still
-confuse?". It works with any MCP client that can reach the server, such as
-OpenCode with a local LLM:
+`lookin web` also serves an [MCP](https://modelcontextprotocol.io) endpoint
+at `/mcp`, on the same host and port as the interface. An agent pointed at
+it can do what a person does in the interface: read every number, build and
+organise workspaces, review crops, and have charts, mosaics and reports
+made -- "which experiment has the best macro F1, and what does it still
+confuse?", "make a workspace from these three MLflow runs and send me the
+report", "show me the twenty most confident errors on sensor B". It works
+with any MCP client that can reach the server, such as OpenCode with a
+local LLM:
 
 ```json
-{ "mcp": { "lookin": { "type": "remote", "url": "http://lookin-server:8550/mcp" } } }
+{ "mcp": { "lookin": { "type": "remote", "url": "http://lookin-server:8560/mcp" } } }
 ```
 
-The model needs to support tool calling. The tools are read-only and
-answer in compact JSON:
+The model needs to support tool calling (and images, for the pictures).
+
+**Reading** -- answers in compact JSON:
 
 | tool | what it answers |
 | --- | --- |
-| `list_workspaces` | every workspace: id, name, dataset, experiments, download state |
-| `get_workspace` | one workspace's dataset, experiments (and their MLflow runs), snapshots |
+| `list_workspaces` | every workspace: id, name, group, dataset, experiments, download state |
+| `get_workspace` | one workspace's dataset, filter, experiments (and their MLflow runs), snapshots |
+| `get_dataset_summary`, `get_column_stats` | rows, columns by kind, classes; one column's distribution |
 | `get_metrics` | the summary metrics of each experiment of a workspace |
 | `get_per_class` | per-class precision, recall, F1, AUC... worst classes first |
 | `get_confusions` | the most frequent (true -> predicted) mistakes |
 | `compare_experiments` | crops fixed and broken by a candidate, per-class changes |
-| `get_examples` | individual crops, most confident errors first |
-| `search_mlflow_runs` | runs on the MLflow servers configured on Home, with MLflow's filter syntax |
+| `get_slices` | every experiment scored per slice of a metadata column, with intervals |
+| `get_calibration`, `get_confidence` | ECE, AURC, an operating point for a target accuracy, temperature; margin and entropy |
+| `get_examples` | individual crops, filtered by label, prediction or a query on the metadata |
+| `find_cleaning_candidates`, `find_similar` | the Cleaning tab's candidate search; nearest crops in embedding space |
+| `get_review`, `get_snapshot` | review versions and their counts; one saved view |
+| `search_mlflow_runs`, `list_mlflow_run_files` | runs on the configured MLflow servers; the CSVs a run logged |
+
+**Pictures and files** -- `plot_chart` draws any chart of the tabs (per-class
+bars, ROC/PR, confusion matrix, reliability, risk-coverage, a column, a
+slice breakdown, a 2D projection of the embeddings) with the very code the
+tab draws it with, and `make_mosaic` puts crops on one picture, framed green
+or red by an experiment's verdict; both come back as images. `generate_report`
+writes the Metrics tab's HTML or PowerPoint report.
+
+**Changing the library** -- `create_workspace` (the dataset's columns are
+guessed as on the Sources tab), `update_workspace` (and its Home group),
+`duplicate_workspace`, `delete_workspace`, `rename_group`; `add_experiment`
+(a local results CSV), `add_mlflow_run`, `download_workspace`,
+`remove_experiment`, `rename_experiment`, `set_experiment_color`;
+`set_dataset_filter` (the Filter tab); `create_snapshot`, `update_snapshot`,
+`delete_snapshot`; `export_workspace`, `import_workspace`;
+`record_review_decisions`, `undo_review_batch`, `create_review_version`,
+`export_reviewed_dataset`. Each does what the matching button does, through
+the same code, so a tab with that workspace open picks the change up within
+seconds. Deleting asks for the id a second time, and those tools are marked
+destructive so a client can ask its user first.
+
+**Links.** Every answer about a workspace carries an `open_url` that opens
+the same thing in the interface -- on the right tab, and for a crop, with
+that crop shown (`/?workspace=lkw-...&tab=metrics`,
+`...&crop=<uuid>&experiment=<name>`; the same parameters work in any link).
+Files an agent has written land in `~/.cache/lookin/exports/` unless it
+names another folder, and are downloadable at `/exports/<name>`. When
+people reach Lookin under another address than the one it binds (a port
+forward, a gateway), `--public-url http://lookin-server:8560` makes the
+links use it.
 
 Metrics are computed on the server, where the data is, on the workspace's
-original labels. An experiment whose MLflow files are not downloaded is
-reported as not loaded, not silently left out. Every answer carries the
-same warnings the UI would show (dataset changed since the workspace was
-saved, experiment barely overlapping the dataset). The last two
+original labels and through its dataset filter, exactly as the tabs show
+them. An experiment whose MLflow files are not downloaded is reported as
+not loaded, not silently left out. Every answer carries the same warnings
+the interface would show (dataset changed since the workspace was saved,
+experiment barely overlapping the dataset, filtered rows). The last two
 workspaces loaded stay in memory, so follow-up questions are fast.
 
-Whoever can reach the UI can reach the endpoint. The endpoint writes
-nothing, and exposes nothing the UI does not. `--no-mcp` turns it off.
+Whoever can reach the interface can reach the endpoint, and it can do no
+more than the interface: requests from a page on another site are refused
+for both. `--mcp-read-only` serves the reading tools only (and no picture
+is written to disk); `--no-mcp` turns the endpoint off.
 
 ## Development
 

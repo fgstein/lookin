@@ -201,6 +201,15 @@ def _parse_run(r: dict) -> Run:
     )
 
 
+def get_run(tracking_uri: str, run_id: str) -> Run:
+    """One run by id, wherever its experiment is."""
+    with _client(tracking_uri) as client:
+        data = _request(client, "GET", "/api/2.0/mlflow/runs/get", params={"run_id": run_id})
+    if not isinstance(data.get("run"), dict):
+        raise MlflowError(f"Unexpected response from MLflow server for run {run_id}")
+    return _parse_run(data["run"])
+
+
 # runs/search refuses more than 1000 per page. The page cap bounds the whole
 # listing: a Home page showing 10k runs is one nobody reads -- they filter.
 SEARCH_PAGE_SIZE = 1000

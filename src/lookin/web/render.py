@@ -15,6 +15,7 @@ from __future__ import annotations
 import traceback
 
 from lookin import __version__
+from lookin.core.view_state import SNAPSHOT_TABS
 from lookin.web import html as h
 from lookin.web.views.base import Handler
 
@@ -35,11 +36,9 @@ TABS = (
 TAB_KEYS = [t[0] for t in TABS]
 TAB_TITLES = {t[0]: t[1] for t in TABS}
 
-# A snapshot records the selected tab *by index* (core/view_state.TAB), in
-# this fixed order -- a file format, so it does not move when a tab is added
-# to TABS. A tab that is not in it is saved as the one it sits under.
-SNAPSHOT_TABS = ("sources", "statistics", "gallery", "metrics", "calibration", "confidence",
-                 "compare", "embeddings", "prototypes", "cleaning")
+# A snapshot records the selected tab by its index in
+# core/view_state.SNAPSHOT_TABS; a tab that is not there is saved as the one
+# it sits under.
 _SNAPSHOT_ALIASES = {"filter": "sources"}
 
 
@@ -143,11 +142,18 @@ def boot(session, query: dict) -> None:
 
 def _route(session, query: dict) -> None:
     """?snapshot=lk-... or ?workspace=lkw-... -- the id someone pasted, or
-    how every Open button opens a workspace: in a tab of its own."""
+    how every Open button opens a workspace: in a tab of its own. Then
+    ?tab= and ?crop= (see core/links.py), once it is open."""
     from lookin.core import library as lib
+    from lookin.core import links
 
-    snapshot_id = (query.get("snapshot") or [""])[0].strip()
-    workspace_id = (query.get("workspace") or [""])[0].strip()
+    def arg(name: str) -> str:
+        return (query.get(name) or [""])[0].strip()
+
+    snapshot_id = arg(links.SNAPSHOT)
+    workspace_id = arg(links.WORKSPACE)
+    tab, crop, experiment = arg(links.TAB), arg(links.CROP), arg(links.EXPERIMENT)
+    then = (lambda: _open_extras(session, tab, crop, experiment)) if (tab or crop) else None
     if not snapshot_id and not workspace_id:
         return
     # Already showing it: a reload of an open workspace must not reload it.
@@ -168,13 +174,38 @@ def _route(session, query: dict) -> None:
             session.toast(f"No snapshot '{snapshot_id}' in the library at {lib.library_root()}.", "error")
             return
         workspace, snapshot = found
-        open_from_link(session, workspace, snapshot)
+        open_from_link(session, workspace, snapshot, then=then)
         return
     workspace = next((w for w in lib.list_workspaces() if w.id == workspace_id), None)
     if workspace is None:
         session.toast(f"No workspace '{workspace_id}' in the library.", "error")
         return
-    open_from_link(session, workspace, None)
+    open_from_link(session, workspace, None, then=then)
+
+
+def _open_extras(session, tab: str, crop: str, experiment: str) -> None:
+    """The ?tab= and ?crop= of a link, once its workspace is open: the tab
+    as if clicked, the crop in the viewer -- with the named experiment's
+    prediction, else the first loaded one's, else the dataset row alone."""
+    if tab in TAB_KEYS:
+        session.goto(tab)
+    if not crop:
+        return
+    state = session.state
+    dataset = state.dataset
+    if dataset is None or not dataset.columns.uuid_col:
+        return
+    cols = dataset.columns
+    name = experiment if experiment in state.experiments else next(iter(state.experiments), "")
+    frame = state.merged(name) if name else dataset.df
+    rows = frame[frame[cols.uuid_col].astype(str) == crop]
+    if rows.empty:
+        session.toast(f"No crop '{crop}' in this workspace's dataset.", "warn")
+        return
+    from lookin.web.views.carousel import open_carousel
+    open_carousel(session, f"Crop {crop}" + (f" -- {name}" if name else ""), rows.head(1).to_dict("records"),
+                  cols.crop_col, cols.uuid_col, highlight_uuid=crop, review_source="link",
+                  label_col=cols.label_col)
 
 
 # ---- dispatch ---------------------------------------------------------------

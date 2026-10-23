@@ -19,6 +19,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
+from typing import Callable, Optional
 from urllib.parse import quote
 
 from lookin.core import library as lib
@@ -42,6 +43,7 @@ def _matches(query: str, *fields) -> bool:
 
 
 def workspace_link(workspace, snapshot=None) -> str:
+    """Relative, for this page's own address bar (see core/links.py)."""
     return f"/?snapshot={quote(snapshot.id, safe='')}" if snapshot is not None else f"/?workspace={quote(workspace.id, safe='')}"
 
 
@@ -485,10 +487,11 @@ class ImageRootDialog(Dialog):
 
 # ---- opening a workspace into this tab -------------------------------------
 
-def open_from_link(session, workspace, snapshot=None) -> None:
+def open_from_link(session, workspace, snapshot=None, then: Optional[Callable[[], None]] = None) -> None:
     """Load a workspace (or one of its snapshots) into this tab, as asked by
     its ?workspace= / ?snapshot= address. Experiments whose files are not
-    downloaded yet are left out, and said so."""
+    downloaded yet are left out, and said so. `then` runs once it is open,
+    under the session's lock (the address's ?tab= and ?crop=)."""
     from lookin.core import workspace_sources as wss
 
     missing = [e.name for e in workspace.mount.experiments if not wss.is_downloaded(e)]
@@ -526,6 +529,7 @@ def open_from_link(session, workspace, snapshot=None) -> None:
             with session.lock:
                 if snapshot is None:
                     save_status.mark_baseline(session)
+                    _then(session, then)
                     if missing:
                         session.open_dialog(MessageDialog(
                             "Opened without some experiments",
@@ -545,12 +549,22 @@ def open_from_link(session, workspace, snapshot=None) -> None:
                 session.current_snapshot = snapshot
                 save_status.mark_baseline(session)
                 _report_loaded(session, workspace, snapshot, warnings, True)
+                _then(session, then)
             session.push({"dirty": ["page", "dialogs"]})
         except Exception:  # noqa: BLE001
             traceback.print_exc()
             session.push({"dirty": ["page"]})
 
     threading.Thread(target=work, daemon=True).start()
+
+
+def _then(session, then) -> None:
+    if then is None:
+        return
+    try:
+        then()
+    except Exception:  # noqa: BLE001 -- the workspace is open; a bad extra must not undo that
+        traceback.print_exc()
 
 
 def _report_loaded(session, workspace, snapshot, warnings: list, restored: bool) -> None:

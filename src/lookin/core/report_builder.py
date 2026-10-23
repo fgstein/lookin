@@ -11,8 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
-
+from lookin.core import charts
 from lookin.core import class_focus as cf
 from lookin.core import comparison as cmp
 # Imported for its side effect: it applies the app's chart style, so the
@@ -22,7 +21,7 @@ from lookin.core import comparison as cmp
 from lookin.core import chart_style  # noqa: F401
 from lookin.core.metrics import PER_CLASS_COLUMNS, compute_metrics
 from lookin.core.report import Report
-from lookin.core.chart_style import short_name, subplots
+from lookin.core.chart_style import short_name
 
 # Rows of the most-confused-pairs table in a many-class report.
 REPORT_PAIRS = 25
@@ -216,22 +215,7 @@ def _add_confusion(report: Report, metrics_by_name: dict, focus: list | None) ->
         if focus is not None:
             _add_focus_confusion(report, section, name, metrics, focus)
             continue
-        size = max(4.0, 0.42 * len(confusion.columns) + 2.2)
-        fig, ax = subplots(figsize=(size, size * 0.9))
-        ax.imshow(confusion.to_numpy(), cmap="Blues")
-        ax.set_xticks(range(len(confusion.columns)), confusion.columns, rotation=60, ha="right", fontsize=8)
-        ax.set_yticks(range(len(confusion.index)), confusion.index, fontsize=8)
-        ax.set_xlabel("predicted")
-        ax.set_ylabel("true")
-        ax.set_title(f"{short_name(name)} -- accuracy {metrics.accuracy:.4f}", fontsize=10)
-        maximum = confusion.to_numpy().max() or 1
-        for i in range(len(confusion.index)):
-            for j in range(len(confusion.columns)):
-                value = int(confusion.iat[i, j])
-                if value:
-                    ax.text(j, i, str(value), ha="center", va="center", fontsize=7,
-                            color="white" if value > maximum * 0.55 else "black")
-        fig.tight_layout()
+        fig = charts.confusion_matrix(confusion, f"{short_name(name)} -- accuracy {metrics.accuracy:.4f}")
         section.blocks.append(report.figure(fig, f"Confusion matrix -- {name}"))
 
 
@@ -240,26 +224,8 @@ def _add_focus_confusion(report: Report, section, name: str, metrics, focus: lis
     classes with an "other" column, the most confused pairs across every
     class, and the whole matrix as one picture of where the errors are."""
     confusion = metrics.confusion
-    grid, other = cf.focus_matrix(confusion, focus)
-    shown = grid.copy()
-    shown["(other)"] = other
-    counts = shown.to_numpy()
-    n = len(grid)
-    fig, ax = subplots(figsize=(0.42 * (n + 1) + 2.2, (0.42 * (n + 1) + 2.2) * 0.9))
-    ax.imshow(np.where(np.arange(n + 1) < n, counts, 0), cmap="Blues")
-    ax.set_xticks(range(n + 1), list(shown.columns), rotation=60, ha="right", fontsize=8)
-    ax.set_yticks(range(n), list(shown.index), fontsize=8)
-    ax.set_xlabel("predicted")
-    ax.set_ylabel("true")
-    ax.set_title(f"{short_name(name)} -- accuracy {metrics.accuracy:.4f}", fontsize=10)
-    maximum = grid.to_numpy().max() or 1
-    for i in range(n):
-        for j in range(n + 1):
-            value = int(counts[i, j])
-            if value:
-                ax.text(j, i, str(value), ha="center", va="center", fontsize=7,
-                        color="white" if j < n and value > maximum * 0.55 else "black")
-    fig.tight_layout()
+    n = len(focus)
+    fig = charts.confusion_matrix(confusion, f"{short_name(name)} -- accuracy {metrics.accuracy:.4f}", focus=focus)
     section.blocks.append(report.figure(fig, f"Confusion matrix -- {name}, {n} of {len(confusion):,} classes"))
     section.blocks.append(report.paragraph(
         _focus_note(focus, len(confusion)) + " The last column counts the crops predicted as any "

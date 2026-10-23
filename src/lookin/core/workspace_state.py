@@ -70,7 +70,17 @@ def load_workspace_state(workspace: lib.Workspace) -> LoadedWorkspace:
                            label_col=mount.label_col or "label")
     row_filter = (mount.row_filter_col, mount.row_filter_value) if mount.row_filter_col else None
     state.split_kind = mount.split_kind if mount.split_kind in SPLIT_KINDS else SPLIT_TEST
+    # Set before the load, which applies it -- as the Sources tab does: the
+    # Filter tab's filter is part of what the workspace is, and numbers
+    # computed without it would not be the tab's numbers.
+    state.set_dataset_filter(mount.dataset_filter or {}, csv_path=mount.dataset_path)
     state.load_dataset(mount.dataset_path, columns, row_filter=row_filter, image_root=mount.image_root)
+    if state.dataset_filter_error:
+        loaded.warnings.append(f"The workspace's dataset filter could not be applied, so every row is "
+                               f"used: {state.dataset_filter_error}")
+    elif state.dataset is not None and state.dataset.is_filtered():
+        loaded.warnings.append(f"Filtered dataset: {len(state.dataset.df):,} of "
+                               f"{len(state.dataset.full_df):,} rows kept by the workspace's filter.")
     if workspace.dataset_changed():
         loaded.warnings.append(
             "The dataset CSV changed on disk since this workspace was saved: rows may have appeared or "
@@ -91,6 +101,7 @@ def load_workspace_state(workspace: lib.Workspace) -> LoadedWorkspace:
             loaded.skipped.append(experiment.name)
             loaded.warnings.append(f"Experiment {experiment.name!r} could not be read: {ex}")
             continue
+        state.set_experiment_color(experiment.name, experiment.color)
         overlap = state.uuid_overlap(experiment.name)
         n_rows = len(state.experiments[experiment.name].df)
         if n_rows and overlap.matched < LOW_OVERLAP_SHARE * n_rows:

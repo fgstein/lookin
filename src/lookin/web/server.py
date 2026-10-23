@@ -9,6 +9,8 @@ stream, crops, charts and downloads.
     GET  /img/{sid}/{key}  a crop, through the session's LUT and roll
     GET  /chart/{sid}/{key}.png
     GET  /dl/{sid}/{key}   a file the session prepared (report, export)
+    GET  /exports/{name}   a file an agent had written (see core/agent_outputs.py)
+    POST /mcp              the MCP endpoint for AI agents (see lookin/mcp_server.py)
     GET  /static/...       the CSS, the JS, the fonts -- all local
 
 Every route that touches data takes the tab's session id, and nothing is
@@ -107,7 +109,7 @@ def page_html() -> str:
 </html>"""
 
 
-def _mcp_parts(enable_mcp: bool):
+def _mcp_parts(enable_mcp: bool, read_only: bool = False):
     """(routes, lifespan) for the MCP endpoint at MCP_PATH (see
     lookin/mcp_server.py), served on the same port as the page."""
     from contextlib import asynccontextmanager
@@ -118,7 +120,7 @@ def _mcp_parts(enable_mcp: bool):
 
     from lookin.mcp_server import MCP_PATH, build_server
 
-    server = build_server()
+    server = build_server(read_only=read_only)
     mcp_app = server.streamable_http_app(
         streamable_http_path=MCP_PATH, stateless_http=True, json_response=True,
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
@@ -132,10 +134,10 @@ def _mcp_parts(enable_mcp: bool):
     return list(mcp_app.routes), lifespan
 
 
-def create_app(webapp: WebApp, enable_mcp: bool = False) -> FastAPI:
+def create_app(webapp: WebApp, enable_mcp: bool = False, mcp_read_only: bool = False) -> FastAPI:
     from lookin.web import render
 
-    mcp_routes, lifespan = _mcp_parts(enable_mcp)
+    mcp_routes, lifespan = _mcp_parts(enable_mcp, mcp_read_only)
     app = FastAPI(title="Lookin", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.router.routes.extend(mcp_routes)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -147,8 +149,8 @@ def create_app(webapp: WebApp, enable_mcp: bool = False) -> FastAPI:
     @app.middleware("http")
     async def refuse_cross_site_posts(request: Request, call_next):
         # Lookin listens with no login, so any web page the user visits
-        # could otherwise POST to /api/act and drive it -- open a session,
-        # browse the disk, delete workspaces. The answers are never readable
+        # could otherwise POST to /api/act or /mcp and drive it -- open a
+        # session, browse the disk, delete workspaces. The answers are never readable
         # cross-site, but the side effects would happen. Two checks that
         # need no token and do not depend on the address the page was opened
         # under (a port forward or a gateway under another name are normal
@@ -158,8 +160,9 @@ def create_app(webapp: WebApp, enable_mcp: bool = False) -> FastAPI:
         #    this server never grants -- a <form> or a no-cors fetch can only
         #    send text/plain, urlencoded or multipart;
         #  * browsers that send Fetch Metadata say where a request comes from.
-        # The MCP endpoint keeps its own transport rules (it is read-only).
-        if request.method == "POST" and request.url.path.startswith("/api/"):
+        # An MCP client is not a browser: it sends JSON and no Fetch Metadata,
+        # so both rules cost it nothing.
+        if request.method == "POST" and request.url.path.startswith(("/api/", "/mcp")):
             site = request.headers.get("sec-fetch-site", "")
             ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
             if (site and site not in ("same-origin", "none")) or ctype != "application/json":
@@ -369,24 +372,42 @@ def create_app(webapp: WebApp, enable_mcp: bool = False) -> FastAPI:
                         headers={"Content-Disposition": content_disposition(disposition, filename),
                                  "Cache-Control": "private, no-store"})
 
+    @app.get("/exports/{name}")
+    def exported(name: str, inline: int = 0):
+        """A report, an archive or a picture an agent had written to the
+        exports folder (core/agent_outputs.py) -- by bare name, nothing else."""
+        from fastapi.responses import FileResponse
+
+        from lookin.core.agent_outputs import exported_file
+
+        path = exported_file(name)
+        if path is None:
+            return Response(status_code=404)
+        disposition = "inline" if inline else "attachment"
+        return FileResponse(path, headers={"Content-Disposition": content_disposition(disposition, path.name),
+                                           "Cache-Control": "private, no-store"})
+
     return app
 
 
 def run_web(host: str = "127.0.0.1", port: int = 8560, dataset: Optional[str] = None,
-            experiments=None, library_dir: Optional[str] = None, enable_mcp: bool = True) -> None:
+            experiments=None, library_dir: Optional[str] = None, enable_mcp: bool = True,
+            mcp_read_only: bool = False, public_url: Optional[str] = None) -> None:
     import uvicorn
 
-    from lookin.core import library
+    from lookin.core import library, links
 
     if library_dir:
         library.set_library_root(library_dir)
+    url = f"http://{'127.0.0.1' if host in ('', '0.0.0.0', '*') else host}:{port}"
+    links.set_base_url(public_url or url)
     webapp = WebApp(dataset=dataset, experiments=experiments)
-    app = create_app(webapp, enable_mcp=enable_mcp)
+    app = create_app(webapp, enable_mcp=enable_mcp, mcp_read_only=mcp_read_only)
     from lookin.web.render import warm_up
     warm_up()
-    url = f"http://{'127.0.0.1' if host in ('', '0.0.0.0', '*') else host}:{port}"
     print(f"[lookin] web interface on {url}", flush=True)
     if enable_mcp:
         from lookin.mcp_server import MCP_PATH
-        print(f"[lookin] MCP endpoint for AI agents: {url}{MCP_PATH}", flush=True)
+        mode = " (read-only)" if mcp_read_only else ""
+        print(f"[lookin] MCP endpoint for AI agents{mode}: {url}{MCP_PATH}", flush=True)
     uvicorn.run(app, host=host, port=port, log_level="warning", ws="none")

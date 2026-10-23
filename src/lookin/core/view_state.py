@@ -68,6 +68,12 @@ CLEANING = "cleaning"
 # The Filter tab.
 DATASET_FILTER = "dataset_filter"
 
+# The tabs, in the order a snapshot numbers them (APP -> TAB is an index
+# into this). A file format: it does not move when a tab is added to the
+# page, and a tab that is not here is saved as the one it sits under.
+SNAPSHOT_TABS = ("sources", "statistics", "gallery", "metrics", "calibration", "confidence",
+                 "compare", "embeddings", "prototypes", "cleaning")
+
 # The app-wide block, and the keys inside it.
 APP = "app"
 VIEWS = "views"

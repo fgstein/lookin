@@ -34,6 +34,11 @@ def main(argv: list[str] | None = None) -> None:
              "$LOOKIN_LIBRARY). Point it at a shared mount to open a colleague's workspace by id.",
     )
     web_parser.add_argument(
+        "--public-url", default=None, metavar="URL",
+        help="The address people open Lookin at, when it is not the one it binds (a port forward, a "
+             "gateway): links handed out by the MCP endpoint start with it.",
+    )
+    web_parser.add_argument(
         "--no-mcp", action="store_false", dest="mcp",
         help="Do not serve the MCP endpoint for AI agents (served at /mcp on the same port by default).",
     )
@@ -57,7 +62,8 @@ def main(argv: list[str] | None = None) -> None:
 
         from lookin.web.server import run_web  # deferred: keep `lookin --help` fast and dependency-light
         run_web(host=args.host, port=args.port, dataset=args.dataset, experiments=experiments,
-                library_dir=args.library, enable_mcp=args.mcp, mcp_read_only=args.mcp_read_only)
+                library_dir=args.library, enable_mcp=args.mcp, mcp_read_only=args.mcp_read_only,
+                public_url=args.public_url)
     else:
         parser.print_help()
 

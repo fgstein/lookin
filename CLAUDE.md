@@ -108,6 +108,25 @@ derivation is one `Equation` block per line. `tests/test_manual.py` typesets
 every formula in the manual, so a mistake fails there rather than in a
 dialog nobody opened.
 
+## The MCP endpoint does what the interface does
+
+`lookin web` serves an MCP endpoint (`src/lookin/mcp_server.py`) through
+which an agent can do anything a person can: read (`core/agent_tools.py`),
+change the library (`core/agent_actions.py`), and have charts, mosaics and
+reports made (`core/agent_outputs.py`). Keep the two in step:
+
+- A computation lives in `core/`, never in a view, so a tab and a tool call
+  the same function. A chart is drawn in `core/charts.py` and the view only
+  puts the figure on the page -- the agent's chart is the tab's chart.
+- A feature added to a tab gets its tool, or an argument on an existing
+  one. A tool's description is the only documentation the model gets:
+  write it for a model that has never seen Lookin.
+- A tool that writes goes through the same library call as the button
+  (`library.update_workspace`, `record_decision`, ...), refuses rather than
+  guesses, and is left out of `--mcp-read-only` (see `READ_TOOLS`).
+- Every answer about a workspace carries its `warnings` and an `open_url`
+  (`core/links.py`); the link parameters are a format and never renamed.
+
 ## Checking before you commit a text change
 
 Both of these should come back clean:

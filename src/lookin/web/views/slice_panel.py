@@ -10,14 +10,9 @@ from __future__ import annotations
 
 import traceback
 
-import numpy as np
-
+from lookin.core import charts
 from lookin.core import slices as sl
-from lookin.core.chart_style import short_name, subplots
-from lookin.core.chart_style import (
-    GRID_MAJOR, GRID_NONE, color_for_experiment, legend_below, legend_columns,
-    legend_height_inches, reserve_legend_space, style_axes,
-)
+from lookin.core.chart_style import color_for_experiment
 from lookin.web import html as h
 from lookin.web.views.carousel import CarouselDialog
 from lookin.web.views.media import fig_html
@@ -64,29 +59,10 @@ BINNING_LABELS = (
     (sl.BINNING_QUANTILE, "Quantile bins"),
 )
 
-# Slices drawn in the chart. A hundred-value categorical column is
-# legitimate in the table (it scrolls) but unreadable as a chart.
-MAX_CHART_SLICES = 30
-
-# The count bars are background, not a series: a neutral grey that no
-# experiment color can be confused with, and an axis labelled in the same
-# grey so the eye reads it as the context it is.
-COUNT_BAR_COLOR = "#ccd1d9"
-COUNT_AXIS_COLOR = "#7b828d"
 
 
 def _fmt(value: float, digits: int = 3) -> str:
     return f"{value:.{digits}f}" if value == value else "—"
-
-
-def _counts_agree(rows_by_name: dict, names: list, values: list) -> bool:
-    """Whether every experiment holds the same number of crops in every
-    slice, which is the normal case -- n comes from the dataset, not from
-    the model. They only diverge when the experiments join different
-    subsets of it (partial uuid overlap)."""
-    if not values:
-        return True
-    return all(len({rows_by_name[name][v].n for name in names}) == 1 for v in values)
 
 
 def _log(msg: str) -> None:
@@ -285,74 +261,11 @@ class SlicePanel:
                 f'<tbody>{"".join(body)}</tbody></table></div>')
 
     def _chart(self, ordered_values: list, reports: dict) -> str:
-        metric, class_label = self.metric, self._class_label()
         label = self._metric_title()
-        values = ordered_values[:MAX_CHART_SLICES]
-        names = list(reports)
-        all_names = list(self.s.state.experiments.keys())
-        rows_by_name = {name: {row.value: row for row in report.rows} for name, report in reports.items()}
-        n_exp = len(names)
-        column = self.column
-        fig_width = max(6.0, min(18.0, len(values) * (0.5 + 0.06 * n_exp)))
-        legend_entries = n_exp + (n_exp if not _counts_agree(rows_by_name, names, values) else 1)
-        legend_cols = legend_columns(legend_entries)
-        fig, ax_counts = subplots(figsize=(fig_width, 4.8 + legend_height_inches(legend_entries, legend_cols)))
-        ax_metric = ax_counts.twinx()
-        ax_metric.yaxis.tick_left()
-        ax_metric.yaxis.set_label_position("left")
-        ax_counts.yaxis.tick_right()
-        ax_counts.yaxis.set_label_position("right")
-        x = np.arange(len(values))
-        counts_agree = _counts_agree(rows_by_name, names, values)
-        if counts_agree:
-            ax_counts.bar(x, [rows_by_name[names[0]][v].n for v in values], width=0.68, color=COUNT_BAR_COLOR,
-                          label="crops in slice")
-        else:
-            bar_width = 0.68 / max(n_exp, 1)
-            for i, name in enumerate(names):
-                ax_counts.bar(x + (i - (n_exp - 1) / 2) * bar_width, [rows_by_name[name][v].n for v in values],
-                              bar_width, color=color_for_experiment(name, self.s.state.color_slots), alpha=0.28,
-                              label=f"crops in slice ({short_name(name)})")
-        ax_counts.set_ylabel("crops in slice", color=COUNT_AXIS_COLOR, fontsize=9)
-        ax_counts.tick_params(axis="y", colors=COUNT_AXIS_COLOR, labelsize=8)
-        ax_counts.set_ylim(0, max([rows_by_name[name][v].n for name in names for v in values] or [1]) * 1.15)
-        for name in names:
-            rows = [rows_by_name[name][v] for v in values]
-            heights = [sl.metric_value(row, metric, class_label) for row in rows]
-            color = color_for_experiment(name, self.s.state.color_slots)
-            intervals = [sl.metric_interval(row, metric, class_label) for row in rows]
-            if any(low == low for low, _ in intervals):
-                lows = [max(0.0, hh - low) if low == low else 0.0 for hh, (low, _) in zip(heights, intervals)]
-                highs = [max(0.0, high - hh) if high == high else 0.0 for hh, (_, high) in zip(heights, intervals)]
-                ax_metric.errorbar(x, heights, yerr=[lows, highs], label=short_name(name), color=color, marker="o",
-                                   markersize=5, linewidth=1.8, capsize=3, elinewidth=0.9, ecolor=color, alpha=0.95)
-            else:
-                ax_metric.plot(x, heights, label=short_name(name), color=color, marker="o", markersize=5, linewidth=1.8)
-            overall = sl.metric_value(reports[name].overall, metric, class_label)
-            if overall == overall:
-                ax_metric.axhline(overall, color=color, linestyle="--", linewidth=1, alpha=0.6)
-        ax_metric.set_ylabel(label)
-        if metric not in sl.COUNT_METRICS and metric != METRIC_MEAN_CONFIDENCE:
-            ax_metric.set_ylim(0, 1.05)
-        ax_counts.set_xticks(x)
-        ax_counts.set_xticklabels(values, rotation=45, ha="right", fontsize=8)
-        ax_counts.set_xlim(-0.7, len(values) - 0.3)
-        ax_metric.set_title(f"{label} by {column} (dashed line: all rows)")
-        style_axes(ax_counts, x=GRID_MAJOR, y=GRID_NONE)
-        style_axes(ax_metric, x=GRID_NONE)
-        handles = ax_metric.get_legend_handles_labels()[0] + ax_counts.get_legend_handles_labels()[0]
-        labels = ax_metric.get_legend_handles_labels()[1] + ax_counts.get_legend_handles_labels()[1]
-        reserve_legend_space(fig, legend_entries, legend_cols)
-        legend_below(ax_metric, handles, labels, ncol=legend_cols)
-        notes = ["Bars are the number of crops in each slice (right axis); the marked lines are the "
-                 "metric (left axis). The line follows the order chosen above, so it traces a real "
-                 "trend only when that order is 'By value'."]
-        if not counts_agree:
-            notes.append("The experiments do not cover the same rows, so each gets its own count bars.")
-        if len(ordered_values) > MAX_CHART_SLICES:
-            notes.append(f"Chart shows the first {MAX_CHART_SLICES} slices in this order; the table above "
-                         f"has all {len(ordered_values)}.")
-        return (fig_html(self.s, fig, f"{label} by {column}")
+        colors = {name: color_for_experiment(name, self.s.state.color_slots) for name in reports}
+        fig, notes = charts.slice_chart(ordered_values, reports, self.metric, label, self.column, colors,
+                                        class_label=self._class_label())
+        return (fig_html(self.s, fig, f"{label} by {self.column}")
                 + "".join(f'<div class="muted small"><i>{h.e(n)}</i></div>' for n in notes))
 
     # ---- rendering the panel ----

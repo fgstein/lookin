@@ -1,30 +1,16 @@
 """Statistics: a chart per column the user picks (nothing by default -- a
 wide CSV has dozens of columns, and charting all of them on every load is
-slow and rarely wanted): a histogram
-for a numeric column, a bar per value for a categorical one, and past
-RANKED_CATEGORIES_MIN values the sorted sizes on a log scale with the
+slow and rarely wanted). The chart itself is core/charts.column_chart: a
+histogram for a numeric column, a bar per value for a categorical one, and
+past RANKED_CATEGORIES_MIN values the sorted sizes on a log scale with the
 extremes named under it.
 """
 from __future__ import annotations
 
-import numpy as np
-
-from lookin.core.chart_style import subplots
-from lookin.core.chart_style import GRID_NONE, style_axes
+from lookin.core import charts
 from lookin.web import html as h
 from lookin.web.views.base import RebuildView
 from lookin.web.views.media import fig_html
-
-
-# Past this many distinct values a categorical chart is drawn as sorted
-# sizes rather than one bar per value (see _make_chart); the RANKED_NAMED
-# largest and smallest are named under it.
-RANKED_CATEGORIES_MIN = 60
-RANKED_NAMED = 5
-
-# "Fewer than this many" is the count reported for the long tail.
-RANKED_SMALL = 10
-BAR_COLOR = "#2550C8"
 
 
 class StatsView(RebuildView):
@@ -77,50 +63,7 @@ class StatsView(RebuildView):
     # ---- building ----
 
     def _chart(self, col: str, series, is_numeric: bool) -> tuple:
-        fig, ax = subplots(figsize=(9.5, 3.2))
-        notes = []
-        if is_numeric:
-            # An inf has no bin: numpy refuses the whole histogram, and the
-            # tab's every chart with it. Drawn without, and said so.
-            finite = series[np.isfinite(series.to_numpy(dtype=float))]
-            if len(finite) < len(series):
-                notes.append(f"{len(series) - len(finite):,} infinite value(s) not drawn.")
-            ax.hist(finite, bins=40, color=BAR_COLOR, edgecolor="white")
-            ax.set_title(f"{col}", fontsize=12)
-            ax.set_ylabel("count", fontsize=10)
-            style_axes(ax)
-        elif series.nunique() > RANKED_CATEGORIES_MIN:
-            counts = series.value_counts().sort_values(ascending=False)
-            ranks = np.arange(1, len(counts) + 1)
-            ax.fill_between(ranks, counts.values, step="mid", color=BAR_COLOR, alpha=0.35)
-            ax.step(ranks, counts.values, where="mid", color=BAR_COLOR)
-            ax.set_yscale("log")
-            ax.set_xlim(0.5, len(counts) + 0.5)
-            ax.set_title(f"{col} -- {len(counts):,} values, largest first", fontsize=12)
-            ax.set_xlabel("rank", fontsize=10)
-            ax.set_ylabel("count (log scale)", fontsize=10)
-            style_axes(ax)
-
-            def named(part) -> str:
-                return ", ".join(f"{label} ({int(n):,})" for label, n in part.items())
-
-            notes = [f"Largest: {named(counts.head(RANKED_NAMED))}",
-                     f"Smallest: {named(counts.tail(RANKED_NAMED)[::-1])}",
-                     f"Median {int(counts.median()):,} per value; "
-                     f"{int((counts < RANKED_SMALL).sum()):,} value(s) with fewer than {RANKED_SMALL}."]
-        else:
-            counts = series.value_counts().sort_values(ascending=False)
-            ax.bar(counts.index.astype(str), counts.values, color=BAR_COLOR)
-            ax.set_title(f"{col}", fontsize=12)
-            ax.set_ylabel("count", fontsize=10)
-            for label in ax.get_xticklabels():
-                label.set_fontsize(9)
-                if len(counts) > 12:
-                    label.set_rotation(45)
-                    label.set_ha("right")
-            style_axes(ax, x=GRID_NONE)
-        ax.tick_params(labelsize=9)
-        fig.tight_layout()
+        fig, notes = charts.column_chart(col, series, is_numeric)
         return fig_html(self.s, fig, col), notes
 
     def compute(self) -> None:

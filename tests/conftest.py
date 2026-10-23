@@ -1,8 +1,7 @@
 """Shared fixtures.
 
-Everything here builds tiny in-memory or tmp_path data: these tests cover
-lookin.core, which is pure computation with no Flet dependency, so nothing
-needs a browser, a server or the bundled example dataset.
+Everything here builds tiny in-memory or tmp_path data, so nothing needs a
+browser, a server or the bundled example dataset.
 """
 from __future__ import annotations
 
