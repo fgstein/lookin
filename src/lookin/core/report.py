@@ -84,6 +84,10 @@ class ReportSection:
 class Report:
     """Accumulates sections, then renders one HTML document."""
 
+    # What the file is, for a writer-agnostic caller (a browser download).
+    extension = "html"
+    mime = "text/html; charset=utf-8"
+
     def __init__(self, title: str, subtitle: str = ""):
         self.title = title
         self.subtitle = subtitle
@@ -172,11 +176,16 @@ class Report:
             '</main></body></html>'
         )
 
+    def to_bytes(self) -> bytes:
+        """The whole file, for a download in the browser."""
+        return self.to_html().encode("utf-8")
+
     def write(self, dest_path) -> Path:
         """Atomic write, same rule as every other file this app produces: a
         half-written report is worse than none."""
         from lookin.core import fileio
 
         dest_path = Path(dest_path)
-        fileio.atomic_write_text(dest_path, self.to_html())
+        data = self.to_bytes()
+        fileio.atomic_write(dest_path, lambda tmp: tmp.write_bytes(data))
         return dest_path

@@ -48,6 +48,9 @@ _NEG = RGBColor(0xB2, 0x3B, 0x3B)
 class PptxReport(Report):
     """Same content-building API as `Report`; renders slides, not HTML."""
 
+    extension = "pptx"
+    mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
     def __init__(self, title: str, subtitle: str = ""):
         super().__init__(title, subtitle)
         self._prs = Presentation()
@@ -58,6 +61,7 @@ class PptxReport(Report):
         self._pending_label = None
         self._last_slide = None
         self._footnote_boxes: dict = {}
+        self._finished = False
 
     # ---- content (overrides Report's) ------------------------------------
     def section(self, title: str):
@@ -109,9 +113,22 @@ class PptxReport(Report):
         return ""
 
     # ---- output -----------------------------------------------------------
-    def write(self, dest_path) -> Path:
+    def _finish(self) -> None:
+        """The last slides, once: to_bytes() and write() may both be called."""
+        if self._finished:
+            return
+        self._finished = True
         self._flush_pending_label()
         self._add_footer_slide()
+
+    def to_bytes(self) -> bytes:
+        self._finish()
+        buf = io.BytesIO()
+        self._prs.save(buf)
+        return buf.getvalue()
+
+    def write(self, dest_path) -> Path:
+        self._finish()
 
         from lookin.core import fileio
 

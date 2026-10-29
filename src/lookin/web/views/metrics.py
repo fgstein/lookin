@@ -47,6 +47,12 @@ from lookin.web.views.widgets import ClassFocus, class_select, experiment_color_
 # show any of them -- "support" included, which is a count rather than a
 # rate and so is the one that needs its own y-axis (see _render_perclass_bars).
 METRIC_OPTIONS = ["f1", "precision", "recall", "specificity", "roc_auc", "average_precision", "support"]
+# Export destinations -- keys, compared in code.
+REPORT_TO_BROWSER = "browser"
+REPORT_TO_SERVER = "server"
+REPORT_TARGETS = ((REPORT_TO_BROWSER, "This computer (download)"), (REPORT_TO_SERVER, "A folder on the server"))
+# The report writers, by the format a button asks for.
+REPORT_WRITERS = {"html": Report, "pptx": PptxReport}
 CELL_SIZE = 34
 # Confusion matrices are shown open up to this many; past it the section
 # starts folded, since it is a screenful per experiment.
@@ -111,6 +117,10 @@ class MetricsView(RebuildView):
         self.report_confusion = True
         self.report_busy = False
         self.report_status = ("", "")
+        # Where an export goes: the browser's downloads (the computer the
+        # user sits at), or a folder on the machine running Lookin.
+        self.report_target = REPORT_TO_BROWSER
+        self.report_link = ""        # the last download, to fetch it again
 
     # ---- experiment picker ----
 
@@ -585,17 +595,31 @@ class MetricsView(RebuildView):
     def _report_html(self) -> str:
         self._prepare_report_fields()
         text, kind = self.report_status
-        body = (f'<div class="row">{h.text_input(self.report_dir, label="Destination folder", change=self.c("report_dir"), cls="grow", mono=True, extra=" data-force=1")}'
-                f'{h.button(icon_name="folder", act_attr=self.a("report_browse"), title="Browse")}</div>'
+        target = h.segmented(REPORT_TARGETS, self.report_target, label="Save to",
+                             act_for=lambda k: self.a("report_target", dest=k))
+        folder = ""
+        if self.report_target == REPORT_TO_SERVER:
+            folder = (f'<div class="row">{h.text_input(self.report_dir, label="Destination folder", change=self.c("report_dir"), cls="grow", mono=True, extra=" data-force=1")}'
+                      f'{h.button(icon_name="folder", act_attr=self.a("report_browse"), title="Browse")}</div>')
+        again = ""
+        if self.report_link and kind == "success" and self.report_target == REPORT_TO_BROWSER:
+            again = f'<a class="btn btn-link btn-sm" href="{h.e(self.report_link)}" download>Download it again</a>'
+        body = (f'<div class="row"><span class="small muted">Save to</span>{target}</div>'
+                f'{folder}'
                 f'<div class="row-wrap">{h.text_input(self.report_name, label="File name", change=self.c("report_name"), width=300, extra=" data-force=1")}'
                 f'{h.checkbox("Per-class tables", self.report_per_class, change=self.c("report_opt", which="per_class"))}'
                 f'{h.checkbox("Confusion matrices", self.report_confusion, change=self.c("report_opt", which="confusion"))}</div>'
                 f'<div class="row">{h.button("Export HTML report", act_attr=self.a("export", kind="html"), kind="primary", icon_name="file", disabled=self.report_busy)}'
                 f'{h.button("Export PowerPoint", act_attr=self.a("export", kind="pptx"), kind="primary", icon_name="layers", disabled=self.report_busy)}</div>'
                 f'{h.spinner("Building the report...") if self.report_busy else ""}'
-                f'{status_line(text, kind) if text else ""}')
+                f'{f"<div class=row>{status_line(text, kind)}{again}</div>" if text else ""}')
         return h.section("Export a report", body, manual="report-export",
                          sub="one self-contained HTML file, or a native PowerPoint deck")
+
+    def on_report_target(self, dest: str = "", **_):
+        if dest in dict(REPORT_TARGETS):
+            self.report_target = dest
+            self.report_status = ("", "")
 
     def _confusion_is_open(self, n_matrices: int) -> bool:
         return self.confusion_open if self.confusion_open is not None else n_matrices <= CONFUSION_OPEN_MAX
@@ -626,14 +650,15 @@ class MetricsView(RebuildView):
                                              title="Where to write the report"))
 
     def on_export(self, kind: str = "html", **_):
-        report_cls, extension = (PptxReport, "pptx") if kind == "pptx" else (Report, "html")
+        report_cls = REPORT_WRITERS.get(kind, Report)
+        extension = report_cls.extension
         selected = self._selected_names()
         if not selected:
             self.report_status = ("Select at least one experiment above to report on.", "error")
             return
         self._prepare_report_fields()
         directory = (self.report_dir or "").strip()
-        if not directory:
+        if self.report_target == REPORT_TO_SERVER and not directory:
             self.report_status = ("Pick a destination folder.", "error")
             return
         self.report_busy = True
@@ -650,7 +675,7 @@ class MetricsView(RebuildView):
         typed = (self.report_name or "").strip()
         if not typed:
             return default_report_name(self.state, extension)
-        for known in (".html", ".pptx"):
+        for known in tuple(f".{w.extension}" for w in REPORT_WRITERS.values()):
             if typed.lower().endswith(known):
                 typed = typed[:-len(known)]
                 break
@@ -665,6 +690,15 @@ class MetricsView(RebuildView):
                 include_per_class=bool(self.report_per_class), include_confusion=bool(self.report_confusion),
                 comparison_pair=pair, snapshot_id=self._bookmark_for_report(name), report_cls=report_cls,
                 focus=self._focus if self._many_classes else None)
+            if self.report_target == REPORT_TO_BROWSER:
+                data = report.to_bytes()
+                key = self.s.put_download(data, name, report.mime)
+                self.report_link = f"/dl/{self.s.sid}/{key}"
+                self.s.cmd(download=self.report_link, filename=name)
+                _log(f"report: {name} sent to the browser ({len(data) / 1024:,.0f} KB)")
+                self.report_status = (f"Downloaded {name} ({len(data) / 1024:,.0f} KB) -- self-contained, "
+                                      f"opens with no network.", "success")
+                return
             dest = report.write(Path(directory) / name)
             size_kb = dest.stat().st_size / 1024
             _log(f"report: wrote {dest} ({size_kb:,.0f} KB)")
