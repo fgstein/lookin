@@ -100,7 +100,10 @@ def test_the_same_csv_twice_is_skipped_and_names_stay_unique():
     again = wss.add_candidates(ws, first)
     assert again.skipped and not again.added
     wss.add_candidates(ws, wss.candidates_for_run(URI, _run("r9", "vit-aug"), [_csv()], []))
-    assert [e.name for e in ws.mount.experiments] == ["vit-aug", "vit-aug (2)"]
+    # Same run name, another run: told apart by the run id, not a counter.
+    assert [e.name for e in ws.mount.experiments] == ["vit-aug", "vit-aug · r9"]
+    assert wss.unique_name({"a", "a · r9"}, "a", "r9") == "a · r9 (2)"
+    assert wss.unique_name({"a"}, "a") == "a (2)"
 
 
 def test_download_fetches_what_is_missing_and_the_state_follows(monkeypatch):

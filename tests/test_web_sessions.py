@@ -202,9 +202,24 @@ def test_the_filter_reaches_every_tab_and_is_saved(example, tmp_path):
     assert t.view("filter").conditions[0]["values"] == ["cat"]
 
 
+def test_two_experiments_with_the_same_name_are_both_kept(example):
+    """Two MLflow runs called the same thing: loading the second must not
+    replace the first in the state under the shared name."""
+    s = _session(WebApp(), "n" * 24)
+    _load(s, example, [("run", str(example / "baseline_cnn_results.csv")),
+                       ("run", str(example / "finetuned_resnet_results.csv"))])
+    assert list(s.state.experiments) == ["run", "run (2)"]
+    sources = s.view("sources")
+    loaded = [r for r in sources.rows if r.loaded_name]
+    assert [r.loaded_name for r in loaded] == ["run", "run (2)"]
+    # Reloading a row keeps its own name.
+    assert sources._load_row_sync(loaded[0])
+    assert list(s.state.experiments) == ["run", "run (2)"]
+
+
 def test_lookin_toml_fills_the_columns_and_the_root(example):
-    """Picked: lookin.toml wins over the guess. Restored: only the fields
-    still at their default take it; a column it names that the file lacks
+    """Picked: lookin.toml wins over the guess. Restored: only a field
+    the file has no such column for takes it; a column it names that the file lacks
     is a warning, not a choice."""
     import pandas as pd
 
@@ -230,6 +245,17 @@ def test_lookin_toml_fills_the_columns_and_the_root(example):
     sources._sniff()                                          # as a restore does
     assert sources.label_value == "subset"                    # chosen by the workspace: kept
     assert sources.image_root == str(example / "imgs")        # empty: filled in
+
+    # A saved value that happens to be the default is still the user's
+    # choice: reopening the workspace (or reloading the page into a new
+    # session) must not put lookin.toml's back over it.
+    df.assign(label=df["cls"]).to_csv(example / "renamed.csv", index=False)
+    sources.dataset_path, sources.label_value, sources.uuid_value = str(example / "renamed.csv"), "label", ""
+    sources._sniff()
+    assert (sources.uuid_value, sources.label_value) == ("", "label")
+    # Typing the same path again is not picking a new file.
+    sources.on_set_path(str(example / "renamed.csv"))
+    assert sources.label_value == "label"
 
     (example / "lookin.toml").write_text("not = [toml", encoding="utf-8")
     sources.set_dataset_path(str(example / "renamed.csv"))
