@@ -193,6 +193,7 @@ PAGES = (
                 ("A cliff near the left", "the top of the ranking is already polluted: no strict threshold will give you a clean set"),
                 ("The right end", "precision at full recall, which tends to the prevalence"),
                 ("Area under the curve", "average precision, comparable only between models scored on the same pool"),
+                ("The light grey curves", "iso-F1 lines: every point on the one marked F1=0.6 has an F1 of 0.6, so the highest one a curve touches is the best F1 any threshold reaches"),
             )),
             Callout(CALLOUT_EXAMPLE, "ROC and PR on the same detector", (
                 Para(

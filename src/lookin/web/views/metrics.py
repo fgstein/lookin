@@ -34,8 +34,8 @@ from lookin.web.views.base import RebuildView
 from lookin.web.views.carousel import CarouselDialog
 from lookin.web.views.common import (
     PAIRS_SHOWN, confused_pairs_table, matrix_cell_size, matrix_label_chars, matrix_text_size,
-    overview_image, overview_zoom, saved_path_message, score_diagnostics_banner, short_column_labels,
-    status_line, uuid_overlap_banner,
+    diagnostics_warnings, grouped_warnings, overlap_warnings, overview_image, overview_zoom,
+    saved_path_message, short_column_labels, status_line,
 )
 from lookin.web.views.files import FileBrowserDialog
 from lookin.web.views.media import fig_html
@@ -48,6 +48,9 @@ from lookin.web.views.widgets import ClassFocus, class_select, experiment_color_
 # rate and so is the one that needs its own y-axis (see _render_perclass_bars).
 METRIC_OPTIONS = ["f1", "precision", "recall", "specificity", "roc_auc", "average_precision", "support"]
 CELL_SIZE = 34
+# Confusion matrices are shown open up to this many; past it the section
+# starts folded, since it is a screenful per experiment.
+CONFUSION_OPEN_MAX = 2
 LABEL_COL_WIDTH = 96
 OVERVIEW_SIZE = 420
 
@@ -94,8 +97,13 @@ class MetricsView(RebuildView):
         self._render_inputs = None
         self.slice_panel = SlicePanel(self, session)
         # What the last render pass produced, drawn by render().
-        self.out = {"warnings": "", "summary": "", "perclass": "", "curves": "", "confusion": "", "message": ""}
+        self.out = {"warnings": {}, "summary": "", "perclass": "", "curves": "", "confusion": "", "message": ""}
         self.built = False
+        # Folded by default: the numbers are what the tab is for. Confusion
+        # matrices: None until the user chooses, then open below
+        # CONFUSION_OPEN_MAX matrices, folded above.
+        self.warnings_open = False
+        self.confusion_open = None
         # report export
         self.report_dir = ""
         self.report_name = ""
@@ -180,20 +188,37 @@ class MetricsView(RebuildView):
     def on_metric(self, value: str = "", **_):
         if value in METRIC_OPTIONS:
             self.metric = value
-            self._redraw()
+            self._redraw_part("perclass")
 
     def on_curve_target(self, value: str = "", **_):
         dataset = self.state.dataset
         known = [MACRO_AVERAGE] + ([str(l) for l in dataset.labels()] if dataset is not None else [])
         if str(value) in known:
             self.curve_target = value
-            self._redraw()
+            self._redraw_part("curves")
 
     def _redraw(self) -> None:
         """A UI change: draw again from the caches (computing only what is
         not cached yet -- a newly ticked experiment), off the request
         thread. The stale banner stays as it is."""
         self.rebuild(self._render_pass, clear_stale=False)
+
+    def _redraw_part(self, part: str) -> None:
+        """A dropdown that changes one chart: draw that one again and leave
+        the rest of the page as it is (the whole pass otherwise)."""
+        if self._render_inputs is None or not self.out.get(part):
+            self._redraw()
+            return
+        metrics_by_name, all_names = self._render_inputs
+        selected = list(metrics_by_name)
+
+        def work():
+            if part == "perclass":
+                html = self._perclass_html(metrics_by_name, all_names)
+            else:
+                html = self._curves_html(selected, all_names, {})
+            self.out = {**self.out, part: html}
+        self.rebuild(work, clear_stale=False)
 
     # ---- computation ----
 
@@ -228,7 +253,7 @@ class MetricsView(RebuildView):
         return self._curves_cache[key]
 
     def _clear_out(self, message: str = "") -> None:
-        self.out = {"warnings": "", "summary": "", "perclass": "", "curves": "", "confusion": "", "message": message}
+        self.out = {"warnings": {}, "summary": "", "perclass": "", "curves": "", "confusion": "", "message": message}
         self.class_focus.hide()
 
     def _render_pass(self) -> None:
@@ -243,11 +268,11 @@ class MetricsView(RebuildView):
             self._clear_out("Select at least one experiment above to see metrics.")
             self.slice_panel.set_experiments([])
             return
-        warnings = []
+        warnings = {}
         for name in selected:
             if name not in self._overlap_cache:
                 self._overlap_cache[name] = state.uuid_overlap(name)
-            warnings.append(uuid_overlap_banner(self._overlap_cache[name], "dataset", name))
+            warnings[name] = overlap_warnings(self._overlap_cache[name])
         try:
             merged_cache: dict = {}
             metrics_by_name = {}
@@ -257,8 +282,8 @@ class MetricsView(RebuildView):
                 metrics_by_name[name] = self._get_metrics(name, merged_cache)
             all_names = list(state.experiments.keys())
             for name, m in metrics_by_name.items():
-                warnings.append(score_diagnostics_banner(m.score_diagnostics, name))
-            out = {"warnings": "".join(warnings), "message": ""}
+                warnings[name] = warnings.get(name, []) + diagnostics_warnings(m.score_diagnostics)
+            out = {"warnings": warnings, "message": ""}
             self.set_progress("Building the summary table...")
             out["summary"] = self._summary_html(metrics_by_name, all_names)
             self._render_inputs = (metrics_by_name, all_names)
@@ -274,7 +299,7 @@ class MetricsView(RebuildView):
         except Exception as ex:  # noqa: BLE001
             _log(f"error computing metrics: {ex}")
             traceback.print_exc()
-            self.out = {"warnings": "".join(warnings), "summary": "", "perclass": "", "curves": "",
+            self.out = {"warnings": warnings, "summary": "", "perclass": "", "curves": "",
                         "confusion": "", "message": ""}
             self.out["perclass"] = h.banner(f"Error computing metrics: {ex}", "error")
             self.class_focus.hide()
@@ -509,13 +534,28 @@ class MetricsView(RebuildView):
         out = self.out
         if out.get("message"):
             parts.append(h.banner(out["message"], "info"))
-        parts.append(out.get("warnings", ""))
-        parts.append(self.progress_html())
+        parts.append(grouped_warnings(out.get("warnings") or {}, self.warnings_open, self.a("toggle_warnings")))
+        progress = self.progress_html()
+        if progress and out.get("summary"):
+            # A redraw of what is already on the page: the progress floats
+            # over it instead of pushing everything below down by a line
+            # and back up again -- the page must not move when a dropdown
+            # changes.
+            progress = f'<div class="mx-progress"><div>{progress}</div></div>'
+        parts.append(progress)
         parts.append(out.get("summary", ""))
         parts.append(self.class_focus.render())
         if out.get("confusion"):
-            parts.append(f'<div class="sec-t"><h2>Confusion matrices</h2>{h.info_btn("confusion-matrix")}</div>'
-                         f'<div class="cm-area">{out["confusion"]}</div>')
+            n_matrices = len(self._selected_names())
+            is_open = self._confusion_is_open(n_matrices)
+            chev = (f'<button type="button" class="chev"{self.a("toggle_confusion")} '
+                    f'aria-expanded="{"true" if is_open else "false"}" aria-label="Show or hide the confusion matrices">'
+                    f'{h.icon("chev-down" if is_open else "chev-right", 14)}</button>')
+            folded = ("" if is_open else
+                      f'<span class="muted small">{n_matrices} matrices, folded -- '
+                      f'{h.button("show them", act_attr=self.a("toggle_confusion"), kind="link", small=True)}</span>')
+            parts.append(f'<div class="sec-t">{chev}<h2>Confusion matrices</h2>{h.info_btn("confusion-matrix")}{folded}</div>'
+                         + (f'<div class="cm-area">{out["confusion"]}</div>' if is_open else ""))
         if out.get("perclass"):
             metric_sel = h.select([(m, m) for m in METRIC_OPTIONS], self.metric, change=self.c("metric"),
                                   label="Per-class metric")
@@ -556,6 +596,15 @@ class MetricsView(RebuildView):
                 f'{status_line(text, kind) if text else ""}')
         return h.section("Export a report", body, manual="report-export",
                          sub="one self-contained HTML file, or a native PowerPoint deck")
+
+    def _confusion_is_open(self, n_matrices: int) -> bool:
+        return self.confusion_open if self.confusion_open is not None else n_matrices <= CONFUSION_OPEN_MAX
+
+    def on_toggle_confusion(self, **_):
+        self.confusion_open = not self._confusion_is_open(len(self._selected_names()))
+
+    def on_toggle_warnings(self, **_):
+        self.warnings_open = not self.warnings_open
 
     def on_report_dir(self, value: str = "", **_):
         self.report_dir = str(value or "")

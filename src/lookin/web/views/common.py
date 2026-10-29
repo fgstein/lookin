@@ -1,7 +1,8 @@
 """Pieces several analysis tabs draw the same way:
 
 * uuid_overlap_banner / score_diagnostics_banner -- the warnings a tab shows
-  before (or instead of) its numbers;
+  before (or instead of) its numbers; grouped_warnings -- the same for
+  several experiments at once, each kind of warning said once;
 * status_line -- one success / error / warning / busy line;
 * saved_path_message -- the path a "wrote it there" line shows, copied to
   the clipboard of the browser the user sits at;
@@ -146,6 +147,89 @@ def score_diagnostics_banner(diagnostics, experiment_label: str = "experiment") 
     return _warn_box(lines, "list")
 
 
+# ---- warnings grouped across experiments ------------------------------------
+# A tab comparing ten experiments that all miss the same rows used to stack
+# ten copies of the same banner above its numbers. Instead each kind of
+# warning is one line naming the experiments it applies to, and what each
+# one says in detail is shown on request.
+
+def overlap_warnings(overlap) -> list:
+    """(kind, title, detail, consequence) of a uuid match, with no
+    experiment name in them, so that the same problem reads the same."""
+    out = []
+    if overlap.dataset_only:
+        out.append(("dataset_only", "Dataset rows with no matching prediction",
+                    f"{overlap.dataset_only:,} rows", ""))
+    if overlap.experiment_only:
+        out.append(("experiment_only", "Predictions with no matching dataset row",
+                    f"{overlap.experiment_only:,} rows", ""))
+    if overlap.dataset_dupes:
+        out.append(("dataset_dupes", "Duplicate ids in the dataset",
+                    f"{overlap.dataset_dupes:,} duplicate value(s)", ""))
+    if overlap.experiment_dupes:
+        out.append(("experiment_dupes", "Duplicate ids in the results",
+                    f"{overlap.experiment_dupes:,} duplicate value(s)", ""))
+    return out
+
+
+def diagnostics_warnings(diagnostics) -> list:
+    """(kind, title, detail, consequence) of the score diagnostics."""
+    out = []
+    if not diagnostics.normalized:
+        detail = (f"{diagnostics.n_rows_not_normalized:,} of {diagnostics.n_rows:,} rows, worst off by "
+                  f"{diagnostics.max_row_sum_deviation:.3f}"
+                  + (f"; {diagnostics.n_rows_missing:,} with a missing score" if diagnostics.n_rows_missing else ""))
+        out.append(("not_normalized", "Score columns do not sum to 1", detail,
+                    "Disabled: log loss, Brier score and its decomposition, ECE / MCE, reliability diagram."))
+    if diagnostics.constant_labels:
+        named = ", ".join(f"'{label}' (constant {diagnostics.constant_values[label]:g})"
+                          for label in diagnostics.constant_labels)
+        out.append(("constant", "Score columns with no ranking", named,
+                    "Disabled for those classes: ROC-AUC, average precision, ROC / PR curves. "
+                    "They are also excluded from the macro and weighted averages."))
+    return out
+
+
+def grouped_warnings(by_experiment: dict, expanded: bool, toggle_attr: str) -> str:
+    """One banner for the warnings of every experiment shown.
+    `by_experiment`: name -> list of (kind, title, detail, consequence).
+
+    Each kind is one line, with the number of experiments it concerns;
+    expanded, its detail per experiment, and experiments whose detail is
+    the same share a line. `toggle_attr` is the act attribute that flips
+    `expanded`."""
+    kinds: dict = {}
+    for name, items in by_experiment.items():
+        for kind, title, detail, consequence in items:
+            entry = kinds.setdefault(kind, {"title": title, "consequence": consequence, "details": {}})
+            entry["details"].setdefault(detail, []).append(name)
+    if not kinds:
+        return ""
+    n_shown = len(by_experiment)
+    lines = []
+    for entry in kinds.values():
+        names = [n for group in entry["details"].values() for n in group]
+        whom = (f"all {n_shown} experiments" if len(names) == n_shown and n_shown > 1
+                else names[0] if len(names) == 1 else f"{len(names)} experiments")
+        line = f'<div><b>{h.e(entry["title"])}</b> <span class="small">-- {h.e(whom)}</span></div>'
+        if expanded:
+            for detail, group in entry["details"].items():
+                line += (f'<div class="warn-detail small"><span class="mono">{h.e(", ".join(group))}</span>: '
+                         f'{h.e(detail)}</div>')
+            if entry["consequence"]:
+                line += f'<div class="warn-detail small"><i>{h.e(entry["consequence"])}</i></div>'
+        lines.append(line)
+    label = "Hide details" if expanded else "Show details"
+    button = h.button(label, act_attr=toggle_attr, small=True, kind="ghost",
+                      icon_name="chev-down" if not expanded else "chev-up",
+                      extra=f' aria-expanded="{"true" if expanded else "false"}"')
+    count = len(kinds)
+    head = f'<div class="small" style="opacity:.85">{count} warning{"s" if count != 1 else ""}</div>'
+    return (f'<div class="banner banner-warn warn-group">{h.icon("warn", 15)}'
+            f'<div class="banner-body">{head}{"".join(lines)}</div>'
+            f'<div class="banner-actions">{button}</div></div>')
+
+
 STATUS_KINDS = {"success": ("check", "c-ok"), "error": ("warn", "c-err"),
                 "warning": ("warn", "c-warn"), "neutral": ("info", "muted")}
 
@@ -228,5 +312,6 @@ def card(title: str, body: str, *, right: str = "", key: str = "", cls: str = ""
             f'{head}<div class="card-b">{body}</div></section>')
 
 
-__all__ = ["uuid_overlap_banner", "score_diagnostics_banner", "status_line", "saved_path_message",
+__all__ = ["uuid_overlap_banner", "score_diagnostics_banner", "overlap_warnings", "diagnostics_warnings",
+           "grouped_warnings", "status_line", "saved_path_message",
            "save_png", "confused_pairs_table", "overview_image", "overview_zoom", "card", "chart_html"]

@@ -21,8 +21,8 @@ import numpy as np
 from lookin.core import class_focus as cf
 from lookin.core import slices as sl
 from lookin.core.chart_style import (
-    GRID_MAJOR, GRID_NONE, legend_below, legend_columns, legend_height_inches, reserve_legend_space,
-    short_name, style_axes, subplots,
+    GRID_MAJOR, GRID_NONE, legend_below, legend_columns, legend_height_inches, legend_name,
+    reserve_legend_space, short_name, style_axes, subplots,
 )
 
 # One series in a single-series chart (a column histogram).
@@ -102,7 +102,7 @@ def per_class_bars(per_class_by_name: dict, metric: str, labels: list, colors: d
     for i, (name, per_class) in enumerate(per_class_by_name.items()):
         values = [per_class[metric].get(label, np.nan) for label in labels]
         offset = (i - (n_exp - 1) / 2) * width
-        ax.bar(x + offset, values, width, label=short_name(name), color=colors.get(name))
+        ax.bar(x + offset, values, width, label=legend_name(name), color=colors.get(name))
     ax.set_xticks(x)
     tick_labels, uneven = class_tick_labels(labels, per_class_by_name)
     ax.set_xticklabels(tick_labels, rotation=45, ha="right")
@@ -122,25 +122,50 @@ def roc_pr_curves(curves_by_name: dict, target: str, colors: dict):
     """ROC and Precision-Recall side by side, one line per experiment.
     `curves_by_name` holds drawable CurveData (no disabled_reason)."""
     n_curves = len(curves_by_name)
-    legend_cols = min(2, n_curves)
+    legend_cols = legend_columns(n_curves)
     fig, (ax1, ax2) = subplots(1, 2, figsize=(11, 4.4 + legend_height_inches(n_curves, legend_cols)))
     ax1.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1)
+    iso_f1_lines(ax2)
     for name, curve in curves_by_name.items():
         color = colors.get(name)
-        ax1.plot(curve.fpr, curve.tpr, color=color, label=f"{short_name(name)} (AUC={curve.roc_auc:.3f})")
-        ax2.plot(curve.recall, curve.precision, color=color, label=f"{short_name(name)} (AP={curve.average_precision:.3f})")
+        ax1.plot(curve.fpr, curve.tpr, color=color, label=f"{legend_name(name)} (AUC={curve.roc_auc:.3f})")
+        ax2.plot(curve.recall, curve.precision, color=color, label=f"{legend_name(name)} (AP={curve.average_precision:.3f})")
     ax1.set_xlabel("False positive rate")
     ax1.set_ylabel("True positive rate")
     ax1.set_title(f"ROC curve — {target}")
     ax2.set_xlabel("Recall")
     ax2.set_ylabel("Precision")
     ax2.set_title(f"Precision-Recall curve — {target}")
+    # Both are rates: the same square [0, 1] whatever the curves reach, so
+    # two charts (or two classes) are compared at a glance.
+    for ax in (ax1, ax2):
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1.02)
     style_axes(ax1)
     style_axes(ax2)
     reserve_legend_space(fig, n_curves, legend_cols)
     for ax in (ax1, ax2):
         legend_below(ax, ncol=legend_cols, fontsize=7)
     return fig
+
+
+# The F1 values an iso-F1 line is drawn for, and its grey: light enough to
+# read as background behind the experiments' curves.
+ISO_F1_VALUES = (0.2, 0.4, 0.6, 0.8)
+ISO_F1_COLOR = "#c3c7ce"
+
+
+def iso_f1_lines(ax) -> None:
+    """On a precision-recall Axes, the curves of constant F1: every point
+    of the one marked 0.6 has F1 = 0.6, so where an experiment's curve
+    crosses them is its best F1 at a glance."""
+    for f1 in ISO_F1_VALUES:
+        recall = np.linspace(f1 / 2 + 1e-3, 1, 200)
+        precision = f1 * recall / (2 * recall - f1)
+        keep = precision <= 1.02
+        ax.plot(recall[keep], precision[keep], color=ISO_F1_COLOR, linewidth=0.8, zorder=1)
+        ax.annotate(f"F1={f1:.1f}", xy=(0.995, precision[-1]), xytext=(-2, 2), textcoords="offset points",
+                    ha="right", va="bottom", fontsize=6.5, color="#9aa0aa")
 
 
 # ---- confusion matrices ---------------------------------------------------
@@ -243,7 +268,7 @@ def risk_coverage(curves_by_name: dict, colors: dict):
         if not len(curve.coverage):
             continue
         ax.plot(curve.coverage, curve.risk, color=colors.get(name),
-                label=f"{short_name(name)} (AURC={curve.aurc:.4f})")
+                label=f"{legend_name(name)} (AURC={curve.aurc:.4f})")
     ax.set_xlabel("Coverage -- share of crops the model is allowed to decide")
     ax.set_ylabel("Selective risk -- error rate among those")
     ax.set_title("Risk-coverage: what abstaining buys")
@@ -352,7 +377,7 @@ def slice_chart(ordered_values: list, reports: dict, metric: str, metric_label: 
         for i, name in enumerate(names):
             ax_counts.bar(x + (i - (n_exp - 1) / 2) * bar_width, [rows_by_name[name][v].n for v in values],
                           bar_width, color=colors.get(name), alpha=0.28,
-                          label=f"crops in slice ({short_name(name)})")
+                          label=f"crops in slice ({legend_name(name)})")
     ax_counts.set_ylabel("crops in slice", color=COUNT_AXIS_COLOR, fontsize=9)
     ax_counts.tick_params(axis="y", colors=COUNT_AXIS_COLOR, labelsize=8)
     ax_counts.set_ylim(0, max([rows_by_name[name][v].n for name in names for v in values] or [1]) * 1.15)
@@ -364,10 +389,10 @@ def slice_chart(ordered_values: list, reports: dict, metric: str, metric_label: 
         if any(low == low for low, _ in intervals):
             lows = [max(0.0, hh - low) if low == low else 0.0 for hh, (low, _) in zip(heights, intervals)]
             highs = [max(0.0, high - hh) if high == high else 0.0 for hh, (_, high) in zip(heights, intervals)]
-            ax_metric.errorbar(x, heights, yerr=[lows, highs], label=short_name(name), color=color, marker="o",
+            ax_metric.errorbar(x, heights, yerr=[lows, highs], label=legend_name(name), color=color, marker="o",
                                markersize=5, linewidth=1.8, capsize=3, elinewidth=0.9, ecolor=color, alpha=0.95)
         else:
-            ax_metric.plot(x, heights, label=short_name(name), color=color, marker="o", markersize=5, linewidth=1.8)
+            ax_metric.plot(x, heights, label=legend_name(name), color=color, marker="o", markersize=5, linewidth=1.8)
         overall = sl.metric_value(reports[name].overall, metric, class_label)
         if overall == overall:
             ax_metric.axhline(overall, color=color, linestyle="--", linewidth=1, alpha=0.6)

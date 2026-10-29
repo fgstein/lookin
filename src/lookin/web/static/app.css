@@ -302,6 +302,8 @@ button.chip:hover { border-color: var(--acc); }
 .banner + .banner { margin-top: 6px; }
 .banner-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .banner-actions { flex: none; display: flex; gap: 6px; align-items: center; }
+.warn-group .banner-body { gap: 3px; }
+.warn-detail { padding-left: 14px; opacity: .9; }
 .banner-info { background: var(--acc-soft-2); color: var(--acc-ink); }
 .banner-warn { background: var(--warn-soft); color: var(--warn); }
 .banner-error { background: var(--err-soft); color: var(--err-ink); }
