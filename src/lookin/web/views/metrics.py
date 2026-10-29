@@ -27,7 +27,9 @@ from lookin.core import library
 from lookin.core.metrics import MACRO_AVERAGE, compute_curves, compute_metrics
 from lookin.core.report import Report
 from lookin.core.report_builder import build_report, default_report_name
+from lookin.core.report_md import MarkdownReport
 from lookin.core.report_pptx import PptxReport
+from lookin.core.notes import has_content
 from lookin.core.chart_style import blues_color, color_for_experiment
 from lookin.web import html as h
 from lookin.web.views.base import RebuildView
@@ -52,7 +54,7 @@ REPORT_TO_BROWSER = "browser"
 REPORT_TO_SERVER = "server"
 REPORT_TARGETS = ((REPORT_TO_BROWSER, "This computer (download)"), (REPORT_TO_SERVER, "A folder on the server"))
 # The report writers, by the format a button asks for.
-REPORT_WRITERS = {"html": Report, "pptx": PptxReport}
+REPORT_WRITERS = {"html": Report, "pptx": PptxReport, "md": MarkdownReport}
 CELL_SIZE = 34
 # Confusion matrices are shown open up to this many; past it the section
 # starts folded, since it is a screenful per experiment.
@@ -114,7 +116,9 @@ class MetricsView(RebuildView):
         self.report_dir = ""
         self.report_name = ""
         self.report_per_class = True
+        self.report_charts = True
         self.report_confusion = True
+        self.report_notes = True
         self.report_busy = False
         self.report_status = ("", "")
         # Where an export goes: the browser's downloads (the computer the
@@ -592,9 +596,14 @@ class MetricsView(RebuildView):
         if not self.report_dir and state.dataset is not None and state.dataset.csv_path:
             self.report_dir = str(Path(state.dataset.csv_path).parent)
 
+    def _notes_text(self) -> str:
+        return self.s.view("notes").current_text()
+
     def _report_html(self) -> str:
         self._prepare_report_fields()
         text, kind = self.report_status
+        has_notes = has_content(self._notes_text())
+        notes_label = "Notes (from the Notes tab)" if has_notes else "Notes (none written yet)"
         target = h.segmented(REPORT_TARGETS, self.report_target, label="Save to",
                              act_for=lambda k: self.a("report_target", dest=k))
         folder = ""
@@ -607,14 +616,18 @@ class MetricsView(RebuildView):
         body = (f'<div class="row"><span class="small muted">Save to</span>{target}</div>'
                 f'{folder}'
                 f'<div class="row-wrap">{h.text_input(self.report_name, label="File name", change=self.c("report_name"), width=300, extra=" data-force=1")}'
+                f'</div><div class="row-wrap"><span class="small muted">Contents</span>'
+                f'{h.checkbox(notes_label, self.report_notes and has_notes, change=self.c("report_opt", which="notes"), disabled=not has_notes)}'
+                f'{h.checkbox("Per-class charts", self.report_charts, change=self.c("report_opt", which="charts"))}'
                 f'{h.checkbox("Per-class tables", self.report_per_class, change=self.c("report_opt", which="per_class"))}'
                 f'{h.checkbox("Confusion matrices", self.report_confusion, change=self.c("report_opt", which="confusion"))}</div>'
                 f'<div class="row">{h.button("Export HTML report", act_attr=self.a("export", kind="html"), kind="primary", icon_name="file", disabled=self.report_busy)}'
-                f'{h.button("Export PowerPoint", act_attr=self.a("export", kind="pptx"), kind="primary", icon_name="layers", disabled=self.report_busy)}</div>'
+                f'{h.button("Export PowerPoint", act_attr=self.a("export", kind="pptx"), kind="primary", icon_name="layers", disabled=self.report_busy)}'
+                f'{h.button("Export Markdown", act_attr=self.a("export", kind="md"), kind="primary", icon_name="code", disabled=self.report_busy)}</div>'
                 f'{h.spinner("Building the report...") if self.report_busy else ""}'
                 f'{f"<div class=row>{status_line(text, kind)}{again}</div>" if text else ""}')
         return h.section("Export a report", body, manual="report-export",
-                         sub="one self-contained HTML file, or a native PowerPoint deck")
+                         sub="one self-contained file: an HTML page, a PowerPoint deck or a Markdown document")
 
     def on_report_target(self, dest: str = "", **_):
         if dest in dict(REPORT_TARGETS):
@@ -639,8 +652,12 @@ class MetricsView(RebuildView):
     def on_report_opt(self, which: str = "", value=False, **_):
         if which == "per_class":
             self.report_per_class = bool(value)
+        elif which == "charts":
+            self.report_charts = bool(value)
         elif which == "confusion":
             self.report_confusion = bool(value)
+        elif which == "notes":
+            self.report_notes = bool(value)
 
     def on_report_browse(self, **_):
         def picked(path):
@@ -689,7 +706,9 @@ class MetricsView(RebuildView):
                 self.state, selected,
                 include_per_class=bool(self.report_per_class), include_confusion=bool(self.report_confusion),
                 comparison_pair=pair, snapshot_id=self._bookmark_for_report(name), report_cls=report_cls,
-                focus=self._focus if self._many_classes else None)
+                focus=self._focus if self._many_classes else None,
+                include_per_class_charts=bool(self.report_charts),
+                notes=self._notes_text() if self.report_notes else "")
             if self.report_target == REPORT_TO_BROWSER:
                 data = report.to_bytes()
                 key = self.s.put_download(data, name, report.mime)

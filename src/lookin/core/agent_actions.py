@@ -594,3 +594,49 @@ def export_reviewed_dataset(workspace_id: str, versions: list | None = None, des
             extra = export_excluded_uuids(store, chosen[-1], path.with_name(path.stem + "_excluded.txt"))
             out["excluded_uuids"] = str(extra.path)
         return out
+
+
+# ---- notes -------------------------------------------------------------------
+
+NOTES_MODES = ("replace", "append")
+
+
+def write_notes(workspace_id: str, text: str, mode: str = "append") -> dict:
+    """The Notes tab's text, written as the editor saves it."""
+    from lookin.core import notes as nt
+
+    if mode not in NOTES_MODES:
+        raise ValueError(f"mode must be one of {', '.join(NOTES_MODES)}; got {mode!r}.")
+    workspace = find_workspace(workspace_id)
+    current = nt.read(workspace)
+    if mode == "append" and current:
+        text = current.rstrip() + "\n\n" + (text or "").strip() + "\n"
+    if not (text or "").strip() and mode == "replace" and current:
+        raise ValueError("Refusing to replace the notes with nothing. Write some text, or append instead.")
+    path = nt.write(workspace, text or "")
+    return tools._clean({"workspace_id": workspace.id, "path": str(path), "mode": mode,
+                         "open_url": links.link(workspace.id, tab="notes"), "warnings": []})
+
+
+def regenerate_notes_recap(workspace_id: str) -> dict:
+    """What the Notes tab's "Regenerate the recap" does: the performance
+    summary at the top of the notes, written again from the current
+    numbers (the notes are started, with the workspace's name as title,
+    when it has none)."""
+    from lookin.core import notes as nt
+
+    with tools._lock:
+        entry = tools._entry(workspace_id)
+        state = entry.loaded.state
+        if state.dataset is None:
+            raise ValueError("This workspace's dataset is not loaded, so there are no numbers to sum up. "
+                             + " ".join(entry.loaded.warnings))
+        metrics = {name: tools._metrics(entry, name) for name in state.experiments}
+        workspace = entry.loaded.workspace
+        recap = nt.recap(state, metrics)
+        current = nt.read(workspace)
+        text = nt.with_recap(current, recap) if current is not None else nt.template(workspace.label(), recap)
+        path = nt.write(workspace, text)
+        out = tools._context(entry, "notes")
+    out.update({"path": str(path), "recap": recap, "started": current is None})
+    return tools._clean(out)

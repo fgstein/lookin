@@ -717,6 +717,16 @@ def check_current_workspace(session) -> None:
         session._seen_manifest = seen
 
 
+def check_notes(session) -> None:
+    """The open workspace's notes, written by another tab or an agent: the
+    Notes tab, when this tab has it open, shows them (views/notes.py)."""
+    if session.tab != "notes" or session.mode == "home" or "notes" not in session.views:
+        return
+    view = session.views["notes"]
+    if view.changed_elsewhere():
+        session.mark("notes")
+
+
 def start_watching(session) -> None:
     """Follow the open workspace's manifest for the life of the session.
     A thread per tab rather than a signal between tabs: the only thing two
@@ -727,6 +737,7 @@ def start_watching(session) -> None:
             time.sleep(WATCH_S)
             try:
                 check_current_workspace(session)
+                check_notes(session)
             except Exception:  # noqa: BLE001
                 traceback.print_exc()
 

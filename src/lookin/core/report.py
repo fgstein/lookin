@@ -50,6 +50,10 @@ figure img { max-width: 100%; height: auto; border-radius: 8px; border: 1px soli
 figcaption { color: #5c5c68; font-size: 12px; margin-top: 6px; }
 .note { color: #5c5c68; font-size: 12px; font-style: italic; }
 .pos { color: #1a7f4b; } .neg { color: #b23b3b; }
+.notes h3, .notes h4, .notes h5, .notes h6 { margin: 14px 0 6px; }
+.notes p, .notes ul, .notes ol { margin: 0 0 8px; }
+.notes blockquote { margin: 0 0 8px; padding: 2px 12px; border-left: 3px solid #dcdce3; color: #5c5c68; }
+.notes code { background: #f1f1f5; border-radius: 3px; padding: 0 3px; }
 footer { color: #8a8a95; font-size: 11px; margin-top: 40px; border-top: 1px solid #dcdce3; padding-top: 12px; }
 @media print { body { background: #fff; padding: 0; } .card, .tile { break-inside: avoid; } }
 """
@@ -149,6 +153,14 @@ class Report:
     @staticmethod
     def paragraph(text: str, note: bool = False) -> str:
         return f'<p class="{"note" if note else ""}">{_esc(text)}</p>'
+
+    @staticmethod
+    def notes(markdown: str) -> str:
+        """The user's notes (core/notes.py), formatted: their headings sit
+        under the report's own sections, the recap markers are dropped."""
+        from lookin.core import markdown_lite as md
+
+        return f'<div class="card notes">{md.to_html(md.for_report(markdown))}</div>'
 
     # ---- output ----
     def to_html(self) -> str:

@@ -112,6 +112,11 @@ in both, like the PNGs they are exported as.
    on the Sources tab can be overlaid on the same map -- see below.
 9. **Cleaning tab** -- find the crops worth a human look, decide on them,
    and export a versioned dataset you can train on. See below.
+10. **Notes tab** -- free text about the workspace, written like a chat
+    message (formatted as you type) and kept as `notes.md` in its folder.
+    A new note starts with the workspace's name and a short performance
+    recap, which "Regenerate the recap" rewrites from the current numbers;
+    every exported report starts with the notes.
 
 **Display LUTs.** Greyscale crops often use a narrow slice of the available
 range and read as a flat grey square. The **Display** control in the top bar
@@ -378,14 +383,16 @@ per version, in `~/.config/lookin/triage.json`. It stores the crop's uuid
 rather than a position, since the candidate list is rebuilt every time the
 queue opens.
 
-**Exporting a report.** The Metrics tab writes a single self-contained HTML
-file: provenance (which CSV, which split, which review version, whether the
-reviewed labels were applied), the summary table, the per-class tables and
-the confusion matrices, with every image embedded as a data URI. It opens
-with no network and no sibling files, and a browser prints it to PDF.
-Selecting exactly two experiments adds the head-to-head from the Compare
-tab. HTML rather than PDF on purpose: a PDF writer would be a new
-dependency, which is what the rest of this project avoids.
+**Exporting a report.** The Metrics tab writes a single self-contained file
+-- an HTML page, a PowerPoint deck or a Markdown document -- downloaded by
+the browser (or written to a folder on the server, if you pick one):
+provenance (which CSV, which split, which review version, whether the
+reviewed labels were applied), the Notes tab's text, the summary table,
+per-class charts and tables, and the confusion matrices, with every image
+embedded. It opens with no network and no sibling files, and a browser
+prints the HTML one to PDF. Selecting exactly two experiments adds the
+head-to-head from the Compare tab. No PDF writer on purpose: it would be a
+new dependency, which is what the rest of this project avoids.
 
 ## Home: MLflow runs and workspaces
 
@@ -487,13 +494,14 @@ The model needs to support tool calling (and images, for the pictures).
 | `find_cleaning_candidates`, `find_similar` | the Cleaning tab's candidate search; nearest crops in embedding space |
 | `get_review`, `get_snapshot` | review versions and their counts; one saved view |
 | `search_mlflow_runs`, `list_mlflow_run_files` | runs on the configured MLflow servers; the CSVs a run logged |
+| `get_notes` | the workspace's notes, as Markdown |
 
 **Pictures and files** -- `plot_chart` draws any chart of the tabs (per-class
 bars, ROC/PR, confusion matrix, reliability, risk-coverage, a column, a
 slice breakdown, a 2D projection of the embeddings) with the very code the
 tab draws it with, and `make_mosaic` puts crops on one picture, framed green
 or red by an experiment's verdict; both come back as images. `generate_report`
-writes the Metrics tab's HTML or PowerPoint report.
+writes the Metrics tab's HTML, PowerPoint or Markdown report.
 
 **Changing the library** -- `create_workspace` (the dataset's columns are
 guessed as on the Sources tab), `update_workspace` (and its Home group),
@@ -503,7 +511,8 @@ guessed as on the Sources tab), `update_workspace` (and its Home group),
 `set_dataset_filter` (the Filter tab); `create_snapshot`, `update_snapshot`,
 `delete_snapshot`; `export_workspace`, `import_workspace`;
 `record_review_decisions`, `undo_review_batch`, `create_review_version`,
-`export_reviewed_dataset`. Each does what the matching button does, through
+`export_reviewed_dataset`; `write_notes`, `regenerate_notes_recap` (the
+Notes tab). Each does what the matching button does, through
 the same code, so a tab with that workspace open picks the change up within
 seconds. Deleting asks for the id a second time, and those tools are marked
 destructive so a client can ask its user first.

@@ -21,6 +21,7 @@ _SPECS = {
     "embeddings": "lookin.web.views.embeddings:EmbeddingsView",
     "prototypes": "lookin.web.views.prototypes:PrototypesView",
     "cleaning": "lookin.web.views.cleaning:CleaningView",
+    "notes": "lookin.web.views.notes:NotesView",
 }
 
 

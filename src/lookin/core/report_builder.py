@@ -21,7 +21,8 @@ from lookin.core import comparison as cmp
 from lookin.core import chart_style  # noqa: F401
 from lookin.core.metrics import PER_CLASS_COLUMNS, compute_metrics
 from lookin.core.report import Report
-from lookin.core.chart_style import short_name
+from lookin.core.chart_style import color_for_experiment, short_name
+from lookin.core.notes import has_content
 
 # Rows of the most-confused-pairs table in a many-class report.
 REPORT_PAIRS = 25
@@ -44,7 +45,8 @@ METRIC_ROWS = (
 def build_report(state, experiment_names: list, include_per_class: bool = True,
                  include_confusion: bool = True, comparison_pair=None,
                  snapshot_id: str = "", report_cls: type = Report,
-                 focus: list | None = None) -> Report:
+                 focus: list | None = None, include_per_class_charts: bool = True,
+                 notes: str = "") -> Report:
     """One report over the given experiments.
 
     `comparison_pair` is an optional (baseline, candidate) -- when given, the
@@ -64,10 +66,15 @@ def build_report(state, experiment_names: list, include_per_class: bool = True,
     the report then carries the focus classes, the most confused pairs and
     the whole matrix as one picture instead.
 
-    `report_cls` picks the writer: `Report` (the default) for HTML, or
-    `PptxReport` (core/report_pptx.py) for PowerPoint -- everything below
-    only calls the writer's content methods, so it does not need to know
-    or care which one it got.
+    `report_cls` picks the writer: `Report` (the default) for HTML,
+    `PptxReport` (core/report_pptx.py) for PowerPoint or `MarkdownReport`
+    (core/report_md.py) for Markdown -- everything below only calls the
+    writer's content methods, so it does not need to know or care which
+    one it got.
+
+    `notes` is the workspace's notes (core/notes.py), as Markdown: when
+    they say anything, they come first, right after the provenance --
+    they are what the person who made the report had to say about it.
     """
     if state.dataset is None:
         raise ValueError("No dataset loaded.")
@@ -83,9 +90,13 @@ def build_report(state, experiment_names: list, include_per_class: bool = True,
     )
 
     _add_provenance(report, state, snapshot_id)
+    if has_content(notes):
+        report.section("Notes").blocks.append(report.notes(notes))
     metrics = {name: _metrics_for(state, name) for name in experiment_names}
     focus = _report_focus(metrics, focus)
     _add_summary(report, metrics)
+    if include_per_class_charts:
+        _add_per_class_charts(report, state, metrics, focus)
     if include_per_class:
         _add_per_class(report, metrics, focus)
     if include_confusion:
@@ -186,6 +197,34 @@ def _add_summary(report: Report, metrics: dict) -> None:
             )
     for warning in warnings:
         section.blocks.append(report.paragraph(warning, note=True))
+
+
+# The per-class metrics drawn as bars in a report, one chart each -- the
+# Metrics tab's "Per-class metric comparison", for the metrics a reader
+# looks for first.
+REPORT_CHART_METRICS = ("f1", "precision", "recall", "average_precision")
+
+
+def _add_per_class_charts(report: Report, state, metrics_by_name: dict, focus: list | None) -> None:
+    section = report.section("Per-class charts")
+    per_class = {name: m.per_class.set_index("label") for name, m in metrics_by_name.items()}
+    labels = sorted(set().union(*[set(pc.index) for pc in per_class.values()]))
+    if focus is not None:
+        n_all = len(labels)
+        labels = [label for label in focus if label in set(labels)]
+        section.blocks.append(report.paragraph(_focus_note(focus, n_all), note=True))
+    if not labels:
+        section.blocks.append(report.paragraph("No class to draw.", note=True))
+        return
+    colors = {name: color_for_experiment(name, getattr(state, "color_slots", {})) for name in metrics_by_name}
+    for metric in REPORT_CHART_METRICS:
+        if not all(metric in pc.columns for pc in per_class.values()):
+            continue
+        fig, _uneven = charts.per_class_bars(per_class, metric, labels, colors)
+        section.blocks.append(report.figure(fig, f"Per-class {metric.replace('_', ' ')} by experiment"))
+    section.blocks.append(report.paragraph(
+        "[n] under each class name is its support -- the number of ground-truth examples behind that class's "
+        "numbers.", note=True))
 
 
 def _add_per_class(report: Report, metrics_by_name: dict, focus: list | None) -> None:
