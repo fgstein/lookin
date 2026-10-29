@@ -571,11 +571,16 @@ class RunsDialog(Dialog):
             sources = session.upload_view
             loaded = 0
             for c in candidates:
-                name = c.default_name()
+                taken = set(session.state.experiments) | {r.name for r in sources.rows}
+                name = wss.unique_name(taken, c.default_name(), c.run.run_id)
                 session.busy.begin(f"Loading {Path(c.csv.path).name}")
                 try:
                     dest = mlflow_cache.download_cached(c.uri, c.run.run_id, c.csv.path, c.csv.size)
-                    ok, message = sources.add_experiment_from_path(str(dest), name)
+                    origin = lib.MountExperiment(
+                        name=name, path=str(dest), mlflow_uri=c.uri, mlflow_experiment_id=c.run.experiment_id,
+                        mlflow_run_id=c.run.run_id, mlflow_run_name=c.run.run_name, artifact_path=c.csv.path,
+                        artifact_size=c.csv.size)
+                    ok, message = sources.add_experiment_from_path(str(dest), name, mlflow=origin)
                     if not ok:
                         session.toast(f"{name}: {message}", "error")
                         continue

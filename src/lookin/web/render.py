@@ -32,6 +32,7 @@ TABS = (
     ("embeddings", "Embeddings", "Representations"),
     ("prototypes", "Prototypes", "Representations"),
     ("cleaning", "Cleaning", "Curate"),
+    ("notes", "Notes", "Write"),
 )
 TAB_KEYS = [t[0] for t in TABS]
 TAB_TITLES = {t[0]: t[1] for t in TABS}

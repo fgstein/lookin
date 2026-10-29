@@ -97,3 +97,27 @@ def test_a_legend_never_takes_the_whole_figure():
     # 60 entries would ask for ten inches out of two; the axes survive.
     assert figure.subplotpars.bottom <= cs.LEGEND_MAX_FRACTION
     plt.close(figure)
+
+
+def test_a_legend_entry_is_wrapped_never_cut():
+    long = "finetuned_resnet_with_a_very_long_name_to_see_what_the_legend_does_with_it_v2"
+    wrapped = cs.legend_name(long)
+    assert "…" not in wrapped and wrapped.replace("\n", "") == long
+    assert all(len(line) <= cs.LEGEND_NAME_WRAP for line in wrapped.split("\n"))
+    assert cs.legend_name("short") == "short"
+    assert cs.legend_columns(6) == 1
+
+
+def test_the_pr_curve_is_drawn_on_the_unit_square_with_iso_f1_lines():
+    import numpy as np
+    from types import SimpleNamespace
+    from lookin.core import charts
+
+    curve = SimpleNamespace(fpr=np.array([0, .5, 1]), tpr=np.array([0, .8, 1]), roc_auc=.7,
+                            recall=np.array([0, .3, .6]), precision=np.array([1, .7, .5]),
+                            average_precision=.6)
+    fig = charts.roc_pr_curves({"a": curve}, "cat", {"a": "#123456"})
+    roc, pr = fig.axes[:2]
+    assert pr.get_xlim() == (0, 1) and pr.get_ylim()[0] == 0 and roc.get_xlim() == (0, 1)
+    grey = [line for line in pr.get_lines() if line.get_color() == charts.ISO_F1_COLOR]
+    assert len(grey) == len(charts.ISO_F1_VALUES)

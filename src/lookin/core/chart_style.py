@@ -146,10 +146,14 @@ def style_axes(ax, x: str = GRID_BOTH, y: str = GRID_BOTH) -> None:
 # with tight_layout's own `rect` is what guarantees no overlap, since
 # tight_layout fits the axes *and every label around them* inside what is
 # left.
-# An experiment name drawn in a chart (a title, a legend entry) is cut past
-# this many characters: a figure cannot show a tooltip, and a long name makes
-# the figure as wide as the name, which shrinks the plot to fit the page.
+# An experiment name drawn in a chart title is cut past this many
+# characters: a figure cannot show a tooltip, and a long name makes the
+# figure as wide as the name, which shrinks the plot to fit the page.
 CHART_NAME_MAX = 40
+# A legend entry is never cut -- the legend is where a reader finds out
+# which line is which experiment, and two names cut to the same prefix are
+# indistinguishable. Past this many characters it wraps onto a second line.
+LEGEND_NAME_WRAP = 70
 
 
 def short_name(name, limit: int = CHART_NAME_MAX) -> str:
@@ -159,7 +163,25 @@ def short_name(name, limit: int = CHART_NAME_MAX) -> str:
     return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
 
 
-LEGEND_MAX_COLS = 4
+def legend_name(name, width: int = LEGEND_NAME_WRAP) -> str:
+    """`name` whole, for a legend entry: wrapped (on separators where it
+    can) rather than cut, so every experiment stays told apart."""
+    text = str(name)
+    if len(text) <= width:
+        return text
+    lines, rest = [], text
+    while len(rest) > width:
+        cut = max(rest.rfind(sep, 0, width + 1) for sep in (" ", "_", "-", "/", "."))
+        cut = cut + 1 if cut > width // 2 else width
+        lines.append(rest[:cut].rstrip())
+        rest = rest[cut:].lstrip()
+    lines.append(rest)
+    return "\n".join(lines)
+
+
+# One entry per line: entries are experiment names, and side by side they
+# had to be cut to fit the width of the figure.
+LEGEND_MAX_COLS = 1
 LEGEND_ROW_INCHES = 0.24
 # A legend taller than this much of the figure means the chart has become a
 # legend with a plot attached; past it the figure is better grown than the
@@ -169,9 +191,8 @@ LEGEND_MAX_FRACTION = 0.45
 
 
 def legend_columns(n_entries: int, max_cols: int = LEGEND_MAX_COLS) -> int:
-    """How many columns a legend of `n_entries` gets under the plot. Kept
-    low deliberately: entries are experiment names, and four long names on
-    one line run wider than the figure."""
+    """How many columns a legend of `n_entries` gets under the plot: one,
+    so every experiment name is written in full on a line of its own."""
     return max(1, min(max_cols, n_entries))
 
 

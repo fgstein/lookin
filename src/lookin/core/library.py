@@ -70,6 +70,9 @@ from lookin.core.prefs import config_dir
 
 WORKSPACE_SUFFIX = ".lookin"
 MANIFEST_NAME = "manifest.json"
+# A workspace's notes, beside its manifest (core/notes.py reads and writes
+# them; named here because export and import carry them).
+NOTES_NAME = "notes.md"
 SNAPSHOTS_DIRNAME = "snapshots"
 DATA_DIRNAME = "data"
 PERSONAL_FILE = "personal.json"
@@ -1042,6 +1045,10 @@ def export_workspace(workspace: Workspace, dest_path, include_embeddings: bool =
                     f"{SNAPSHOTS_DIRNAME}/{snapshot.id}.json",
                     json.dumps(snapshot_to_dict(snapshot), indent=2),
                 )
+            # The Notes tab's text (core/notes.py) travels with it.
+            notes = Path(workspace.path) / NOTES_NAME if workspace.path else None
+            if notes is not None and notes.is_file():
+                archive.write(notes, NOTES_NAME)
 
     try:
         # Through fileio so that a full disk halfway through a gigabyte of

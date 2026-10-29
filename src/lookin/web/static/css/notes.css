@@ -1,0 +1,22 @@
+/* Notes tab */
+.nt-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 4px; border: 1px solid var(--line); border-bottom: 0; border-radius: var(--r-s) var(--r-s) 0 0; background: var(--surface-2); }
+.nt-tool { min-width: 28px; height: 26px; padding: 0 6px; border: 0; border-radius: 4px; background: transparent; color: var(--ink-2); font: 600 12px/1 var(--mono); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.nt-tool:hover { background: var(--surface-3); color: var(--ink); }
+.nt-italic { font-style: italic; }
+.nt-strikeThrough { text-decoration: line-through; }
+.nt-sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
+.notes-editor { min-height: 420px; padding: 14px 18px; border: 1px solid var(--line); border-radius: 0 0 var(--r-s) var(--r-s); background: var(--surface); color: var(--ink); font-size: 14px; line-height: 1.6; outline: none; overflow-wrap: anywhere; }
+.notes-editor:focus { border-color: var(--acc); box-shadow: 0 0 0 2px var(--acc-soft-2); }
+.notes-editor h1 { font-size: 22px; margin: 4px 0 10px; }
+.notes-editor h2 { font-size: 17px; margin: 18px 0 6px; }
+.notes-editor h3 { font-size: 15px; margin: 14px 0 4px; }
+.notes-editor p { margin: 0 0 8px; }
+.notes-editor ul, .notes-editor ol { margin: 0 0 8px; padding-left: 24px; }
+.notes-editor blockquote { margin: 0 0 8px; padding: 2px 12px; border-left: 3px solid var(--line); color: var(--ink-2); }
+.notes-editor code { font-family: var(--mono); font-size: 12.5px; background: var(--surface-3); border-radius: 3px; padding: 0 3px; }
+.notes-editor pre { font-family: var(--mono); font-size: 12.5px; background: var(--surface-3); border-radius: var(--r-s); padding: 8px 10px; overflow: auto; }
+.notes-editor hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }
+.notes-editor a { color: var(--acc); }
+/* The recap the app wrote: the user's text like the rest, marked lightly as
+   the part Regenerate rewrites. */
+.notes-editor [data-region="recap"] { border-left: 3px solid var(--acc-soft-2); padding-left: 12px; margin: 0 0 10px; }

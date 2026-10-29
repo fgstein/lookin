@@ -180,26 +180,39 @@ PAGES = (
 
     ManualPage(
         id="report-export",
-        title="Exporting an HTML report",
+        title="Exporting a report",
         summary=(
-            "One self-contained HTML file holding the numbers, the charts and the provenance: which "
-            "CSVs were loaded, which filter was active, which review version was in effect. It opens "
-            "in any browser with no server and no network."
+            "One self-contained file holding your notes, the numbers, the charts and the provenance: "
+            "which CSVs were loaded, which filter was active, which review version was in effect. It "
+            "comes as an HTML page, a PowerPoint deck or a Markdown document, and opens with no server "
+            "and no network."
         ),
         shown_in="Metrics tab (\"Export a report\")",
         blocks=(
             Para(
-                "Everything is embedded in the file -- the charts as images, the tables as markup -- "
-                "so the report keeps working when moved, mailed or archived. Nothing in it is fetched "
-                "when it is opened, and a browser prints it to PDF."
+                "Everything is embedded in the file -- the charts as images, the tables as text -- so the "
+                "report keeps working when moved, mailed or archived. Nothing in it is fetched when it is "
+                "opened, and a browser prints the HTML one to PDF."
             ),
+            Heading("Where it goes"),
+            Bullets((
+                "*This computer*, the default: the file is downloaded by the browser you are using, like any download.",
+                "*A folder on the server*: written on the machine running Lookin, in the folder you pick -- what you want when that machine is where the reports are archived.",
+            )),
             Heading("What it contains"),
             Bullets((
                 "The provenance block: which dataset CSV, which split, which review version, and whether the reviewed labels were applied.",
+                "The Notes tab's text, first, when there is any: what the person who made the report had to say about it.",
                 "The summary table, as it stands for the experiments selected.",
-                "The per-class tables and the confusion matrices, images included.",
+                "Per-class charts: F1, precision, recall and average precision per class, one bar per experiment.",
+                "The per-class tables and the confusion matrices.",
                 "With exactly two experiments selected, the head-to-head from the Compare tab.",
             )),
+            Para(
+                "Each part can be left out with its tick box. The Markdown document embeds its charts as "
+                "images inside the file; most Markdown viewers show them, a few wikis show their caption "
+                "instead."
+            ),
             Heading("Why the provenance block matters"),
             Para(
                 "A metric without its context cannot be compared against anything. The report records "
@@ -216,7 +229,59 @@ PAGES = (
                 ),
             )),
         ),
-        see_also=("summary-table", "dataset-join", "review-versions"),
-        keywords=("report", "export", "html", "provenance", "share", "archive"),
+        see_also=("notes", "summary-table", "dataset-join", "review-versions"),
+        keywords=("report", "export", "html", "pptx", "powerpoint", "markdown", "download", "provenance",
+                  "share", "archive"),
+    ),
+
+    ManualPage(
+        id="notes",
+        title="Notes",
+        summary=(
+            "A page of free text per workspace: what was decided, what was tried, what the numbers do "
+            "not say. It is written like a message -- formatted as you type, no markup to learn -- "
+            "kept with the workspace, and put first in every report exported from it."
+        ),
+        shown_in="Notes tab",
+        blocks=(
+            Heading("What a new note starts with"),
+            Para(
+                "The workspace's name as its title, then a *Performance summary*: for each experiment its "
+                "accuracy, macro F1, macro average precision and number of rows, with the best macro F1 "
+                "marked. The summary is written into the note once, when the note is created; from then "
+                "on it is your text like the rest, and you can edit it or delete it."
+            ),
+            Para(
+                "*Regenerate the recap* writes the summary again from the current numbers -- after a "
+                "relabeling, a new experiment, a change of filter -- and only that part: the rest of the "
+                "note is left as it is. The summary sits in a lightly marked block for that reason; if "
+                "you delete the block, the next regeneration puts a new one under the title."
+            ),
+            Heading("Writing"),
+            Bullets((
+                "The toolbar: bold, italic, strikethrough, a title and two heading levels, bullet and numbered lists, a quote, inline code, a link.",
+                "As in a chat box, typing \"- \" or \"1. \" at the start of a line starts a list, and \"# \", \"## \", \"### \" a heading.",
+                "Pasted text arrives as plain text, without the formatting of the page it came from.",
+                "The note is saved as you type, a moment after the last key, and when you leave the editor.",
+            )),
+            Heading("Where it is kept"),
+            Para(
+                "In the workspace's folder, as a Markdown file named notes.md -- readable in any text editor, "
+                "carried by a duplicate and by an export of the workspace. In a session not saved as a "
+                "workspace yet, the note lives in that browser tab and goes into the workspace when you "
+                "save the session as one. *Download .md* gives you the file."
+            ),
+            Callout(CALLOUT_TIP, "Agents read it too", (
+                Para(
+                    "An AI agent connected to Lookin's MCP endpoint reads the notes (get_notes) before it "
+                    "draws conclusions about a workspace, and can add its own findings to them "
+                    "(write_notes). Two tabs, or a tab and an agent, writing at the same moment: the last "
+                    "save wins, and a tab showing the note picks up a change made elsewhere within a few "
+                    "seconds."
+                ),
+            )),
+        ),
+        see_also=("report-export", "summary-table"),
+        keywords=("notes", "comments", "write", "markdown", "recap", "summary", "notion"),
     ),
 )

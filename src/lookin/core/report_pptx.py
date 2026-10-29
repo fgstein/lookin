@@ -39,6 +39,7 @@ SLIDE_WIDTH = Inches(13.333)
 SLIDE_HEIGHT = Inches(7.5)
 MARGIN = Inches(0.5)
 MAX_TABLE_ROWS = 14  # more than this per slide and the text is unreadable
+NOTES_LINES_PER_SLIDE = 16
 
 _MUTED = RGBColor(0x5C, 0x5C, 0x68)
 _POS = RGBColor(0x1A, 0x7F, 0x4B)
@@ -47,6 +48,9 @@ _NEG = RGBColor(0xB2, 0x3B, 0x3B)
 
 class PptxReport(Report):
     """Same content-building API as `Report`; renders slides, not HTML."""
+
+    extension = "pptx"
+    mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
     def __init__(self, title: str, subtitle: str = ""):
         super().__init__(title, subtitle)
@@ -58,6 +62,7 @@ class PptxReport(Report):
         self._pending_label = None
         self._last_slide = None
         self._footnote_boxes: dict = {}
+        self._finished = False
 
     # ---- content (overrides Report's) ------------------------------------
     def section(self, title: str):
@@ -97,6 +102,30 @@ class PptxReport(Report):
         self._last_slide = self._add_figure_slide(label, buf.getvalue(), caption)
         return ""
 
+    def notes(self, markdown: str) -> str:
+        """The user's notes as text slides, a slide per heading of theirs
+        (the recap markers and the formatting characters dropped)."""
+        from lookin.core import markdown_lite as md
+
+        self._flush_pending_label()
+        chunks, title, lines = [], self._current_section_title, []
+        for line in md.for_report(markdown, demote=0).split("\n"):
+            heading = md.HEADING.match(line.strip())
+            if heading:
+                if any(l.strip() for l in lines):
+                    chunks.append((title, "\n".join(lines)))
+                title, lines = heading.group(2), []
+            else:
+                lines.append(line)
+        if any(l.strip() for l in lines):
+            chunks.append((title, "\n".join(lines)))
+        for title, body in chunks:
+            text = md.to_plain(body)
+            for k in range(0, max(1, len(text.split("\n"))), NOTES_LINES_PER_SLIDE):
+                part = "\n".join(text.split("\n")[k:k + NOTES_LINES_PER_SLIDE])
+                self._last_slide = self._add_text_slide(title, part)
+        return ""
+
     def paragraph(self, text: str, note: bool = False) -> str:
         if note:
             if self._last_slide is not None:
@@ -109,9 +138,22 @@ class PptxReport(Report):
         return ""
 
     # ---- output -----------------------------------------------------------
-    def write(self, dest_path) -> Path:
+    def _finish(self) -> None:
+        """The last slides, once: to_bytes() and write() may both be called."""
+        if self._finished:
+            return
+        self._finished = True
         self._flush_pending_label()
         self._add_footer_slide()
+
+    def to_bytes(self) -> bytes:
+        self._finish()
+        buf = io.BytesIO()
+        self._prs.save(buf)
+        return buf.getvalue()
+
+    def write(self, dest_path) -> Path:
+        self._finish()
 
         from lookin.core import fileio
 
@@ -259,7 +301,9 @@ class PptxReport(Report):
         box = slide.shapes.add_textbox(MARGIN, Inches(1.2), SLIDE_WIDTH - 2 * MARGIN, Inches(1.0))
         box.text_frame.word_wrap = True
         box.text_frame.text = text
-        self._style_run(box.text_frame.paragraphs[0].runs[0], size=14)
+        for paragraph in box.text_frame.paragraphs:
+            for run in paragraph.runs:
+                self._style_run(run, size=14)
         return slide
 
     def _add_footnote(self, slide, text: str) -> None:

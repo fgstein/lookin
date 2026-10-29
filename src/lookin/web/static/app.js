@@ -558,6 +558,12 @@
         if (out) out.textContent = "[" + a.toFixed(2) + ", " + b.toFixed(2) + "]";
       } else if (out) out.textContent = parseFloat(rng.value).toFixed(2);
     }
+    // An experiment's name field follows the length of what is typed, so
+    // a long name is read whole (see sources.py _exp_tbody).
+    if (ev.target.classList && ev.target.classList.contains("exp-name")) {
+      const n = Math.min(Math.max(ev.target.value.length, 12), 48);
+      ev.target.style.width = "calc(" + n + "ch + 20px)";
+    }
     const el = ev.target.closest("[data-input]");
     if (!el) return;
     clearTimeout(inputTimers.get(el));

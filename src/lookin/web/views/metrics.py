@@ -27,15 +27,17 @@ from lookin.core import library
 from lookin.core.metrics import MACRO_AVERAGE, compute_curves, compute_metrics
 from lookin.core.report import Report
 from lookin.core.report_builder import build_report, default_report_name
+from lookin.core.report_md import MarkdownReport
 from lookin.core.report_pptx import PptxReport
+from lookin.core.notes import has_content
 from lookin.core.chart_style import blues_color, color_for_experiment
 from lookin.web import html as h
 from lookin.web.views.base import RebuildView
 from lookin.web.views.carousel import CarouselDialog
 from lookin.web.views.common import (
     PAIRS_SHOWN, confused_pairs_table, matrix_cell_size, matrix_label_chars, matrix_text_size,
-    overview_image, overview_zoom, saved_path_message, score_diagnostics_banner, short_column_labels,
-    status_line, uuid_overlap_banner,
+    diagnostics_warnings, grouped_warnings, overlap_warnings, overview_image, overview_zoom,
+    saved_path_message, short_column_labels, status_line,
 )
 from lookin.web.views.files import FileBrowserDialog
 from lookin.web.views.media import fig_html
@@ -47,7 +49,16 @@ from lookin.web.views.widgets import ClassFocus, class_select, experiment_color_
 # show any of them -- "support" included, which is a count rather than a
 # rate and so is the one that needs its own y-axis (see _render_perclass_bars).
 METRIC_OPTIONS = ["f1", "precision", "recall", "specificity", "roc_auc", "average_precision", "support"]
+# Export destinations -- keys, compared in code.
+REPORT_TO_BROWSER = "browser"
+REPORT_TO_SERVER = "server"
+REPORT_TARGETS = ((REPORT_TO_BROWSER, "This computer (download)"), (REPORT_TO_SERVER, "A folder on the server"))
+# The report writers, by the format a button asks for.
+REPORT_WRITERS = {"html": Report, "pptx": PptxReport, "md": MarkdownReport}
 CELL_SIZE = 34
+# Confusion matrices are shown open up to this many; past it the section
+# starts folded, since it is a screenful per experiment.
+CONFUSION_OPEN_MAX = 2
 LABEL_COL_WIDTH = 96
 OVERVIEW_SIZE = 420
 
@@ -94,15 +105,26 @@ class MetricsView(RebuildView):
         self._render_inputs = None
         self.slice_panel = SlicePanel(self, session)
         # What the last render pass produced, drawn by render().
-        self.out = {"warnings": "", "summary": "", "perclass": "", "curves": "", "confusion": "", "message": ""}
+        self.out = {"warnings": {}, "summary": "", "perclass": "", "curves": "", "confusion": "", "message": ""}
         self.built = False
+        # Folded by default: the numbers are what the tab is for. Confusion
+        # matrices: None until the user chooses, then open below
+        # CONFUSION_OPEN_MAX matrices, folded above.
+        self.warnings_open = False
+        self.confusion_open = None
         # report export
         self.report_dir = ""
         self.report_name = ""
         self.report_per_class = True
+        self.report_charts = True
         self.report_confusion = True
+        self.report_notes = True
         self.report_busy = False
         self.report_status = ("", "")
+        # Where an export goes: the browser's downloads (the computer the
+        # user sits at), or a folder on the machine running Lookin.
+        self.report_target = REPORT_TO_BROWSER
+        self.report_link = ""        # the last download, to fetch it again
 
     # ---- experiment picker ----
 
@@ -180,20 +202,37 @@ class MetricsView(RebuildView):
     def on_metric(self, value: str = "", **_):
         if value in METRIC_OPTIONS:
             self.metric = value
-            self._redraw()
+            self._redraw_part("perclass")
 
     def on_curve_target(self, value: str = "", **_):
         dataset = self.state.dataset
         known = [MACRO_AVERAGE] + ([str(l) for l in dataset.labels()] if dataset is not None else [])
         if str(value) in known:
             self.curve_target = value
-            self._redraw()
+            self._redraw_part("curves")
 
     def _redraw(self) -> None:
         """A UI change: draw again from the caches (computing only what is
         not cached yet -- a newly ticked experiment), off the request
         thread. The stale banner stays as it is."""
         self.rebuild(self._render_pass, clear_stale=False)
+
+    def _redraw_part(self, part: str) -> None:
+        """A dropdown that changes one chart: draw that one again and leave
+        the rest of the page as it is (the whole pass otherwise)."""
+        if self._render_inputs is None or not self.out.get(part):
+            self._redraw()
+            return
+        metrics_by_name, all_names = self._render_inputs
+        selected = list(metrics_by_name)
+
+        def work():
+            if part == "perclass":
+                html = self._perclass_html(metrics_by_name, all_names)
+            else:
+                html = self._curves_html(selected, all_names, {})
+            self.out = {**self.out, part: html}
+        self.rebuild(work, clear_stale=False)
 
     # ---- computation ----
 
@@ -228,7 +267,7 @@ class MetricsView(RebuildView):
         return self._curves_cache[key]
 
     def _clear_out(self, message: str = "") -> None:
-        self.out = {"warnings": "", "summary": "", "perclass": "", "curves": "", "confusion": "", "message": message}
+        self.out = {"warnings": {}, "summary": "", "perclass": "", "curves": "", "confusion": "", "message": message}
         self.class_focus.hide()
 
     def _render_pass(self) -> None:
@@ -243,11 +282,11 @@ class MetricsView(RebuildView):
             self._clear_out("Select at least one experiment above to see metrics.")
             self.slice_panel.set_experiments([])
             return
-        warnings = []
+        warnings = {}
         for name in selected:
             if name not in self._overlap_cache:
                 self._overlap_cache[name] = state.uuid_overlap(name)
-            warnings.append(uuid_overlap_banner(self._overlap_cache[name], "dataset", name))
+            warnings[name] = overlap_warnings(self._overlap_cache[name])
         try:
             merged_cache: dict = {}
             metrics_by_name = {}
@@ -257,8 +296,8 @@ class MetricsView(RebuildView):
                 metrics_by_name[name] = self._get_metrics(name, merged_cache)
             all_names = list(state.experiments.keys())
             for name, m in metrics_by_name.items():
-                warnings.append(score_diagnostics_banner(m.score_diagnostics, name))
-            out = {"warnings": "".join(warnings), "message": ""}
+                warnings[name] = warnings.get(name, []) + diagnostics_warnings(m.score_diagnostics)
+            out = {"warnings": warnings, "message": ""}
             self.set_progress("Building the summary table...")
             out["summary"] = self._summary_html(metrics_by_name, all_names)
             self._render_inputs = (metrics_by_name, all_names)
@@ -274,7 +313,7 @@ class MetricsView(RebuildView):
         except Exception as ex:  # noqa: BLE001
             _log(f"error computing metrics: {ex}")
             traceback.print_exc()
-            self.out = {"warnings": "".join(warnings), "summary": "", "perclass": "", "curves": "",
+            self.out = {"warnings": warnings, "summary": "", "perclass": "", "curves": "",
                         "confusion": "", "message": ""}
             self.out["perclass"] = h.banner(f"Error computing metrics: {ex}", "error")
             self.class_focus.hide()
@@ -509,13 +548,28 @@ class MetricsView(RebuildView):
         out = self.out
         if out.get("message"):
             parts.append(h.banner(out["message"], "info"))
-        parts.append(out.get("warnings", ""))
-        parts.append(self.progress_html())
+        parts.append(grouped_warnings(out.get("warnings") or {}, self.warnings_open, self.a("toggle_warnings")))
+        progress = self.progress_html()
+        if progress and out.get("summary"):
+            # A redraw of what is already on the page: the progress floats
+            # over it instead of pushing everything below down by a line
+            # and back up again -- the page must not move when a dropdown
+            # changes.
+            progress = f'<div class="mx-progress"><div>{progress}</div></div>'
+        parts.append(progress)
         parts.append(out.get("summary", ""))
         parts.append(self.class_focus.render())
         if out.get("confusion"):
-            parts.append(f'<div class="sec-t"><h2>Confusion matrices</h2>{h.info_btn("confusion-matrix")}</div>'
-                         f'<div class="cm-area">{out["confusion"]}</div>')
+            n_matrices = len(self._selected_names())
+            is_open = self._confusion_is_open(n_matrices)
+            chev = (f'<button type="button" class="chev"{self.a("toggle_confusion")} '
+                    f'aria-expanded="{"true" if is_open else "false"}" aria-label="Show or hide the confusion matrices">'
+                    f'{h.icon("chev-down" if is_open else "chev-right", 14)}</button>')
+            folded = ("" if is_open else
+                      f'<span class="muted small">{n_matrices} matrices, folded -- '
+                      f'{h.button("show them", act_attr=self.a("toggle_confusion"), kind="link", small=True)}</span>')
+            parts.append(f'<div class="sec-t">{chev}<h2>Confusion matrices</h2>{h.info_btn("confusion-matrix")}{folded}</div>'
+                         + (f'<div class="cm-area">{out["confusion"]}</div>' if is_open else ""))
         if out.get("perclass"):
             metric_sel = h.select([(m, m) for m in METRIC_OPTIONS], self.metric, change=self.c("metric"),
                                   label="Per-class metric")
@@ -542,20 +596,52 @@ class MetricsView(RebuildView):
         if not self.report_dir and state.dataset is not None and state.dataset.csv_path:
             self.report_dir = str(Path(state.dataset.csv_path).parent)
 
+    def _notes_text(self) -> str:
+        return self.s.view("notes").current_text()
+
     def _report_html(self) -> str:
         self._prepare_report_fields()
         text, kind = self.report_status
-        body = (f'<div class="row">{h.text_input(self.report_dir, label="Destination folder", change=self.c("report_dir"), cls="grow", mono=True, extra=" data-force=1")}'
-                f'{h.button(icon_name="folder", act_attr=self.a("report_browse"), title="Browse")}</div>'
+        has_notes = has_content(self._notes_text())
+        notes_label = "Notes (from the Notes tab)" if has_notes else "Notes (none written yet)"
+        target = h.segmented(REPORT_TARGETS, self.report_target, label="Save to",
+                             act_for=lambda k: self.a("report_target", dest=k))
+        folder = ""
+        if self.report_target == REPORT_TO_SERVER:
+            folder = (f'<div class="row">{h.text_input(self.report_dir, label="Destination folder", change=self.c("report_dir"), cls="grow", mono=True, extra=" data-force=1")}'
+                      f'{h.button(icon_name="folder", act_attr=self.a("report_browse"), title="Browse")}</div>')
+        again = ""
+        if self.report_link and kind == "success" and self.report_target == REPORT_TO_BROWSER:
+            again = f'<a class="btn btn-link btn-sm" href="{h.e(self.report_link)}" download>Download it again</a>'
+        body = (f'<div class="row"><span class="small muted">Save to</span>{target}</div>'
+                f'{folder}'
                 f'<div class="row-wrap">{h.text_input(self.report_name, label="File name", change=self.c("report_name"), width=300, extra=" data-force=1")}'
+                f'</div><div class="row-wrap"><span class="small muted">Contents</span>'
+                f'{h.checkbox(notes_label, self.report_notes and has_notes, change=self.c("report_opt", which="notes"), disabled=not has_notes)}'
+                f'{h.checkbox("Per-class charts", self.report_charts, change=self.c("report_opt", which="charts"))}'
                 f'{h.checkbox("Per-class tables", self.report_per_class, change=self.c("report_opt", which="per_class"))}'
                 f'{h.checkbox("Confusion matrices", self.report_confusion, change=self.c("report_opt", which="confusion"))}</div>'
                 f'<div class="row">{h.button("Export HTML report", act_attr=self.a("export", kind="html"), kind="primary", icon_name="file", disabled=self.report_busy)}'
-                f'{h.button("Export PowerPoint", act_attr=self.a("export", kind="pptx"), kind="primary", icon_name="layers", disabled=self.report_busy)}</div>'
+                f'{h.button("Export PowerPoint", act_attr=self.a("export", kind="pptx"), kind="primary", icon_name="layers", disabled=self.report_busy)}'
+                f'{h.button("Export Markdown", act_attr=self.a("export", kind="md"), kind="primary", icon_name="code", disabled=self.report_busy)}</div>'
                 f'{h.spinner("Building the report...") if self.report_busy else ""}'
-                f'{status_line(text, kind) if text else ""}')
+                f'{f"<div class=row>{status_line(text, kind)}{again}</div>" if text else ""}')
         return h.section("Export a report", body, manual="report-export",
-                         sub="one self-contained HTML file, or a native PowerPoint deck")
+                         sub="one self-contained file: an HTML page, a PowerPoint deck or a Markdown document")
+
+    def on_report_target(self, dest: str = "", **_):
+        if dest in dict(REPORT_TARGETS):
+            self.report_target = dest
+            self.report_status = ("", "")
+
+    def _confusion_is_open(self, n_matrices: int) -> bool:
+        return self.confusion_open if self.confusion_open is not None else n_matrices <= CONFUSION_OPEN_MAX
+
+    def on_toggle_confusion(self, **_):
+        self.confusion_open = not self._confusion_is_open(len(self._selected_names()))
+
+    def on_toggle_warnings(self, **_):
+        self.warnings_open = not self.warnings_open
 
     def on_report_dir(self, value: str = "", **_):
         self.report_dir = str(value or "")
@@ -566,8 +652,12 @@ class MetricsView(RebuildView):
     def on_report_opt(self, which: str = "", value=False, **_):
         if which == "per_class":
             self.report_per_class = bool(value)
+        elif which == "charts":
+            self.report_charts = bool(value)
         elif which == "confusion":
             self.report_confusion = bool(value)
+        elif which == "notes":
+            self.report_notes = bool(value)
 
     def on_report_browse(self, **_):
         def picked(path):
@@ -577,14 +667,15 @@ class MetricsView(RebuildView):
                                              title="Where to write the report"))
 
     def on_export(self, kind: str = "html", **_):
-        report_cls, extension = (PptxReport, "pptx") if kind == "pptx" else (Report, "html")
+        report_cls = REPORT_WRITERS.get(kind, Report)
+        extension = report_cls.extension
         selected = self._selected_names()
         if not selected:
             self.report_status = ("Select at least one experiment above to report on.", "error")
             return
         self._prepare_report_fields()
         directory = (self.report_dir or "").strip()
-        if not directory:
+        if self.report_target == REPORT_TO_SERVER and not directory:
             self.report_status = ("Pick a destination folder.", "error")
             return
         self.report_busy = True
@@ -601,7 +692,7 @@ class MetricsView(RebuildView):
         typed = (self.report_name or "").strip()
         if not typed:
             return default_report_name(self.state, extension)
-        for known in (".html", ".pptx"):
+        for known in tuple(f".{w.extension}" for w in REPORT_WRITERS.values()):
             if typed.lower().endswith(known):
                 typed = typed[:-len(known)]
                 break
@@ -615,7 +706,18 @@ class MetricsView(RebuildView):
                 self.state, selected,
                 include_per_class=bool(self.report_per_class), include_confusion=bool(self.report_confusion),
                 comparison_pair=pair, snapshot_id=self._bookmark_for_report(name), report_cls=report_cls,
-                focus=self._focus if self._many_classes else None)
+                focus=self._focus if self._many_classes else None,
+                include_per_class_charts=bool(self.report_charts),
+                notes=self._notes_text() if self.report_notes else "")
+            if self.report_target == REPORT_TO_BROWSER:
+                data = report.to_bytes()
+                key = self.s.put_download(data, name, report.mime)
+                self.report_link = f"/dl/{self.s.sid}/{key}"
+                self.s.cmd(download=self.report_link, filename=name)
+                _log(f"report: {name} sent to the browser ({len(data) / 1024:,.0f} KB)")
+                self.report_status = (f"Downloaded {name} ({len(data) / 1024:,.0f} KB) -- self-contained, "
+                                      f"opens with no network.", "success")
+                return
             dest = report.write(Path(directory) / name)
             size_kb = dest.stat().st_size / 1024
             _log(f"report: wrote {dest} ({size_kb:,.0f} KB)")

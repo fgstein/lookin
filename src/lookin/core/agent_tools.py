@@ -886,3 +886,17 @@ def get_snapshot(snapshot_id: str) -> dict:
                    "tags": list(snapshot.tags), "workspace_id": workspace.id, "workspace": workspace.label(),
                    "created_at": snapshot.created_at, "updated_at": snapshot.updated_at,
                    "open_url": links.link(snapshot_id=snapshot.id), "view_state": snapshot.view_state})
+
+
+def get_notes(workspace_id: str) -> dict:
+    """The workspace's notes (core/notes.py), as Markdown."""
+    from lookin.core import notes as nt
+
+    w = find_workspace(workspace_id)
+    text = nt.read(w)
+    return _clean({
+        "workspace_id": w.id, "workspace": w.label(), "open_url": links.link(w.id, tab="notes"),
+        "exists": text is not None, "notes": text or "",
+        "warnings": [] if text is not None else ["This workspace has no notes yet: write_notes starts them, "
+                                                  "or opening its Notes tab writes the title and a recap."],
+    })

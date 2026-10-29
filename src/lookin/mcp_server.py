@@ -410,18 +410,33 @@ def make_mosaic(
 def generate_report(
     workspace_id: WorkspaceId,
     experiments: Experiments = None,
-    format: Annotated[str, Field(description="html (one self-contained file) or pptx (a slide deck).")] = "html",
+    format: Annotated[Literal["html", "pptx", "md"], Field(description=(
+        "html (one self-contained web page), pptx (a slide deck) or md (one Markdown file, charts embedded "
+        "as images)."))] = "html",
     baseline: Annotated[str, Field(description="With candidate: add the head-to-head comparison.")] = "",
     candidate: Annotated[str, Field(description="With baseline: add the head-to-head comparison.")] = "",
     per_class: Annotated[bool, Field(description="Include the per-class tables.")] = True,
     confusion: Annotated[bool, Field(description="Include the confusion matrices.")] = True,
     dest: Dest = "",
+    per_class_charts: Annotated[bool, Field(description=(
+        "Include bar charts of per-class F1, precision, recall and average precision, one bar per experiment."
+    ))] = True,
+    notes: Annotated[bool, Field(description="Include the workspace's notes (see get_notes), first.")] = True,
 ) -> str:
-    """Write the Metrics tab's report: provenance (dataset, split, review version), summary metrics,
-    per-class tables, confusion matrices and optionally a comparison. A snapshot of the workspace is
-    saved with it so its figures can be reopened. Returns the file's path and download url."""
+    """Write the Metrics tab's report: provenance (dataset, split, review version), the workspace's notes,
+    summary metrics, per-class charts and tables, confusion matrices and optionally a comparison. A
+    snapshot of the workspace is saved with it so its figures can be reopened. Returns the file's path
+    and download url."""
     return _run(outputs.generate_report, workspace_id, experiments, format, baseline, candidate, per_class,
-                confusion, dest)
+                confusion, dest, True, per_class_charts, notes)
+
+
+def get_notes(workspace_id: WorkspaceId) -> str:
+    """Read the workspace's notes: free text its users wrote about it (decisions, caveats, what was tried),
+    as Markdown. A note usually starts with the workspace's name as a title and a "Performance summary"
+    written by Lookin between <!-- lookin:recap --> markers. Read them before drawing conclusions about a
+    workspace: they often say what its numbers cannot."""
+    return _run(agent_tools.get_notes, workspace_id)
 
 
 # ---- changing the library ---------------------------------------------------
@@ -628,6 +643,28 @@ def create_review_version(
     return _run(actions.create_review_version, workspace_id, name, parent, note, independent)
 
 
+def write_notes(
+    workspace_id: WorkspaceId,
+    text: Annotated[str, Field(description=(
+        "Markdown: headings (#), **bold**, *italic*, lists (- or 1.), [links](https://...), `code`, > quotes."))],
+    mode: Annotated[Literal["append", "replace"], Field(description=(
+        "append: add the text at the end of the notes (the default -- keeps what people wrote). "
+        "replace: the text becomes the whole notes; read them with get_notes first and keep what should "
+        "stay, including the <!-- lookin:recap --> markers."))] = "append",
+) -> str:
+    """Write the workspace's notes -- what its Notes tab shows and what every report it exports starts
+    with. Say who wrote what you add (e.g. a heading "Agent findings, <date>")."""
+    return _run(actions.write_notes, workspace_id, text, mode)
+
+
+def regenerate_notes_recap(workspace_id: WorkspaceId) -> str:
+    """Rewrite the "Performance summary" at the top of the workspace's notes from the current numbers
+    (accuracy, macro F1, macro AP and rows per experiment) -- after experiments were added or labels
+    reviewed. Only the part between the <!-- lookin:recap --> markers changes; a workspace with no notes
+    gets them started, titled with its name. Returns the recap written."""
+    return _run(actions.regenerate_notes_recap, workspace_id)
+
+
 def export_reviewed_dataset(
     workspace_id: WorkspaceId,
     versions: Annotated[list[str] | None, Field(description="Review versions to add columns for; default "
@@ -648,14 +685,14 @@ READ_TOOLS = (
     list_workspaces, get_workspace, get_dataset_summary, get_column_stats, get_metrics, get_per_class,
     get_confusions, compare_experiments, get_slices, get_calibration, get_confidence, get_examples,
     find_cleaning_candidates, find_similar, get_review, get_snapshot, search_mlflow_runs, list_mlflow_run_files,
-    plot_chart, make_mosaic,
+    plot_chart, make_mosaic, get_notes,
 )
 WRITE_TOOLS = (
     generate_report, create_workspace, update_workspace, duplicate_workspace, delete_workspace, rename_group,
     add_experiment, add_mlflow_run, remove_experiment, rename_experiment, set_experiment_color,
     download_workspace, set_dataset_filter, create_snapshot, update_snapshot, delete_snapshot,
     export_workspace, import_workspace, record_review_decisions, undo_review_batch, create_review_version,
-    export_reviewed_dataset,
+    export_reviewed_dataset, write_notes, regenerate_notes_recap,
 )
 TOOLS = READ_TOOLS + WRITE_TOOLS
 DESTRUCTIVE_TOOLS = (delete_workspace, delete_snapshot, remove_experiment, undo_review_batch)

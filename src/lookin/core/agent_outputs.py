@@ -344,19 +344,23 @@ def make_mosaic(workspace_id: str, experiment: str = "", uuids: list | None = No
 
 # ---- reports -----------------------------------------------------------------
 
-REPORT_FORMATS = ("html", "pptx")
+REPORT_FORMATS = ("html", "pptx", "md")
 
 
 def generate_report(workspace_id: str, experiments: list | None = None, format: str = "html",
                     baseline: str = "", candidate: str = "", per_class: bool = True, confusion: bool = True,
-                    dest: str = "", snapshot: bool = True) -> dict:
-    """The Metrics tab's report: provenance, summary, per-class tables,
-    confusion matrices and, with a baseline and a candidate, the head to
-    head -- one self-contained HTML file, or a PowerPoint deck."""
+                    dest: str = "", snapshot: bool = True, per_class_charts: bool = True,
+                    notes: bool = True) -> dict:
+    """The Metrics tab's report: provenance, the workspace's notes,
+    summary, per-class charts and tables, confusion matrices and, with a
+    baseline and a candidate, the head to head -- one self-contained HTML
+    file, a PowerPoint deck or a Markdown document."""
     from lookin.core import library as lib
+    from lookin.core import notes as nt
     from lookin.core import view_state as vs
     from lookin.core.report import Report
     from lookin.core.report_builder import build_report, default_report_name
+    from lookin.core.report_md import MarkdownReport
     from lookin.core.report_pptx import PptxReport
 
     if format not in REPORT_FORMATS:
@@ -379,9 +383,11 @@ def generate_report(workspace_id: str, experiments: list | None = None, format: 
                                         {vs.APP: {vs.TAB: vs.SNAPSHOT_TABS.index("metrics")}, vs.VIEWS: {}},
                                         name="Report (MCP)", description="Saved when an agent exported a report.")
             snapshot_id = saved.id if saved else ""
+        writer = {"html": Report, "pptx": PptxReport, "md": MarkdownReport}[format]
         report = build_report(state, names, include_per_class=per_class, include_confusion=confusion,
-                              comparison_pair=pair, snapshot_id=snapshot_id,
-                              report_cls=PptxReport if format == "pptx" else Report)
+                              comparison_pair=pair, snapshot_id=snapshot_id, report_cls=writer,
+                              include_per_class_charts=per_class_charts,
+                              notes=(nt.read(entry.loaded.workspace) or "") if notes else "")
         path = destination(dest, default_report_name(state, extension=format))
         report.write(path)
     out = file_answer(path, experiments=names, format=format)

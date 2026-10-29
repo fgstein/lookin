@@ -91,13 +91,28 @@ def dataset_of_run(run: mlf.Run, param: str = DEFAULT_DATASET_PARAM) -> str:
 # adding
 # ---------------------------------------------------------------------------
 
-def _unique_name(mount: lib.Mount, base: str) -> str:
-    used = {e.name for e in mount.experiments}
-    name, n = base or "experiment", 2
+def unique_name(used, base: str, run_id: str = "") -> str:
+    """`base`, or -- when another experiment already has that name -- `base`
+    followed by the start of `run_id`: two MLflow runs called the same are
+    still two experiments, and the run id is what tells them apart. A
+    counter only when that is taken too (or there is no run id)."""
+    used = set(used)
+    base = base or "experiment"
+    if base not in used:
+        return base
+    if run_id:
+        base = f"{base} · {run_id[:8]}"
+        if base not in used:
+            return base
+    name, n = f"{base} (2)", 3
     while name in used:
         name = f"{base} ({n})"
         n += 1
     return name
+
+
+def _unique_name(mount: lib.Mount, base: str, run_id: str = "") -> str:
+    return unique_name((e.name for e in mount.experiments), base, run_id)
 
 
 def contains(workspace: lib.Workspace, uri: str, run_id: str, artifact_path: str) -> bool:
@@ -155,7 +170,7 @@ def add_candidates(workspace: lib.Workspace, candidates: list,
                 result.skipped.append((label, f"evaluated on {Path(dataset).name}, "
                                               f"not {Path(mount.dataset_path).name}"))
                 continue
-        name = _unique_name(mount, label)
+        name = _unique_name(mount, label, c.run.run_id)
         experiment = lib.MountExperiment(
             name=name,
             path=str(mlflow_cache.cached_path(c.run.run_id, c.csv.path)),

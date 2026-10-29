@@ -1,7 +1,10 @@
 /* Metrics tab */
 .sec-t { display: flex; align-items: center; gap: 6px; margin: 4px 0 -2px; }
 .sec-t h2 { font-size: 13px; font-weight: 700; margin: 0; }
-.mx-list { display: flex; flex-direction: column; max-height: calc(7 * 30px); overflow: auto; margin-top: 6px; border-top: 1px solid var(--line-2); }
+.mx-list { display: flex; flex-direction: column; margin-top: 6px; border-top: 1px solid var(--line-2); }
+/* The progress of a redraw, over the page rather than in its flow. */
+.mx-progress { position: fixed; top: 52px; left: 50%; transform: translateX(-50%); z-index: 5; }
+.mx-progress > div { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-s); padding: 4px 10px; box-shadow: 0 2px 8px rgba(0,0,0,.12); height: max-content; }
 .mx-row { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 4px; border-bottom: 1px solid var(--line-3); }
 .cm-area { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
 .cm-card { max-width: 100%; }

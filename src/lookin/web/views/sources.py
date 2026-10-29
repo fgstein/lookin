@@ -29,12 +29,14 @@ from pathlib import Path
 from typing import Optional
 
 from lookin.core import library
+from lookin.core import mlflow_client
 from lookin.core.dataset_config import CONFIG_NAME, config_for_csv
 from lookin.core.class_focus import FOCUS_MAX
 from lookin.core.data_manager import (
     SPLIT_OTHER, SPLIT_TEST, SPLIT_TRAIN, ColumnConfig, sidecar_paths_for_csv,
 )
 from lookin.core.schema import sniff_csv
+from lookin.core.workspace_sources import unique_name
 from lookin.core.chart_style import color_for_experiment
 from lookin.web import html as h
 from lookin.web.views.base import View
@@ -57,6 +59,14 @@ PROGRESS_PUSH_S = 0.25
 _ids = itertools.count(1)
 
 
+def _run_url(origin) -> str:
+    """The run's page on its MLflow server, "" when that cannot be built."""
+    if not (origin.mlflow_run_id and origin.mlflow_experiment_id
+            and str(origin.mlflow_uri).lower().startswith(("http://", "https://"))):
+        return ""
+    return mlflow_client.run_ui_url(origin.mlflow_uri, origin.mlflow_experiment_id, origin.mlflow_run_id)
+
+
 def _fraction(progress: Optional[float]) -> Optional[float]:
     """A bar's fill, or None for a moving bar: nothing counted yet (the
     rows are being counted) is shown as work going on, not as 0%."""
@@ -68,6 +78,12 @@ class ExpRow:
         self.id = next(_ids)
         self.name = name
         self.path = path
+        # What it was called when it came in, kept through renames so the
+        # row still says which run or file it is.
+        self.original_name = name
+        # The MLflow run it is a copy of, when it came from one (a
+        # MountExperiment) -- also for a run loaded with no workspace open.
+        self.mlflow = None
         self.embed_path = ""
         self.proto_path = ""
         self.guessed_embed: Optional[str] = None
@@ -179,10 +195,11 @@ class SourcesView(View):
         core/dataset_config.py), else by guessing from the values.
 
         `apply_config`: the user just picked this file, so lookin.toml wins
-        over every field. Otherwise (a workspace being restored) it only
-        fills a field still at its default -- a value the workspace chose
-        itself stays -- and a guess only ever replaces a column that is not
-        in this file (see UploadView._sniff_dataset for the reasoning)."""
+        over every field. Otherwise (a workspace being restored, or the page
+        reloaded into a new session) the saved fields are what the user
+        chose: lookin.toml and the guess only replace a column that is not
+        in this file, and the root only when none was saved -- a reload
+        never puts back what the user had changed."""
         path = (self.dataset_path or "").strip()
         self.config_note = ("", "neutral")
         if not path:
@@ -195,17 +212,18 @@ class SourcesView(View):
         if config is not None and config.error:
             self.config_note = (f"{CONFIG_NAME} next to this file {config.error} -- not used.", "warning")
         elif config is not None:
-            defaults = library.Mount()
             unknown = []
-            for attr, key, default in (("uuid_value", "id", defaults.uuid_col), ("crop_value", "image", defaults.crop_col),
-                                       ("label_value", "label", defaults.label_col)):
+            for attr, key in (("uuid_value", "id"), ("crop_value", "image"), ("label_value", "label")):
                 value = getattr(config, key)
                 if value is None:
                     continue
                 if value and value not in self.column_options:
                     unknown.append(value)
                     continue
-                if apply_config or getattr(self, attr) in ("", default) or getattr(self, attr) not in self.column_options:
+                current = getattr(self, attr)
+                if attr == "uuid_value" and not current and not apply_config:
+                    continue
+                if apply_config or current not in self.column_options:
                     setattr(self, attr, value)
                     from_config.append(key)
             if config.root is not None and (apply_config or not self.image_root):
@@ -399,6 +417,23 @@ class SourcesView(View):
         return h.section("Experiments", f'<div class="flush">{table}</div>', manual="score-diagnostics", right=right,
                          sub=f"{len(self.rows)} · a name edited here changes everywhere, nothing is recomputed")
 
+    @staticmethod
+    def _origin_of(row: ExpRow, origins: dict):
+        """The saved experiment this row is, found by its name and file --
+        or by its file alone, since a rename not saved yet changes the name
+        (an MLflow copy's path names its run and artifact) -- else the run
+        the row itself remembers."""
+        origin = origins.get((row.loaded_name or row.name, row.path))
+        if origin is None and row.path:
+            origin = next((o for (n, p), o in origins.items() if p == row.path), None)
+        return origin if origin is not None else row.mlflow
+
+    @staticmethod
+    def _original_name(row: ExpRow, origin) -> str:
+        if origin is not None and origin.from_mlflow():
+            return origin.mlflow_run_name or origin.mlflow_run_id[:8]
+        return row.original_name
+
     def _exp_tbody(self, row: ExpRow, names: list, origins: dict) -> str:
         state = self.state
         exp = state.experiments.get(row.loaded_name) if row.loaded_name else None
@@ -408,18 +443,26 @@ class SourcesView(View):
         # A row with nothing loaded opens on its files -- except while it
         # waits or loads, which its bar in the row already says.
         is_open = row.open or (exp is None and not row.held and not row.loading)
-        origin = origins.get((row.loaded_name, row.path)) if exp is not None else None
-        if origin is None:
-            origin = next((o for (n, p), o in origins.items() if p == row.path), None)
+        origin = self._origin_of(row, origins)
         if origin is not None and origin.from_mlflow():
             run = origin.mlflow_run_name or origin.mlflow_run_id[:8]
-            src = (f'<span class="row-nw">MLflow ·<span class="xname" style="max-width:16em" title="{h.e(run)}">'
-                   f'{h.e(run)}</span></span>')
+            url = _run_url(origin)
+            run_html = (f'<a href="{h.e(url)}" target="_blank" rel="noopener" class="xname" style="max-width:16em" '
+                        f'title="Open this run on the MLflow server -- {h.e(run)}">{h.e(run)}</a>' if url else
+                        f'<span class="xname" style="max-width:16em" title="{h.e(run)}">{h.e(run)}</span>')
+            src = f'<span class="row-nw">MLflow ·{run_html}</span>'
         else:
             src = "Local file"
-        name_input = (f'<input class="inp mono" value="{h.e(row.name)}" title="{h.e(row.name)}" '
-                      f'style="width:160px;height:24px;background:var(--surface-2);text-overflow:ellipsis"'
+        # Sized to the name, so a long one is read in full (the input grows
+        # as it is typed into, see app.js).
+        width = min(max(len(row.name), 12), 48)
+        name_input = (f'<input class="inp mono exp-name" value="{h.e(row.name)}" title="{h.e(row.name)}" '
+                      f'style="width:calc({width}ch + 20px);min-width:160px;max-width:100%;height:24px;background:var(--surface-2)"'
                       f'{self.c("rename", row=row.id)}{h.on_enter(self.name, "rename", row=row.id)} aria-label="Experiment name">')
+        original = self._original_name(row, origin)
+        if original and original != row.name:
+            name_input = (f'<div>{name_input}<div class="small muted ell" style="max-width:48ch" '
+                          f'title="The name it came in with">was {h.e(original)}</div></div>')
         if row.loading:
             ids_html = f'<div class="progress-cell">{h.progress(row.status[0], _fraction(row.progress))}</div>'
         elif exp is not None and row.overlap is not None:
@@ -494,8 +537,14 @@ class SourcesView(View):
                  + '<div class="muted small" style="margin-top:4px">Sidecars are found next to the results CSV '
                    '(&lt;name&gt;_embeddings.npz, &lt;name&gt;_prototypes.npz) and loaded on their own.</div>')
         if origin is not None and origin.from_mlflow():
+            url = _run_url(origin)
+            link = (f' · <a href="{h.e(url)}" target="_blank" rel="noopener">Open in MLflow</a>' if url else "")
             files += (f'<div class="muted small" style="margin-top:4px">MLflow: {h.e(origin.mlflow_uri)} › '
-                      f'{h.e(origin.mlflow_run_name or origin.mlflow_run_id)} › {h.e(origin.artifact_path)}</div>')
+                      f'{h.e(origin.mlflow_run_name or origin.mlflow_run_id)} › {h.e(origin.artifact_path)}{link}</div>')
+        original = self._original_name(row, origin)
+        if original and original != row.name:
+            files = (f'<div class="small" style="margin-bottom:4px"><span class="muted">Original name</span> '
+                     f'<span class="mono">{h.e(original)}</span></div>') + files
         left = f'<div style="flex:1 1 420px;min-width:340px">{files}{self._id_match(row, exp)}</div>'
         right = f'<div style="flex:1 1 420px;min-width:340px">{self._mapping(row, exp)}</div>' if exp is not None else ""
         return f'<div class="ws-detail-inner">{left}{right}</div>'
@@ -631,7 +680,10 @@ class SourcesView(View):
     # ------------------------------------------------------------------
 
     def on_set_path(self, value: str = "", **_):
-        self.dataset_path = (value or "").strip()
+        path = (value or "").strip()
+        if path == self.dataset_path:
+            return
+        self.dataset_path = path
         self._sniff(apply_config=True)
 
     def on_browse_dataset(self, **_):
@@ -930,6 +982,11 @@ class SourcesView(View):
             return False
         path = r.path.strip()
         name = (r.name or "").strip() or f"experiment_{len(self.rows)}"
+        # Loading under a name another row holds would replace that
+        # experiment in the state, silently: two rows, one set of numbers.
+        taken = {o.loaded_name for o in self.rows if o is not r and o.loaded_name}
+        taken |= {n for n in state.experiments if n != r.loaded_name}
+        name = unique_name(taken, name)
         if not path:
             r.loading = False
             r.status = ("Enter a CSV path", "warning")
@@ -1062,14 +1119,17 @@ class SourcesView(View):
             r.mapping_picked.append(column)
         self.refresh()
 
-    def add_experiment_from_path(self, path: str, suggested_name: str, row: Optional[ExpRow] = None) -> tuple:
+    def add_experiment_from_path(self, path: str, suggested_name: str, row: Optional[ExpRow] = None,
+                                 mlflow=None) -> tuple:
         """Add a row for an already-available CSV (or use `row`, one already
         listed) and load it now, on the calling thread. Used by MLflow
-        loads, --experiment and restores."""
+        loads (`mlflow`: the run it is a copy of, a MountExperiment),
+        --experiment and restores."""
         if self.state.dataset is None:
             return False, "Load the dataset first (Sources tab)."
         if row is None:
             row = ExpRow(suggested_name, path)
+            row.mlflow = mlflow
             self.rows.append(row)
         ok = self._load_row_sync(row)
         return ok, ("Loaded successfully." if ok else "Failed to load -- check the Sources tab for details.")
@@ -1223,8 +1283,12 @@ class SourcesView(View):
                 color=state.experiment_colors.get(name, ""),
             )
             origin = origins.get((name, path))
+            if origin is None:
+                # Renamed since the save: the same file is the same run.
+                row = next((r for r in self.rows if r.loaded_name == name), None)
+                origin = self._origin_of(row, origins) if row is not None else None
             if origin is not None:
-                loaded = replace(origin, embeddings_path=loaded.embeddings_path,
+                loaded = replace(origin, name=name, path=path, embeddings_path=loaded.embeddings_path,
                                  prototypes_path=loaded.prototypes_path, color=loaded.color)
             experiments.append(loaded)
         return library.Mount(
@@ -1329,6 +1393,8 @@ class SourcesView(View):
         for e in self.held:
             r = ExpRow(e.name, e.path)
             r.held = True
+            if e.from_mlflow():
+                r.mlflow = e
             r.embed_path = e.embeddings_path
             r.proto_path = e.prototypes_path
             r.status = (status, "neutral")
