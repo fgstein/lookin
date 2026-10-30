@@ -59,6 +59,8 @@ PAGES = (
                     ("image", "the column holding the path to each crop"),
                     ("label", "the column holding the true class"),
                     ("root", "the folder those paths are relative to; itself relative to lookin.toml's folder unless absolute"),
+                    ("split", "the column the Datasets page crosses the classes with as splits (default: a column named split)"),
+                    ("source", "the column it crosses them with as sources (default: a column named source)"),
                 ),
                 weights=(1, 5),
             ),
@@ -331,5 +333,193 @@ PAGES = (
         ),
         see_also=("support-and-imbalance", "slice-breakdown", "dataset-join", "rates-and-uncertainty"),
         keywords=("statistics", "histogram", "distribution", "column", "class balance"),
+    ),
+    ManualPage(
+        id="dataset-class-balance",
+        title="Class balance of a dataset",
+        summary=(
+            "How the rows of a dataset are shared out between its classes, summed up in three numbers: "
+            "the ratio of the largest class to the smallest, the normalized entropy of the class "
+            "distribution, and how many classes are too small to learn or measure."
+        ),
+        shown_in="Datasets page, Class balance",
+        blocks=(
+            Heading("The three numbers"),
+            Equation(r"\mathrm{imbalance} = \frac{n_{\max}}{n_{\min}}", where=(
+                (r"n_{\max}", "the number of rows of the largest class"),
+                (r"n_{\min}", "the number of rows of the smallest class"),
+            )),
+            Para(
+                "1 means every class has the same number of rows. It only looks at the two extremes: "
+                "one tiny class is enough to make it large, which is often exactly what needs seeing. "
+                "The page flags it from 100 up."
+            ),
+            Equation(r"H_{\mathrm{norm}} = -\frac{1}{\ln K} \sum_{k=1}^{K} p_k \ln p_k", where=(
+                ("K", "the number of classes"),
+                ("p_k", "the share of the labelled rows that belong to class $k$"),
+            )),
+            Para(
+                "The normalized entropy looks at every class at once: 1 for a perfectly even split, "
+                "towards 0 as a few classes take everything. Two datasets with the same imbalance ratio "
+                "can have very different entropies -- one small outlier class barely moves it, a long "
+                "tail of small classes does."
+            ),
+            Para(
+                "Rare classes are those with fewer than 10 rows: too few to train on, and too few for "
+                "any per-class metric measured on them to mean much (see how much to trust a rate)."
+            ),
+            HowToRead(items=(
+                ("Bars", "one per class, largest first; the length is the class's number of rows"),
+                ("Share", "the class's part of the labelled rows"),
+                ("Missing labels", "rows with an empty label cell; they belong to no class"),
+            )),
+            Callout(CALLOUT_PITFALL, "Only an empty cell is a missing label", (
+                Para("A class called None or NA is a class: it is counted, not dropped."),
+            )),
+        ),
+        see_also=("support-and-imbalance", "dataset-groups", "rates-and-uncertainty"),
+        keywords=("imbalance", "entropy", "rare classes", "distribution", "balance"),
+    ),
+    ManualPage(
+        id="dataset-groups",
+        title="Classes across sources and splits",
+        summary=(
+            "Where each class's rows come from (the source column) and which split they are in (the "
+            "split column), as a table with one row per class. It shows a class that exists in only one "
+            "split, or that comes almost entirely from one source -- both make a model look better or "
+            "worse than it is."
+        ),
+        shown_in="Datasets page, Sources, Classes by source, Classes by split",
+        blocks=(
+            Heading("Which columns"),
+            Para(
+                "The source and split columns are named in the lookin.toml beside the CSV (keys source "
+                "and split, see how the dataset and the results are joined). Without it, a column named "
+                "source (or origin) and a column named split (or subset, fold) are used."
+            ),
+            HowToRead(items=(
+                ("A row", "one class, largest first"),
+                ("A column", "one value of the source (or split) column, largest first; past 30 values the rest are summed into (other)"),
+                ("A cell's shade", "the share of the class's rows that have that value: the row sums to 100%"),
+                ("A cell's number", "that share; hover for the number of rows"),
+                ("(empty)", "rows whose source (or split) cell is empty"),
+            )),
+            Heading("What is flagged"),
+            Bullets((
+                "A class with no row at all in one of the splits: it cannot be learned (absent from train) or measured (absent from test) there.",
+                "A class with 10 rows or more of which 95% or more come from one source, in a dataset with several sources: a model can learn to recognise the source instead of the class.",
+            )),
+        ),
+        see_also=("dataset-class-balance", "slice-breakdown"),
+        keywords=("source", "split", "cross table", "heatmap", "leakage", "provenance"),
+    ),
+    ManualPage(
+        id="dataset-quality",
+        title="Dataset checks",
+        summary=(
+            "What is checked in every dataset CSV, without opening a single image: ids that repeat, "
+            "rows without a label, crops that two rows share, exact duplicate rows, and whether the crop "
+            "paths actually exist."
+        ),
+        shown_in="Datasets page, Checks",
+        blocks=(
+            Table(
+                headers=("Check", "Severity", "Why it matters"),
+                rows=(
+                    ("No label column found", "error", "nothing can be counted per class; name it in lookin.toml"),
+                    ("Crop paths that do not exist", "error", "checked on 200 rows spread over the file, relative to the root in lookin.toml or to the CSV's folder"),
+                    ("Repeated ids", "error", "the join with the results matches one id to several rows"),
+                    ("Rows without a label", "warning", "left out of every metric"),
+                    ("Two rows on one crop", "warning", "the same image counted twice, possibly under two labels"),
+                    ("Exact duplicate rows", "warning", "usually a concatenation done twice"),
+                    ("Rows without a crop path", "warning", "nothing to show in the Gallery"),
+                    ("Large imbalance, rare classes", "warning, info", "see class balance of a dataset"),
+                    ("Class absent from a split, single-source classes", "warning, info", "see classes across sources and splits"),
+                ),
+                weights=(3, 1, 5),
+            ),
+            Para(
+                "The dot beside each dataset in the list is the worst of its checks: red for an error, "
+                "amber for a warning, green when nothing is flagged."
+            ),
+        ),
+        see_also=("dataset-class-balance", "dataset-groups", "dataset-join"),
+        keywords=("duplicates", "missing", "checks", "quality", "health"),
+    ),
+    ManualPage(
+        id="dataset-mlflow-link",
+        title="Where a dataset comes from",
+        summary=(
+            "The shared folders hold copies of datasets logged to MLflow, one run per dataset with the "
+            "CSV and a hash.txt holding the hash of its content. A CSV is traced back to its run by that "
+            "hash; when no hash matches, a run whose CSV has the same name and size is shown as probable."
+        ),
+        shown_in="Datasets page, the MLflow column and the run of a dataset",
+        blocks=(
+            Heading("The content hash"),
+            Para(
+                "The hash is computed on the table, not on the file: the columns are sorted by name, each "
+                "row is hashed, the row hashes are sorted, and SHA-256 is taken over the column names and "
+                "the sorted row hashes. Two CSVs holding the same rows in another order therefore have "
+                "the same hash. Lookin reads the CSV with pandas' default options to compute it, as the "
+                "dataset scripts do."
+            ),
+            Table(
+                headers=("Link", "Meaning"),
+                rows=(
+                    ("confirmed", "the file's content hash is the hash.txt of a run"),
+                    ("probable", "no hash matches, but a run's CSV has the same file name and the same size in bytes"),
+                    ("derived", "the file sits in the folder named after a main dataset and has no run of its own; the run shown is its main dataset's"),
+                    ("none", "no run of the datasets experiments matches"),
+                ),
+                weights=(1, 5),
+            ),
+            Para(
+                "The datasets experiments are set in the page's settings. Their runs are listed and each "
+                "hash.txt downloaded when Refresh is pressed; the listing is kept, so the links still "
+                "show when the server cannot be reached."
+            ),
+            Callout(CALLOUT_WARNING, "A probable link is a guess", (
+                Para(
+                    "The same name and size can be a different file. If many datasets stay probable "
+                    "after their hash is computed, the hash in hash.txt is probably computed differently "
+                    "from Lookin's."
+                ),
+            )),
+        ),
+        see_also=("dataset-comparison",),
+        keywords=("mlflow", "hash", "provenance", "run", "derived", "lineage"),
+    ),
+    ManualPage(
+        id="dataset-comparison",
+        title="Comparing two datasets",
+        summary=(
+            "Any two datasets side by side: their class (and source, and split) distributions, the "
+            "classes only one of them has, and -- through their id columns -- how many rows they share "
+            "and which labels changed on the shared rows."
+        ),
+        shown_in="Datasets page, comparison (Ctrl+click a second dataset)",
+        blocks=(
+            Heading("How different are the distributions"),
+            Equation(r"\mathrm{JS}(P, Q) = \frac{1}{2} \mathrm{KL}(P \,\|\, M) + \frac{1}{2} \mathrm{KL}(Q \,\|\, M)", where=(
+                ("P, Q", "the class distributions of the two datasets (shares of their labelled rows)"),
+                ("M", "their average, $(P + Q) / 2$"),
+            )),
+            Equation(r"\mathrm{KL}(P \,\|\, M) = \sum_k p_k \log_2 \frac{p_k}{m_k}", where=()),
+            Para(
+                "The Jensen-Shannon divergence is 0 for identical distributions and 1 for distributions "
+                "with no class in common. Unlike the KL divergence it is symmetric and stays finite when "
+                "a class exists on one side only. Below 0.01 the two distributions are practically the "
+                "same; a derivative that removes one class out of ten typically lands around 0.05."
+            ),
+            HowToRead(items=(
+                ("A", "the dataset selected first; B the one Ctrl+clicked"),
+                ("Share A, share B", "the class's part of each dataset's labelled rows"),
+                ("Change", "share B minus share A, in percentage points"),
+                ("Rows by id", "rows whose id is in both, in A only, in B only; then the labels that differ between A and B on the shared ids, most frequent first"),
+            )),
+        ),
+        see_also=("dataset-class-balance", "dataset-mlflow-link"),
+        keywords=("compare", "diff", "divergence", "jensen-shannon", "overlap", "versions"),
     ),
 )

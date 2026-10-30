@@ -10,6 +10,7 @@ from lookin.web.views.base import View
 # (sklearn, umap) are only paid by the session that opens it.
 _SPECS = {
     "home": "lookin.web.views.home:HomeView",
+    "datasets": "lookin.web.views.datasets:DatasetsView",
     "sources": "lookin.web.views.sources:SourcesView",
     "filter": "lookin.web.views.filter:FilterView",
     "statistics": "lookin.web.views.stats:StatsView",

@@ -55,8 +55,12 @@ def set_tab_index(session, index: int) -> None:
         session.mark("page")
 
 
+# Pages that are not a workspace tab: the mode is the view's name.
+PAGE_MODES = ("home", "datasets")
+
+
 def current_view_name(session) -> str:
-    return "home" if session.mode == "home" else session.tab
+    return session.mode if session.mode in PAGE_MODES else session.tab
 
 
 # ---- boot -------------------------------------------------------------------
@@ -156,6 +160,13 @@ def _route(session, query: dict) -> None:
     tab, crop, experiment = arg(links.TAB), arg(links.CROP), arg(links.EXPERIMENT)
     then = (lambda: _open_extras(session, tab, crop, experiment)) if (tab or crop) else None
     if not snapshot_id and not workspace_id:
+        if arg(links.VIEW) == links.VIEW_DATASETS:
+            view = session.view("datasets")
+            if session.mode != "datasets":
+                session.mode = "datasets"
+                view.on_shown()
+            if arg(links.DATASET):
+                view.open_dataset(arg(links.DATASET), arg(links.COMPARE))
         return
     # Already showing it: a reload of an open workspace must not reload it.
     current = session.current_workspace
@@ -285,9 +296,9 @@ def render_dialogs(session) -> str:
 def render_page(session) -> str:
     name = current_view_name(session)
     body = render_view(session, name)
-    if session.mode == "home":
+    if session.mode in PAGE_MODES:
         return (f'<div class="home-page"><header id="chrome-top" class="topbar">{render_top(session)}</header>'
-                f'<div id="view-home" class="view">{body}</div></div>')
+                f'<div id="view-{name}" class="view" data-view="{name}">{body}</div></div>')
     return (f'<div class="shell"><nav id="chrome-nav" class="nav" aria-label="Workspace">{render_nav(session)}</nav>'
             f'<div class="main"><header id="chrome-top" class="topbar">{render_top(session)}</header>'
             f'<div id="view-{h.e(name)}" class="view" data-view="{h.e(name)}">{body}</div></div></div>')
@@ -362,8 +373,13 @@ def render_top(session) -> str:
     if session.mode == "home":
         return (f'{_brand()}<div class="top-search">{session.view("home").search_box()}</div>'
                 f'<div class="top-r">{busy_html}{theme_button()}'
+                f'{h.button("Datasets", act_attr=h.act("app", "datasets"), icon_name="table", small=True)}'
                 f'{h.button("Manual", act_attr=h.act("app", "manual", page=""), icon_name="book", small=True)}'
                 f'{h.button("New workspace", act_attr=h.act("home", "new_workspace"), kind="primary", small=True)}</div>')
+    if session.mode == "datasets":
+        return (f'<a href="/" class="top-home" data-home="1">{_brand()}<span class="nav-home">← Home</span></a>'
+                f'<h1>Datasets</h1><div class="top-r">{busy_html}{theme_button()}'
+                f'{h.button("Manual", act_attr=h.act("app", "manual", page="dataset-class-balance"), icon_name="book", small=True)}</div>')
     title = TAB_TITLES.get(session.tab, "")
     return (f'<h1>{h.e(title)}</h1>'
             f'<div class="top-r">{busy_html}{filter_chip(session)}{save_chips(session)}'
@@ -467,9 +483,17 @@ class AppActions(Handler):
         self.s.mark("page" if previous != tab else tab)
 
     def on_home(self, **_):
+        if self.s.mode == "datasets":
+            self.s.cmd(replace_url="/")
         self.s.mode = "home"
         home = self.s.view("home")
         home.on_shown()
+        self.s.mark("page")
+
+    def on_datasets(self, **_):
+        self.s.mode = "datasets"
+        self.s.view("datasets").on_shown()
+        self.s.cmd(replace_url="/?view=datasets")
         self.s.mark("page")
 
     def on_analysis(self, **_):
