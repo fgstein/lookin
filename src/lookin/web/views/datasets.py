@@ -1,13 +1,18 @@
 """The Datasets page: every CSV of the shared folders, what is in it, where
 it comes from, and any two side by side.
 
-The list on the left is the shared folders as they are -- a main dataset
-with its derivatives under it -- each with its size, its class
-distribution as a sparkline, the worst of its checks and its MLflow link.
-The right side shows the one selected: class balance first, then sources,
-the classes across sources and splits, the checks, every other column.
-Ctrl+click a second dataset to compare the two.
+The list on the left is the shared folders as they are, grouped by the
+folder each dataset sits in, a main dataset with its derivatives under it --
+each with its rows, its mappings (the label columns it has), the worst of
+its checks and its MLflow link.
 
+The right side shows the one selected in tabs: "Instances" for what does
+not depend on a labelling (sources, splits, checks, every other column),
+then one tab per mapping with its classes. Ctrl+click a second dataset to
+compare the two, with the same tabs.
+
+Which column is what is never guessed: it comes from the settings, common
+to every dataset and overridable for one (core/datasets/config.py).
 Everything comes from core/datasets/index.py, shared by every tab of the
 process: a profile computed for one tab is there for all of them, and the
 page redraws itself as the background worker fills profiles in.
@@ -25,19 +30,24 @@ from lookin.web import minicharts as mc
 from lookin.web.views.base import Dialog, View
 
 SORTS = (("name", "Name"), ("modified", "Last modified"), ("size", "Size"), ("rows", "Rows"))
+GROUP_BY = (("folder", "Folder"), ("none", "No groups"))
+# The first tab of a dataset; every other tab is a mapping, keyed by its column name.
+TAB_INSTANCES = "__instances__"
 CLASS_ROWS = 25
 CROSS_ROWS = 20
 COMPARE_ROWS = 30
 PARAMS_SHOWN = 14
 
 LINK_LABELS = {
-    mlflow_link.LINK_CONFIRMED: "confirmed",
-    mlflow_link.LINK_PROBABLE: "probable",
-    mlflow_link.LINK_DERIVED: "derived",
+    mlflow_link.LINK_HASH: "hash-matched",
+    mlflow_link.LINK_NAME: "name-matched",
+    mlflow_link.LINK_PARENT: "parent-matched",
 }
 HEALTH_COLORS = {"error": "var(--err)", "warning": "var(--warn-dot)", "ok": "var(--ok)"}
 HEALTH_LABELS = {"error": "Errors in the checks", "warning": "Warnings in the checks", "ok": "No issue found"}
 SEVERITY_ICONS = {"error": ("warn", "c-err"), "warning": ("warn", "c-warn"), "info": ("info", "muted")}
+ROLE_LABELS = ((dcfg.ROLE_ID, "Id column"), (dcfg.ROLE_IMAGE, "Image column"),
+               (dcfg.ROLE_SPLIT, "Split column"), (dcfg.ROLE_SOURCE, "Source column"))
 
 
 def _when(ts) -> str:
@@ -58,6 +68,9 @@ class DatasetsView(View):
         self.compare_with = ""
         self.query = ""
         self.sort = "name"
+        self.group_by = "folder"
+        self.collapsed: set = set()       # folder groups folded away
+        self.tab = TAB_INSTANCES
         self.show_all: set = set()        # cards expanded past their row limit
         self.overlaps: dict = {}          # (a, b) -> row-level comparison, or {"running": True}
         self._subscribed = False
@@ -125,22 +138,43 @@ class DatasetsView(View):
             return (-(p["rows"] if p else -1), f.name.lower())
         return (f.name.lower(), f.path)
 
+    def _label(self, f) -> str:
+        """The file name -- with its folder in front when another dataset
+        has the same name and the list is not grouped by folder."""
+        if self.group_by != "folder" and f.name in getattr(self, "_same_name", ()):
+            return f"{Path(f.path).parent.name}/{f.name}"
+        return f.name
+
     def _list(self) -> str:
         index = self.index
         by_path = index.by_path
-        mains = sorted((f for f in index.files if not f.parent or f.parent not in by_path), key=self._sort_key)
         names = [f.name for f in index.files]
         self._same_name = {n for n in names if names.count(n) > 1}
-        rows = []
+        mains = sorted((f for f in index.files if not f.parent or f.parent not in by_path), key=self._sort_key)
+        blocks: dict = {}        # group -> rows html
         shown = 0
         for f in mains:
             kids = [by_path[c] for c in f.children if c in by_path]
             kids_shown = [k for k in kids if self._matches(k) or self._matches(f)]
             if not self._matches(f) and not kids_shown:
                 continue
+            group = f.group() if self.group_by == "folder" else ""
+            rows = blocks.setdefault(group, [])
             rows.append(self._row(f, child=False))
             rows += [self._row(k, child=True) for k in sorted(kids_shown, key=self._sort_key)]
             shown += 1 + len(kids_shown)
+        body = []
+        for group in sorted(blocks):
+            if group:
+                folded = group in self.collapsed and not self.query.strip()
+                count = sum(1 for r in blocks[group])
+                body.append(f'<button type="button" class="ds-group"{self.a("fold", group=group)} '
+                            f'aria-expanded="{"false" if folded else "true"}" title="{h.e(group)}">'
+                            f'{h.icon("chev-right" if folded else "chev-down", 13)}{h.icon("folder", 13)}'
+                            f'<span class="mono ell">{h.e(group)}</span><span class="muted small">{count}</span></button>')
+                if folded:
+                    continue
+            body += blocks[group]
         pending = index.pending()
         status = [f"{len(index.files):,} datasets"]
         if shown != len(index.files):
@@ -153,29 +187,23 @@ class DatasetsView(View):
             notes += h.banner("Cannot read: " + ", ".join(missing), "warn")
         if index.mlflow_busy:
             notes += h.spinner(index.mlflow_busy)
-        errors = [s for s in index.mlflow_sources().values() if s.error]
-        for s in errors:
-            notes += h.banner(f"MLflow {s.experiment}: {s.error}", "warn")
+        for s in index.mlflow_sources().values():
+            if s.error:
+                notes += h.banner(f"MLflow {s.experiment}: {s.error}", "warn")
         tools = (f'<div class="ds-tools">'
                  f'{h.text_input(self.query, input_=self.i("query"), placeholder="Search datasets", cls="grow", id_="ds-q")}'
+                 f'{h.select(GROUP_BY, self.group_by, change=self.c("group_by"), title="Group by")}'
                  f'{h.select(SORTS, self.sort, change=self.c("sort"), title="Sort")}'
                  f'{h.button(icon_name="refresh", act_attr=self.a("refresh"), small=True, kind="ghost", title="Scan the folders again and refresh the MLflow runs")}'
-                 f'{h.button(icon_name="sliders", act_attr=self.a("settings"), small=True, kind="ghost", title="Shared folders and MLflow experiments")}'
+                 f'{h.button(icon_name="sliders", act_attr=self.a("settings"), small=True, kind="ghost", title="Folders, columns and MLflow experiments")}'
                  f'</div>')
         head = ('<div class="ds-lh"><span></span><span>Dataset</span><span class="r">Rows</span>'
-                '<span class="r">Cl.</span><span>Classes</span><span>MLflow</span></div>')
-        body = "".join(rows) or h.empty("No dataset CSV in the shared folders." if not self.query else "No match.")
+                '<span>Mappings</span><span>MLflow</span></div>')
+        empty = h.empty("No dataset CSV in the shared folders." if not self.query else "No match.")
         foot = '<div class="lst-foot">Click to open, Ctrl+click a second dataset to compare.</div>'
         return (f'<section class="card ds-list"><div class="card-h"><h2>Datasets</h2>{h.info_btn("dataset-mlflow-link")}'
                 f'<span class="card-sub">{h.e(" · ".join(status))}</span></div>{tools}{notes}'
-                f'<div class="ds-rows">{head}{body}</div>{foot}</section>')
-
-    def _label(self, f) -> str:
-        """The file name -- with its folder in front when another dataset
-        has the same name (every export called dataset.csv)."""
-        if f.name in getattr(self, "_same_name", ()):
-            return f"{Path(f.path).parent.name}/{f.name}"
-        return f.name
+                f'<div class="ds-rows">{head}{"".join(body) or empty}</div>{foot}</section>')
 
     def _row(self, f, child: bool) -> str:
         index = self.index
@@ -185,15 +213,15 @@ class DatasetsView(View):
         if p is not None:
             health = prof.health(p)
             dot = h.dot(HEALTH_COLORS[health], HEALTH_LABELS[health])
-            classes = p.get("classes") or {}
-            counts = [n for _, n in classes.get("counts", [])]
-            spark = mc.sparkbars(counts, title=f"{len(counts)} classes, largest first") if counts else ""
-            nrows, ncls = f"{p['rows']:,}", f"{classes.get('n', 0):,}" if classes else "–"
+            maps = p.get("mappings", {})
+            mappings = "".join(f'<span class="ds-map mono" title="{h.e(name)}: {m["classes"]["n"]:,} classes">{h.e(name)}</span>'
+                               for name, m in maps.items()) or '<span class="muted small">none</span>'
+            nrows = f"{p['rows']:,}"
         else:
             failed = state and state[0] == STATE_FAILED
             dot = h.dot("var(--err)" if failed else "var(--line)", state[1] if state else "Not read yet")
-            spark = '<span class="muted small">failed</span>' if failed else '<span class="spinner sm"></span>' if state else ""
-            nrows = ncls = ""
+            mappings = '<span class="muted small">failed</span>' if failed else '<span class="spinner sm"></span>' if state else ""
+            nrows = ""
         badge = ""
         if link.status:
             badge = (f'<span class="ds-link {link.status}" title="{h.e(link.reason)} Run {h.e(link.run.label())}.">'
@@ -202,10 +230,28 @@ class DatasetsView(View):
             + (" cmp" if f.path == self.compare_with else "")
         return (f'<button type="button" class="{cls}"{self.a("select", path=f.path)} data-key="ds-{h.e(f.path)}" '
                 f'title="{h.e(f.path)}">{dot}<span class="ds-n mono ell">{"└ " if child else ""}{h.e(self._label(f))}</span>'
-                f'<span class="r mono">{nrows}</span><span class="r mono">{ncls}</span>'
-                f'<span class="ds-sp">{spark}</span><span>{badge}</span></button>')
+                f'<span class="r mono">{nrows}</span><span class="ds-maps">{mappings}</span><span>{badge}</span></button>')
 
     # ---- one dataset ----
+
+    def _columns_html(self, f, p) -> str:
+        index = self.index
+        overridden = f.path in index.config.overrides
+        if p is not None:
+            r = p["roles"]
+            bits = [f"{label.split()[0].lower()} <b class=mono>{h.e(r[key])}</b>" for key, label in ROLE_LABELS if r.get(key)]
+            bits.append("mappings " + (", ".join(f"<b class=mono>{h.e(m)}</b>" for m in r[dcfg.ROLE_MAPPINGS]) or "none"))
+            text = " · ".join(bits)
+            if r.get("missing"):
+                text += (f' <span class="muted small">-- not in this file: '
+                         f'{h.e(", ".join(r["missing"]))}</span>')
+        else:
+            cols = index.columns_for(f.path)
+            text = " · ".join(f"{k} <b class=mono>{h.e(v)}</b>" for k, v in cols.items() if isinstance(v, str) and v)
+        origin = ('<span class="chip on" title="This dataset has columns of its own">overridden</span>' if overridden
+                  else '<span class="muted small">from the common settings</span>')
+        edit = h.button("Edit…", act_attr=self.a("edit_columns", path=f.path), small=True, kind="link")
+        return f'{text} {origin} {edit} {h.info_btn("dataset-columns")}'
 
     def _header(self, f, p) -> str:
         index = self.index
@@ -220,10 +266,8 @@ class DatasetsView(View):
             rows.append(("Content hash", f'<span class="mono small" title="{h.e(content_hash)}">{h.e(content_hash[:16])}…</span> '
                                          f'<button type="button" class="link-btn" data-copy="{h.e(content_hash)}" title="Copy the hash">{h.icon("copy", 13)}</button>'))
         if p is not None:
-            r = p["roles"]
-            roles = " · ".join(f"{k} <b class=mono>{h.e(r[k])}</b>" for k in ("id", "image", "label", "split", "source") if r.get(k))
             rows.append(("Rows", f'{p["rows"]:,} rows · {len(p["columns"])} columns'))
-            rows.append(("Columns", f'{roles} <span class="muted small">{h.e(r.get("note", ""))}</span>'))
+        rows.append(("Columns", self._columns_html(f, p)))
         if f.parent and f.parent in index.by_path:
             parent = index.by_path[f.parent]
             rows.append(("Derived from", f'<a href="#"{self.a("select", path=parent.path)} class="mono">{h.e(parent.name)}</a> '
@@ -244,8 +288,7 @@ class DatasetsView(View):
                       if others else "")
                    + h.button("Recompute", act_attr=self.a("recompute", path=f.path), small=True, icon_name="refresh",
                               title="Read the file again"))
-        params = self._params_html(link)
-        return h.section(f.name, h.kv_grid(rows) + params, right=actions, sub=f.relative() if f.relative() != f.name else "")
+        return h.section(f.name, h.kv_grid(rows) + self._params_html(link), right=actions, sub=f.relative())
 
     def _mlflow_html(self, link) -> str:
         if link.run is None:
@@ -282,6 +325,15 @@ class DatasetsView(View):
         return (f'<details class="ds-params"{" open" if key in self.show_all else ""}><summary>Run parameters, metrics and tags '
                 f'<span class="muted">({len(items)})</span></summary><table class="tbl ds-ptbl">{body}</table>{more}</details>')
 
+    def _tabs(self, mappings: list, counts: dict) -> str:
+        """Instances, then one tab per mapping; the current one falls back to
+        Instances when this dataset has no such mapping."""
+        if self.tab != TAB_INSTANCES and self.tab not in mappings:
+            self.tab = TAB_INSTANCES
+        options = [(TAB_INSTANCES, "Instances")] + [
+            (m, f"{m} ({counts[m]:,} classes)" if m in counts else m) for m in mappings]
+        return f'<div class="ds-tabs">{h.segmented(options, self.tab, act_for=lambda k: self.a("tab", tab=k), label="Part of the dataset")}</div>'
+
     def _dataset(self, f) -> str:
         index = self.index
         p = index.profile_of(f.path)
@@ -294,23 +346,35 @@ class DatasetsView(View):
             else:
                 parts.append(h.section("Statistics", h.spinner(state[1] if state else "Waiting to be read")))
             return "".join(parts)
-        parts.append(self._classes_card(p))
-        if f.parent and f.parent in index.by_path:
-            parts.append(self._vs_parent(f, p))
-        if p.get("sources"):
-            parts.append(self._values_card("Sources", p["sources"], p["roles"]["source"], "dataset-groups"))
-        if p.get("class_by_source"):
-            parts.append(self._cross_card("Classes by source", p["class_by_source"], "by_source", p["roles"]["source"]))
-        if p.get("splits"):
-            parts.append(self._values_card("Splits", p["splits"], p["roles"]["split"], "dataset-groups"))
-        if p.get("class_by_split"):
-            parts.append(self._cross_card("Classes by split", p["class_by_split"], "by_split", p["roles"]["split"]))
-        if not p.get("sources") and not p.get("splits"):
-            parts.append(h.section("Sources and splits", h.empty(
-                "No source or split column found. Name them in a lookin.toml beside the CSV (keys source and split)."),
-                manual="dataset-groups"))
-        parts.append(self._issues_card(p))
-        parts.append(self._columns_card(p))
+        maps = p.get("mappings", {})
+        parts.append(self._tabs(list(maps), {m: v["classes"]["n"] for m, v in maps.items()}))
+        parent = index.by_path.get(f.parent) if f.parent else None
+        pp = index.profile_of(parent.path) if parent is not None else None
+        if self.tab == TAB_INSTANCES:
+            if parent is not None:
+                parts.append(self._vs_parent_rows(f, p, parent, pp))
+            if p.get("sources"):
+                parts.append(self._values_card("Sources", p["sources"], p["roles"][dcfg.ROLE_SOURCE], "dataset-groups"))
+            if p.get("splits"):
+                parts.append(self._values_card("Splits", p["splits"], p["roles"][dcfg.ROLE_SPLIT], "dataset-groups"))
+            if not p.get("sources") and not p.get("splits"):
+                parts.append(h.section("Sources and splits", h.empty(
+                    "This file has neither the source nor the split column of the settings."), manual="dataset-groups"))
+            parts.append(self._issues_card(p.get("issues", []), p, "Checks"))
+            parts.append(self._columns_card(p))
+        else:
+            name = self.tab
+            m = maps[name]
+            parts.append(self._classes_card(name, m))
+            if parent is not None:
+                parts.append(self._vs_parent_mapping(name, f, p, parent, pp))
+            if m.get("class_by_source"):
+                parts.append(self._cross_card("Classes by source", m["class_by_source"], f"by_source-{name}",
+                                              p["roles"][dcfg.ROLE_SOURCE]))
+            if m.get("class_by_split"):
+                parts.append(self._cross_card("Classes by split", m["class_by_split"], f"by_split-{name}",
+                                              p["roles"][dcfg.ROLE_SPLIT]))
+            parts.append(self._issues_card(m.get("issues", []), p, f"Checks of {name}"))
         return "".join(parts)
 
     def _kpis(self, items) -> str:
@@ -318,24 +382,21 @@ class DatasetsView(View):
             f'<div class="ds-kpi" title="{h.e(tip)}"><span class="ds-kv mono">{h.e(v)}</span><span class="ds-kl">{h.e(k)}</span></div>'
             for k, v, tip in items) + "</div>"
 
-    def _classes_card(self, p) -> str:
-        c = p.get("classes")
-        if not c:
-            return h.section("Class balance", h.banner("No label column: nothing to count per class.", "warn"),
-                             manual="dataset-class-balance")
+    def _classes_card(self, name, m) -> str:
+        c = m["classes"]
         kpis = self._kpis([
             ("classes", f"{c['n']:,}", "Distinct labels"),
             ("max / min", f"{c['imbalance']:,.1f}x" if c["imbalance"] else "–", "Rows of the largest class over rows of the smallest"),
             ("entropy", f"{c['entropy']:.3f}" if c["entropy"] is not None else "–", "Normalized entropy: 1 = perfectly even"),
             (f"under {c['rare_min']} rows", f"{c['rare']:,}", "Classes too small to learn or measure"),
             ("median class", f"{c['median']:,.0f}" if c["median"] is not None else "–", "Rows of the median class"),
-            ("no label", f"{c['missing']:,}", "Rows with an empty label"),
+            ("no label", f"{c['missing']:,}", "Rows with an empty cell in this mapping"),
         ])
-        key = "classes"
+        key = f"classes-{name}"
         bars = mc.hbars([(k, n) for k, n in c["counts"]], limit=0 if key in self.show_all else CLASS_ROWS,
                         total=c["labelled"], more_attr=self.a("show_all", card=key))
         return h.section("Class balance", kpis + bars, manual="dataset-class-balance",
-                         sub=f"{c['labelled']:,} labelled rows")
+                         sub=f"{name} · {c['labelled']:,} labelled rows")
 
     def _values_card(self, title, summary, column, manual) -> str:
         key = f"values-{title}"
@@ -351,19 +412,14 @@ class DatasetsView(View):
                               more_attr=self.a("show_all", card=key), corner="class")
         return h.section(title, body, manual="dataset-groups", sub=f"share of each class's rows, by {column}")
 
-    def _issues_card(self, p) -> str:
-        issues = p.get("issues", [])
+    def _issues_card(self, issues, p, title) -> str:
         if not issues:
             body = h.status_line("Nothing flagged.", "ok")
         else:
             body = '<div class="ds-issues">' + "".join(
                 f'<div class="ds-issue">{h.icon(SEVERITY_ICONS[i["severity"]][0], 14, SEVERITY_ICONS[i["severity"]][1])}'
                 f'<span>{h.e(i["message"])}</span></div>' for i in issues) + "</div>"
-        q = p.get("quality", {})
-        if q.get("crops_missing_examples"):
-            body += ('<div class="muted small" style="margin-top:6px">Missing, for example: '
-                     + ", ".join(f'<span class="mono">{h.e(x)}</span>' for x in q["crops_missing_examples"]) + "</div>")
-        return h.section("Checks", body, manual="dataset-quality",
+        return h.section(title, body, manual="dataset-quality",
                          sub=f"computed {p.get('computed_at', '')[:16].replace('T', ' ')} in {p.get('seconds', 0):.1f}s")
 
     def _columns_card(self, p) -> str:
@@ -384,29 +440,33 @@ class DatasetsView(View):
         body = f'<div class="ds-cols">{"".join(cards)}</div>' if cards else h.empty("No other column.")
         return h.section("Other columns", body, manual="column-statistics", sub=f"{len(cards)} columns")
 
-    def _vs_parent(self, f, p) -> str:
-        parent_path = f.parent
-        pp = self.index.profile_of(parent_path)
-        parent = self.index.by_path[parent_path]
+    def _vs_parent_rows(self, f, p, parent, pp) -> str:
+        right = h.button("Full comparison", act_attr=self.a("compare", a=parent.path, b=f.path), small=True)
         if pp is None:
             return h.section(f"Compared with {parent.name}", h.spinner("Reading the main dataset"),
-                             manual="dataset-comparison")
-        d = dcmp.compare(parent_path, pp, f.path, p, rows=False)
+                             manual="dataset-comparison", right=right)
         delta = p["rows"] - pp["rows"]
         items = [("rows", f"{delta:+,}", f"{pp['rows']:,} in {parent.name}, {p['rows']:,} here"),
                  ("rows kept", _pct(p["rows"] / pp["rows"]) if pp["rows"] else "–", "")]
-        if d.get("classes"):
-            cl = d["classes"]
-            items += [("classes lost", f"{len(cl['only_a']):,}", ", ".join(cl["only_a"][:10])),
-                      ("classes added", f"{len(cl['only_b']):,}", ", ".join(cl["only_b"][:10])),
-                      ("JS divergence", f"{cl['js_divergence']:.3f}" if cl["js_divergence"] is not None else "–",
-                       "Of the class distributions: 0 = the same shares")]
+        return h.section(f"Compared with {parent.name}", self._kpis(items), manual="dataset-comparison", right=right)
+
+    def _vs_parent_mapping(self, name, f, p, parent, pp) -> str:
+        right = h.button("Full comparison", act_attr=self.a("compare", a=parent.path, b=f.path), small=True)
+        title = f"Compared with {parent.name}"
+        if pp is None:
+            return h.section(title, h.spinner("Reading the main dataset"), manual="dataset-comparison", right=right)
+        if name not in pp.get("mappings", {}):
+            return h.section(title, h.empty(f"{parent.name} has no {name} column."), manual="dataset-comparison", right=right)
+        d = dcmp.compare(parent.path, pp, f.path, p, rows=False)["mappings"][name]
+        items = [("classes lost", f"{len(d['only_a']):,}", ", ".join(d["only_a"][:10])),
+                 ("classes added", f"{len(d['only_b']):,}", ", ".join(d["only_b"][:10])),
+                 ("JS divergence", f"{d['js_divergence']:.3f}" if d["js_divergence"] is not None else "–",
+                  "Of the class distributions: 0 = the same shares")]
         lost = ""
-        if d.get("classes", {}).get("only_a"):
+        if d["only_a"]:
             lost = '<div class="small" style="margin-top:6px">Classes no longer present: ' + ", ".join(
-                f'<span class="mono">{h.e(x)}</span>' for x in d["classes"]["only_a"][:20]) + "</div>"
-        right = h.button("Full comparison", act_attr=self.a("compare", a=parent_path, b=f.path), small=True)
-        return h.section(f"Compared with {parent.name}", self._kpis(items) + lost, manual="dataset-comparison", right=right)
+                f'<span class="mono">{h.e(x)}</span>' for x in d["only_a"][:20]) + "</div>"
+        return h.section(title, self._kpis(items) + lost, manual="dataset-comparison", right=right)
 
     # ---- two datasets ----
 
@@ -422,22 +482,28 @@ class DatasetsView(View):
         if pa is None or pb is None:
             return title + h.section("Reading", h.spinner("Reading " + " and ".join(x.name for x, px in ((a, pa), (b, pb)) if px is None)))
         d = dcmp.compare(a.path, pa, b.path, pb, rows=False)
-        items = [("rows A", f"{pa['rows']:,}", ""), ("rows B", f"{pb['rows']:,}", ""),
-                 ("difference", f"{pb['rows'] - pa['rows']:+,}", "B minus A")]
-        if d.get("classes"):
-            cl = d["classes"]
-            items += [("only in A", f"{len(cl['only_a']):,}", "classes"), ("only in B", f"{len(cl['only_b']):,}", "classes"),
-                      ("JS divergence", f"{cl['js_divergence']:.3f}" if cl["js_divergence"] is not None else "–",
-                       "Of the class distributions: 0 = the same shares, 1 = no class in common")]
-        summary = self._kpis(items)
-        if d["same_content"]:
-            summary += h.banner("Same content: the two files hold the same rows.", "ok")
-        parts = [title, h.section("Summary", summary, manual="dataset-comparison")]
-        for key, label, one in (("classes", "Classes", "class"), ("sources", "Sources", "source"),
-                                ("splits", "Splits", "split")):
-            if d.get(key):
-                parts.append(self._dist_card(label, one, d[key], f"cmp-{key}"))
-        parts.append(self._overlap_card(a, b))
+        common = list(d["mappings"])
+        parts = [title, self._tabs(common, {})]
+        overlap = self._overlap(a, b)
+        if self.tab == TAB_INSTANCES:
+            items = [("rows A", f"{pa['rows']:,}", ""), ("rows B", f"{pb['rows']:,}", ""),
+                     ("difference", f"{pb['rows'] - pa['rows']:+,}", "B minus A")]
+            summary = self._kpis(items)
+            if d["same_content"]:
+                summary += h.banner("Same content: the two files hold the same rows.", "ok")
+            for side, names in (("A", d["mappings_only_a"]), ("B", d["mappings_only_b"])):
+                if names:
+                    summary += (f'<div class="small">Mappings only in {side}: '
+                                + ", ".join(f'<span class="mono">{h.e(n)}</span>' for n in names) + "</div>")
+            parts.append(h.section("Summary", summary, manual="dataset-comparison"))
+            for key, label, one in (("sources", "Sources", "source"), ("splits", "Splits", "split")):
+                if d.get(key):
+                    parts.append(self._dist_card(label, one, d[key], f"cmp-{key}"))
+            parts.append(self._overlap_card(overlap))
+        else:
+            name = self.tab
+            parts.append(self._dist_card(f"Classes of {name}", "class", d["mappings"][name], f"cmp-{name}"))
+            parts.append(self._changes_card(name, overlap))
         return "".join(parts)
 
     def _dist_card(self, title, one, d, key) -> str:
@@ -461,28 +527,43 @@ class DatasetsView(View):
                 only += (f'<div class="small" style="margin-top:6px">Only in {side}: '
                          + ", ".join(f'<span class="mono">{h.e(v)}</span>' for v in values[:30])
                          + (f" and {len(values) - 30:,} more" if len(values) > 30 else "") + "</div>")
-        return h.section(title, table + only, manual="dataset-comparison", sub="largest changes of share first")
+        js = d.get("js_divergence")
+        sub = "largest changes of share first" + (f" · JS divergence {js:.3f}" if js is not None else "")
+        return h.section(title, table + only, manual="dataset-comparison", sub=sub)
 
-    def _overlap_card(self, a, b) -> str:
+    def _overlap(self, a, b) -> dict:
         key = (a.path, b.path)
         ov = self.overlaps.get(key)
         if ov is None:
             self._start_overlap(a.path, b.path)
             ov = {"running": True}
+        return ov
+
+    def _overlap_card(self, ov) -> str:
         if ov.get("running"):
             body = h.spinner("Reading the id and label columns of both files")
         elif ov.get("error"):
             body = h.banner(ov["error"], "info")
         else:
             body = self._kpis([("in both", f"{ov['common']:,}", "Rows whose id is in A and in B"),
-                               ("only in A", f"{ov['only_a']:,}", ""), ("only in B", f"{ov['only_b']:,}", ""),
-                               ("labels changed", f"{ov.get('label_changes', 0):,}", "Among the rows in both")])
-            if ov.get("top_changes"):
+                               ("only in A", f"{ov['only_a']:,}", ""), ("only in B", f"{ov['only_b']:,}", "")])
+        return h.section("Rows by id", body, manual="dataset-comparison")
+
+    def _changes_card(self, name, ov) -> str:
+        if ov.get("running"):
+            body = h.spinner("Reading the id and label columns of both files")
+        elif ov.get("error"):
+            body = h.banner(ov["error"], "info")
+        else:
+            m = ov.get("mappings", {}).get(name, {"label_changes": 0, "top_changes": []})
+            body = self._kpis([("rows in both", f"{ov['common']:,}", "Rows whose id is in A and in B"),
+                               ("labels changed", f"{m['label_changes']:,}", f"Among the rows in both, in {name}")])
+            if m["top_changes"]:
                 body += ('<table class="tbl" style="margin-top:8px"><thead><tr><th>label in A</th><th>label in B</th>'
                          '<th class="r">rows</th></tr></thead><tbody>' + "".join(
                              f'<tr><td class="mono">{h.e(x)}</td><td class="mono">{h.e(y)}</td><td class="r mono">{n:,}</td></tr>'
-                             for x, y, n in ov["top_changes"]) + "</tbody></table>")
-        return h.section("Rows by id", body, manual="dataset-comparison")
+                             for x, y, n in m["top_changes"]) + "</tbody></table>")
+        return h.section("Labels on the shared rows", body, manual="dataset-comparison", sub=name)
 
     def _start_overlap(self, a: str, b: str) -> None:
         key = (a, b)
@@ -539,12 +620,25 @@ class DatasetsView(View):
         if self.compare_with:
             self.selected, self.compare_with = self.compare_with, self.selected
 
+    def on_tab(self, tab: str = "", **_):
+        self.tab = tab or TAB_INSTANCES
+
+    def on_fold(self, group: str = "", **_):
+        if group in self.collapsed:
+            self.collapsed.discard(group)
+        else:
+            self.collapsed.add(group)
+
     def on_query(self, value: str = "", **_):
         self.query = value or ""
 
     def on_sort(self, value: str = "", **_):
         if value in dict(SORTS):
             self.sort = value
+
+    def on_group_by(self, value: str = "", **_):
+        if value in dict(GROUP_BY):
+            self.group_by = value
 
     def on_show_all(self, card: str = "", **_):
         if card in self.show_all:
@@ -570,6 +664,10 @@ class DatasetsView(View):
     def on_settings(self, **_):
         self.s.open_dialog(DatasetsSettingsDialog(self))
 
+    def on_edit_columns(self, path: str = "", **_):
+        if path in self.index.by_path:
+            self.s.open_dialog(ColumnsDialog(self, path))
+
     def on_new_workspace(self, path: str = "", **_):
         from lookin.web.views.home import NewWorkspaceDialog
 
@@ -578,12 +676,83 @@ class DatasetsView(View):
         dialog.name = Path(path).stem
         self.s.open_dialog(dialog)
 
+    def settings_changed(self, mlflow: bool = False) -> None:
+        """After the settings changed: the folders, the columns or the
+        experiments. A profile is keyed by the columns it was read with, so
+        the ones a change affects are simply not found and are read again."""
+        index = self.index
+        index.rescan()
+        index.request_all()
+        if self.selected:
+            index.request(self.selected, first=True)
+        if mlflow:
+            index.refresh_mlflow()
+        self.overlaps.clear()
+        self.refresh()
+
+
+def _columns_form(columns: dict) -> str:
+    fields = "".join(h.text_input(columns.get(key, ""), name=key, label=label, mono=True, width="180px")
+                     for key, label in ROLE_LABELS)
+    mappings = "\n".join(columns.get(dcfg.ROLE_MAPPINGS) or [])
+    return (f'<div class="row">{fields}</div>'
+            f'<label class="ds-fld" style="margin-top:6px"><span class="muted small">Mappings: the label columns, one per line</span>'
+            f'{h.textarea(mappings, name=dcfg.ROLE_MAPPINGS, rows=3)}</label>')
+
+
+def _columns_from_form(args: dict) -> dict:
+    out = {key: str(args.get(key) or "").strip() for key in dcfg.SINGLE_ROLES}
+    out[dcfg.ROLE_MAPPINGS] = [line.strip() for line in str(args.get(dcfg.ROLE_MAPPINGS) or "").splitlines() if line.strip()]
+    return out
+
+
+class ColumnsDialog(Dialog):
+    """The columns of one dataset, over the common ones."""
+
+    width = 720
+
+    def __init__(self, view: DatasetsView, path: str):
+        super().__init__(f"Columns of {Path(path).name}")
+        self.view = view
+        self.path = path
+
+    def body(self) -> str:
+        cfg = dcfg.load()
+        overridden = self.path in cfg.overrides
+        note = ("This dataset has columns of its own; the others use the common settings."
+                if overridden else "This dataset uses the common settings. Saving here gives it columns of its own.")
+        return (f'<form class="stack" id="{self.id}-f"{self.submit("save")}>'
+                f'<p class="muted small">{h.e(note)} An empty field means the file has no such column.</p>'
+                f'{_columns_form(cfg.columns_for(self.path))}</form>')
+
+    def footer(self) -> str:
+        reset = (h.button("Use the common settings", act_attr=self.a("reset"))
+                 if self.path in dcfg.load().overrides else "")
+        return (f'{reset}<button type="submit" form="{self.id}-f" class="btn btn-primary"><span>Save for this dataset</span></button>'
+                + h.button("Cancel", act_attr=self.a("close")))
+
+    def on_save(self, **args):
+        cfg = dcfg.load()
+        wanted = _columns_from_form(args)
+        # Only what differs from the common settings is kept: a later change
+        # of the common settings still reaches the keys this one leaves alone.
+        override = {k: v for k, v in wanted.items() if v != cfg.columns.get(k)}
+        dcfg.set_override(self.path, override)
+        self.close()
+        self.view.settings_changed()
+
+    def on_reset(self, **_):
+        dcfg.set_override(self.path, {})
+        self.close()
+        self.view.settings_changed()
+
 
 class DatasetsSettingsDialog(Dialog):
-    """The shared folders and the MLflow experiments that hold datasets --
-    written to ~/.config/lookin/datasets.json (core/datasets/config.py)."""
+    """The shared folders, what to leave out of them, the columns of every
+    dataset, and the MLflow experiments that hold datasets -- written to
+    ~/.config/lookin/datasets.json (core/datasets/config.py)."""
 
-    width = 680
+    width = 760
     title = "Datasets settings"
 
     def __init__(self, view: DatasetsView):
@@ -607,9 +776,19 @@ class DatasetsSettingsDialog(Dialog):
             f'{h.button(icon_name="trash", act_attr=self.a("remove_folder", folder=f), small=True, kind="ghost", title="Stop listing this folder")}</div>'
             for f in cfg.folders) or h.empty("No folder yet.")
         add_folder = (f'<div class="row-nw" style="margin-top:6px">'
-                      f'{h.text_input(self.folder, change=self.c("folder"), enter=h.on_enter(self.target, "add_folder"), placeholder="/path/to/shared/datasets", mono=True, cls="grow", extra=' data-force="1"')}'
+                      f'{h.text_input(self.folder, change=self.c("folder"), enter=h.on_enter(self.target, "add_folder"), placeholder="/path/to/shared/datasets", mono=True, cls="grow", extra=" data-force=\"1\"")}'
                       f'{h.button("Browse…", act_attr=self.a("browse"))}'
                       f'{h.button("Add", act_attr=self.a("add_folder"), kind="primary")}</div>')
+        exclude = (f'<form class="stack" style="margin-top:8px"{self.submit("save_exclude")}>'
+                   f'<label class="ds-fld"><span class="muted small">Leave out the CSVs whose path in the folder matches '
+                   f'(one pattern per line, * matches anything, slashes included)</span>'
+                   f'{h.textarea(chr(10).join(cfg.exclude), name="patterns", rows=3)}</label>'
+                   f'<div>{h.button("Save the patterns", small=True, type_="submit")}</div></form>')
+        columns = (f'<form class="stack"{self.submit("save_columns")}>'
+                   f'<p class="muted small">Read as they are in every dataset -- nothing is guessed. A dataset '
+                   f'without one of them simply lacks it; one dataset can be given columns of its own from its page.</p>'
+                   f'{_columns_form(cfg.columns)}'
+                   f'<div>{h.button("Save the columns", small=True, type_="submit", kind="primary")}</div></form>')
         sources = "".join(
             f'<div class="lst-row"><span class="mono grow ell">{h.e(m.experiment)}</span>'
             f'<span class="muted small mono ell">{h.e(m.uri)}</span>'
@@ -634,7 +813,8 @@ class DatasetsSettingsDialog(Dialog):
         return (f'<div class="subhead">Shared folders</div>'
                 f'<p class="muted small">Every CSV under these folders is listed (four levels deep). A CSV in a folder '
                 f'named after another CSV is listed as derived from it. Nothing is written there.</p>'
-                f'<div class="lst">{folders}</div>{add_folder}'
+                f'<div class="lst">{folders}</div>{add_folder}{exclude}'
+                f'<div class="subhead" style="margin-top:16px">Columns of every dataset {h.info_btn("dataset-columns")}</div>{columns}'
                 f'<div class="subhead" style="margin-top:16px">MLflow experiments holding datasets</div>'
                 f'<p class="muted small">One run per dataset, with the CSV and a hash.txt of its content hash. '
                 f'Servers come from the Home page.</p>'
@@ -642,14 +822,6 @@ class DatasetsSettingsDialog(Dialog):
 
     def footer(self) -> str:
         return h.button("Done", act_attr=self.a("close"), kind="primary")
-
-    def _changed(self, mlflow: bool = False) -> None:
-        index = DatasetIndex.get()
-        index.rescan()
-        index.request_all()
-        if mlflow:
-            index.refresh_mlflow()
-        self.view.refresh()
 
     def on_folder(self, value: str = "", **_):
         self.folder = value or ""
@@ -664,7 +836,7 @@ class DatasetsSettingsDialog(Dialog):
         self.error = ""
         dcfg.add_folder(folder)
         self.folder = ""
-        self._changed()
+        self.view.settings_changed()
 
     def on_browse(self, **_):
         from lookin.web.views.files import FileBrowserDialog
@@ -677,7 +849,17 @@ class DatasetsSettingsDialog(Dialog):
 
     def on_remove_folder(self, folder: str = "", **_):
         dcfg.remove_folder(folder)
-        self._changed()
+        self.view.settings_changed()
+
+    def on_save_exclude(self, patterns: str = "", **_):
+        dcfg.set_exclude((patterns or "").splitlines())
+        self.session.toast("Patterns saved.", "ok")
+        self.view.settings_changed()
+
+    def on_save_columns(self, **args):
+        dcfg.set_columns(_columns_from_form(args))
+        self.session.toast("Columns saved: the datasets are read again with them.", "ok")
+        self.view.settings_changed()
 
     def on_server(self, value: str = "", **_):
         self.server = (value or "").strip()
@@ -692,8 +874,8 @@ class DatasetsSettingsDialog(Dialog):
             return
         self.error = ""
         dcfg.add_mlflow(self.server, self.experiment)
-        self._changed(mlflow=True)
+        self.view.settings_changed(mlflow=True)
 
     def on_remove_mlflow(self, uri: str = "", experiment: str = "", **_):
         dcfg.remove_mlflow(uri, experiment)
-        self._changed()
+        self.view.settings_changed()

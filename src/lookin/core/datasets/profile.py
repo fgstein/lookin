@@ -2,35 +2,38 @@
 numbers -- a JSON-ready dict that the page draws from, the MCP tools answer
 from, and the cache stores. Nothing here draws anything.
 
-What comes first is what a dataset is judged on: how balanced its classes
-are, where its rows come from (the `source` column) and how the classes are
-spread across sources and across splits. Then every other column, then the
-checks that say whether the file can be trusted as it is.
+Which column is what comes from the settings (config.py), never from the
+values: the id, the image path, the split and the source column, and the
+*mappings* -- the label columns. A dataset can carry several labellings of
+the same rows (a fine label, a coarse one, the label of another taxonomy),
+and not every row has every one: an empty cell is a row without a label in
+that mapping, counted, not an error.
+
+The profile has two halves, as the page has:
+
+* the instances -- what does not depend on a labelling: rows, the source and
+  split columns, every other column, duplicate ids, rows and images;
+* one entry per mapping the file has -- its classes, their balance, and how
+  they spread across sources and splits.
 
 Reading a 500k-row CSV takes seconds, so a profile is computed once per
-content hash, in the background, and read from the cache afterwards (see
-index.py). Nothing here opens an image: the crop check only stats a sample
-of paths.
+content hash and set of columns, in the background, and read from the cache
+afterwards (see index.py). Nothing here touches the images.
 """
 from __future__ import annotations
 
 import math
-import os
 import time
-from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from lookin.core.dataset_config import config_for_csv
-from lookin.core.datasets import fingerprint
-from lookin.core.schema import sniff_csv
+from lookin.core.datasets import config as dcfg, fingerprint
 
 # Bumped whenever the shape or the meaning of a profile changes: a cached
 # profile of another version is recomputed rather than misread.
-PROFILE_VERSION = 2
+PROFILE_VERSION = 3
 # A class with fewer examples than this is "rare": too few to train on or
 # to measure a per-class metric with any confidence.
 RARE_CLASS_MIN = 10
@@ -47,73 +50,29 @@ CATEGORICAL_MAX_UNIQUE = 200
 # Columns of a cross table past this many values: the rest are summed into
 # OTHER, so a source column with thousands of values stays a readable table.
 MAX_CROSS_VALUES = 30
-CROP_CHECK_SAMPLE = 200
-MISSING_EXAMPLES = 5
 OTHER = "(other)"
 EMPTY = "(empty)"
-
-SPLIT_NAMES = ("split", "subset", "fold", "partition")
-SOURCE_NAMES = ("source", "origin", "provenance", "camera", "sensor", "device", "site")
-# A column named exactly like this is the label, whatever the guess from the
-# values says: the guess favours the column with the fewest distinct values
-# in the first rows, and a flag column (ok / blurry) beats 40 classes there.
-LABEL_NAMES = ("label", "class", "target", "category")
 
 SEVERITY_ERROR = "error"
 SEVERITY_WARNING = "warning"
 SEVERITY_INFO = "info"
 
 
-@dataclass
-class Roles:
-    """Which column is what. "" when the file has none."""
-    id: str = ""
-    image: str = ""
-    label: str = ""
-    split: str = ""
-    source: str = ""
-    root: str = ""        # folder crop paths are relative to; "" = the CSV's folder
-    note: str = ""        # where the roles came from
-    error: str = ""
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-
-def _by_name(columns: list, names: tuple) -> str:
-    lowered = {c.strip().lower(): c for c in columns}
-    for name in names:
-        if name in lowered:
-            return lowered[name]
-    return ""
-
-
-def resolve_roles(path) -> Roles:
-    """The guess from the values (schema.sniff_csv), overridden by what a
-    lookin.toml beside the CSV says -- the same rule as the Sources tab. The
-    split and source columns come from lookin.toml, else by name."""
-    guess = sniff_csv(path)
-    if guess.error:
-        return Roles(error=guess.error)
-    columns = list(guess.columns)
-    roles = Roles(id=guess.uuid_col or "", image=guess.crop_col or "", label=guess.label_col or "",
-                  note="Guessed from the values.")
-    named_label = _by_name(columns, LABEL_NAMES)
-    if named_label and named_label not in (roles.id, roles.image):
-        roles.label = named_label
-    roles.split = _by_name(columns, SPLIT_NAMES)
-    roles.source = _by_name(columns, SOURCE_NAMES)
-    config = config_for_csv(path)
-    if config is not None and not config.error:
-        for attr, value in (("id", config.id), ("image", config.image), ("label", config.label),
-                            ("split", config.split_col), ("source", config.source_col)):
-            if value is not None and (not value or value in columns):
-                setattr(roles, attr, value)
-        if config.root:
-            roles.root = config.root
-        roles.note = f"From {config.source}."
-    elif config is not None and config.error:
-        roles.note = f"{config.source} {config.error}; guessed from the values instead."
+def roles_for(columns: dict, header: list) -> dict:
+    """The roles of one file: the configured column names it has, and the
+    configured ones it lacks (reported, not an error)."""
+    present = set(header)
+    roles = {}
+    missing = []
+    for key in dcfg.SINGLE_ROLES:
+        name = columns.get(key) or ""
+        roles[key] = name if name in present else ""
+        if name and name not in present:
+            missing.append(name)
+    configured = list(columns.get(dcfg.ROLE_MAPPINGS) or [])
+    roles[dcfg.ROLE_MAPPINGS] = [m for m in configured if m in present]
+    missing += [m for m in configured if m not in present]
+    roles["missing"] = missing
     return roles
 
 
@@ -133,7 +92,7 @@ def _as_label_strings(series: pd.Series) -> pd.Series:
 
 
 def _read_text_columns(path, columns: list) -> pd.DataFrame:
-    """Label, split and source as text, where only an empty cell is missing:
+    """Labels, split and source as text, where only an empty cell is missing:
     "None" or "NA" can be a class name (see data_manager._label_na_options)."""
     wanted = [c for c in dict.fromkeys(columns) if c]
     if not wanted:
@@ -163,7 +122,7 @@ def _class_summary(labels: pd.Series) -> dict:
         "labelled": int(total),
         "missing": int(labels.isna().sum()),
         "imbalance": float(sizes.max() / sizes.min()) if k else None,
-        "entropy": entropy if k else None,
+        "entropy": round(entropy, 6) if k else None,
         "rare": int((sizes < RARE_CLASS_MIN).sum()),
         "rare_min": RARE_CLASS_MIN,
         "median": float(np.median(sizes)) if k else None,
@@ -217,63 +176,49 @@ def _column_profile(name: str, s: pd.Series) -> dict:
     return out
 
 
-def _crop_check(images: pd.Series, csv_path, root: str) -> dict:
-    present = images.dropna().astype(str)
-    present = present[present.str.len() > 0]
-    if present.empty:
-        return {"checked": 0, "missing": 0, "examples": []}
-    n = min(CROP_CHECK_SAMPLE, len(present))
-    picks = present.iloc[np.linspace(0, len(present) - 1, n).astype(int)]
-    base = Path(root) if root else Path(csv_path).resolve().parent
-    missing = []
-    for value in picks:
-        p = Path(value)
-        if not p.is_absolute():
-            p = base / p
-        if not os.path.isfile(p):
-            missing.append(value)
-    return {"checked": int(n), "missing": len(missing), "examples": missing[:MISSING_EXAMPLES],
-            "base": str(base)}
+def _issue(severity: str, code: str, message: str, count=None, mapping: str = "") -> dict:
+    out = {"severity": severity, "code": code, "message": message, "count": count}
+    if mapping:
+        out["mapping"] = mapping
+    return out
 
 
-def _issue(severity: str, code: str, message: str, count=None) -> dict:
-    return {"severity": severity, "code": code, "message": message, "count": count}
-
-
-def _issues(p: dict) -> list:
+def _instance_issues(p: dict) -> list:
     out = []
-    roles, q, classes = p["roles"], p["quality"], p.get("classes")
-    if not roles.get("label"):
-        out.append(_issue(SEVERITY_ERROR, "no_label", "No label column found: name it in a lookin.toml beside the CSV."))
-    if q.get("crops_missing"):
-        out.append(_issue(SEVERITY_ERROR, "crops_missing",
-                          f"{q['crops_missing']} of {q['crops_checked']} sampled crop paths do not exist "
-                          f"(relative to {q.get('crops_base', 'the CSV folder')}).", q["crops_missing"]))
+    roles, q = p["roles"], p["quality"]
+    if not roles[dcfg.ROLE_MAPPINGS]:
+        out.append(_issue(SEVERITY_WARNING, "no_mapping",
+                          "None of the label columns of the settings is in this file."))
     if q.get("duplicate_ids"):
         out.append(_issue(SEVERITY_ERROR, "duplicate_ids",
                           f"{q['duplicate_ids']:,} rows repeat an id of another row.", q["duplicate_ids"]))
-    if q.get("missing_labels"):
-        out.append(_issue(SEVERITY_WARNING, "missing_labels",
-                          f"{q['missing_labels']:,} rows have no label.", q["missing_labels"]))
     if q.get("duplicate_images"):
         out.append(_issue(SEVERITY_WARNING, "duplicate_images",
-                          f"{q['duplicate_images']:,} rows point at a crop another row already uses.",
+                          f"{q['duplicate_images']:,} rows point at an image another row already uses.",
                           q["duplicate_images"]))
     if q.get("duplicate_rows"):
         out.append(_issue(SEVERITY_WARNING, "duplicate_rows",
                           f"{q['duplicate_rows']:,} rows are exact copies of another row.", q["duplicate_rows"]))
     if q.get("empty_images"):
         out.append(_issue(SEVERITY_WARNING, "empty_images",
-                          f"{q['empty_images']:,} rows have no crop path.", q["empty_images"]))
-    if classes:
-        if classes["imbalance"] and classes["imbalance"] >= IMBALANCE_WARN:
-            out.append(_issue(SEVERITY_WARNING, "imbalance",
-                              f"The largest class is {classes['imbalance']:,.0f}x the smallest.",
-                              round(classes["imbalance"], 1)))
-        if classes["rare"]:
-            out.append(_issue(SEVERITY_INFO, "rare_classes",
-                              f"{classes['rare']} classes have fewer than {RARE_CLASS_MIN} rows.", classes["rare"]))
-    split = p.get("class_by_split")
+                          f"{q['empty_images']:,} rows have no image path.", q["empty_images"]))
+    return out
+
+
+def _mapping_issues(name: str, m: dict) -> list:
+    out = []
+    classes = m["classes"]
+    if classes["imbalance"] and classes["imbalance"] >= IMBALANCE_WARN:
+        out.append(_issue(SEVERITY_WARNING, "imbalance",
+                          f"The largest class is {classes['imbalance']:,.0f}x the smallest.",
+                          round(classes["imbalance"], 1), name))
+    if classes["rare"]:
+        out.append(_issue(SEVERITY_INFO, "rare_classes",
+                          f"{classes['rare']} classes have fewer than {RARE_CLASS_MIN} rows.", classes["rare"], name))
+    if classes["missing"]:
+        out.append(_issue(SEVERITY_INFO, "unlabelled_rows",
+                          f"{classes['missing']:,} rows have no label in this mapping.", classes["missing"], name))
+    split = m.get("class_by_split")
     if split:
         for j, value in enumerate(split["cols"]):
             if value in (EMPTY, OTHER):
@@ -282,8 +227,8 @@ def _issues(p: dict) -> list:
             if absent:
                 names = ", ".join(absent[:5]) + (", ..." if len(absent) > 5 else "")
                 out.append(_issue(SEVERITY_WARNING, "class_absent_from_split",
-                                  f"{len(absent)} classes have no row in split '{value}': {names}.", len(absent)))
-    source = p.get("class_by_source")
+                                  f"{len(absent)} classes have no row in split '{value}': {names}.", len(absent), name))
+    source = m.get("class_by_source")
     if source and len([c for c in source["cols"] if c != EMPTY]) > 1:
         dominated = []
         for i, row in enumerate(source["counts"]):
@@ -294,14 +239,26 @@ def _issues(p: dict) -> list:
             names = ", ".join(dominated[:5]) + (", ..." if len(dominated) > 5 else "")
             out.append(_issue(SEVERITY_INFO, "single_source_classes",
                               f"{len(dominated)} classes come from one source for {SOURCE_DOMINANCE:.0%} "
-                              f"or more of their rows: {names}.", len(dominated)))
+                              f"or more of their rows: {names}.", len(dominated), name))
+    return out
+
+
+def _by_severity(issues: list) -> list:
     order = {SEVERITY_ERROR: 0, SEVERITY_WARNING: 1, SEVERITY_INFO: 2}
-    return sorted(out, key=lambda i: order[i["severity"]])
+    return sorted(issues, key=lambda i: order[i["severity"]])
+
+
+def all_issues(profile: dict) -> list:
+    """Every issue of a profile: the instances' and every mapping's."""
+    out = list(profile.get("issues", []))
+    for m in profile.get("mappings", {}).values():
+        out += m.get("issues", [])
+    return _by_severity(out)
 
 
 def health(profile: dict) -> str:
-    """The worst severity among the issues, or "ok"."""
-    severities = {i["severity"] for i in profile.get("issues", [])}
+    """The worst severity among all the issues, or "ok"."""
+    severities = {i["severity"] for i in all_issues(profile)}
     for s in (SEVERITY_ERROR, SEVERITY_WARNING):
         if s in severities:
             return s
@@ -312,52 +269,56 @@ def health(profile: dict) -> str:
 # the whole thing
 # ---------------------------------------------------------------------------
 
-def compute(path, roles: Roles = None, progress=None) -> dict:
-    """The profile of the CSV at `path`. Raises OSError / ValueError /
-    pandas' ParserError on a file that cannot be read."""
+def compute(path, columns: dict, progress=None) -> dict:
+    """The profile of the CSV at `path`, read with the `columns` of the
+    settings (config.DatasetsConfig.columns_for). Raises OSError /
+    ValueError / pandas' ParserError on a file that cannot be read."""
     t0 = time.monotonic()
     say = progress or (lambda text: None)
-    roles = roles if roles is not None else resolve_roles(path)
     say("Reading the CSV")
     df = fingerprint.read_for_hash(path)
     say("Hashing the content")
     content_hash = fingerprint.dataset_hash(df)
-    say("Counting classes")
-    text = _read_text_columns(path, [roles.label, roles.split, roles.source])
+    roles = roles_for(columns, [str(c) for c in df.columns])
+    mappings = roles[dcfg.ROLE_MAPPINGS]
+    split, source = roles[dcfg.ROLE_SPLIT], roles[dcfg.ROLE_SOURCE]
+    say("Reading the labels")
+    text = _read_text_columns(path, mappings + [split, source])
     p: dict = {
         "version": PROFILE_VERSION,
         "hash": content_hash,
         "rows": int(len(df)),
         "columns": [str(c) for c in df.columns],
-        "roles": roles.to_dict(),
+        "roles": roles,
     }
-    labels = text[roles.label] if roles.label else None
-    if labels is not None:
-        p["classes"] = _class_summary(labels)
-        order = [c for c, _ in p["classes"]["counts"]]
-        if roles.source:
-            p["sources"] = _value_summary(text[roles.source])
-            p["class_by_source"] = _cross(labels, text[roles.source], order)
-        if roles.split:
-            p["splits"] = _value_summary(text[roles.split])
-            p["class_by_split"] = _cross(labels, text[roles.split], order)
+    if source:
+        p["sources"] = _value_summary(text[source])
+    if split:
+        p["splits"] = _value_summary(text[split])
+    p["mappings"] = {}
+    for name in mappings:
+        say(f"Counting classes of {name}")
+        labels = text[name]
+        m = {"classes": _class_summary(labels)}
+        order = [c for c, _ in m["classes"]["counts"]]
+        if source:
+            m["class_by_source"] = _cross(labels, text[source], order)
+        if split:
+            m["class_by_split"] = _cross(labels, text[split], order)
+        m["issues"] = _by_severity(_mapping_issues(name, m))
+        p["mappings"][name] = m
     say("Profiling the columns")
-    skip = {roles.id, roles.image, roles.label}
+    skip = {roles[dcfg.ROLE_ID], roles[dcfg.ROLE_IMAGE], *mappings}
     p["column_profiles"] = [_column_profile(str(c), df[c]) for c in df.columns if c not in skip]
-    say("Checking crops")
-    quality = {"missing_labels": int(labels.isna().sum()) if labels is not None else 0,
-               "duplicate_rows": int(df.duplicated().sum())}
-    if roles.id:
-        quality["duplicate_ids"] = int(df[roles.id].dropna().duplicated().sum())
-    if roles.image:
-        images = df[roles.image]
+    quality = {"duplicate_rows": int(df.duplicated().sum())}
+    if roles[dcfg.ROLE_ID]:
+        quality["duplicate_ids"] = int(df[roles[dcfg.ROLE_ID]].dropna().duplicated().sum())
+    if roles[dcfg.ROLE_IMAGE]:
+        images = df[roles[dcfg.ROLE_IMAGE]]
         quality["empty_images"] = int(images.isna().sum())
         quality["duplicate_images"] = int(images.dropna().duplicated().sum())
-        check = _crop_check(images, path, roles.root)
-        quality.update(crops_checked=check["checked"], crops_missing=check["missing"],
-                       crops_missing_examples=check["examples"], crops_base=check.get("base", ""))
     p["quality"] = quality
-    p["issues"] = _issues(p)
+    p["issues"] = _by_severity(_instance_issues(p))
     p["computed_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     p["seconds"] = round(time.monotonic() - t0, 2)
     return p

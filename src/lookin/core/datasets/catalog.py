@@ -14,6 +14,10 @@ root) is named like a CSV beside that folder is a derivative of that CSV --
 the nearest such folder wins. Nothing else is inferred: a CSV elsewhere is
 a main dataset of its own.
 
+CSVs that are not datasets (the label mapping tables kept in a mappings/
+folder beside them, typically) are left out by the exclusion patterns of
+the settings (config.py), matched on the path relative to the shared folder.
+
 Only the file system is read here: names, sizes, modification times. What
 is *in* a file is profile.py's business, on demand.
 """
@@ -46,6 +50,11 @@ class DatasetFile:
     def stem(self) -> str:
         return Path(self.name).stem
 
+    def group(self) -> str:
+        """The folder it sits in, from the shared folder's name down -- what
+        the page groups the datasets by."""
+        return str(Path(self.relative()).parent)
+
     def relative(self) -> str:
         """The path from the shared folder's own name down, e.g.
         "datasets/A/A_clean.csv" -- unique across folders, which a path
@@ -65,7 +74,7 @@ def is_dataset_file(name: str) -> bool:
     return lowered.endswith(".csv") and not lowered.endswith(NOT_A_DATASET_SUFFIXES) and not name.startswith(".")
 
 
-def _scan(root: Path) -> list:
+def _scan(root: Path, excluded=None) -> list:
     out = []
     stack = [(root, 0)]
     while stack and len(out) < MAX_SCAN_FILES:
@@ -82,6 +91,8 @@ def _scan(root: Path) -> list:
                     if depth < MAX_SCAN_DEPTH:
                         stack.append((Path(e.path), depth + 1))
                 elif is_dataset_file(e.name):
+                    if excluded is not None and excluded(Path(e.path).relative_to(root).as_posix()):
+                        continue
                     st = e.stat()
                     out.append(DatasetFile(path=os.path.abspath(e.path), name=e.name, root=str(root),
                                            size=int(st.st_size), mtime=st.st_mtime, mtime_ns=st.st_mtime_ns))
@@ -101,17 +112,18 @@ def _parent_of(f: DatasetFile, by_path: dict) -> Optional[str]:
     return None
 
 
-def scan(folders: list) -> list:
+def scan(folders: list, excluded=None) -> list:
     """Every dataset CSV under `folders`, mains first then their
     derivatives, each group by name. A folder that cannot be read gives
     nothing rather than an error: a shared mount that is down must not take
-    the page with it (the page says which folders are missing)."""
+    the page with it (the page says which folders are missing).
+    `excluded(relative_path)` says which files to leave out."""
     files: dict = {}
     for folder in folders:
         root = Path(folder).expanduser()
         if not root.is_dir():
             continue
-        for f in _scan(root.resolve()):
+        for f in _scan(root.resolve(), excluded):
             files.setdefault(f.path, f)
     for f in files.values():
         f.parent = _parent_of(f, files)

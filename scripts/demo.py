@@ -190,6 +190,10 @@ def _seed_datasets(uri: str) -> None:
         if (folder / "dataset.csv").is_file():
             dcfg.add_folder(str(folder))
     dcfg.add_mlflow(uri, "datasets")
+    # The demo's datasets name their columns their own way: one mapping
+    # (label), the split in subset, the source in camera (load test only).
+    dcfg.set_columns({**dcfg.DEFAULT_COLUMNS, dcfg.ROLE_MAPPINGS: ["label"],
+                      dcfg.ROLE_SPLIT: "subset", dcfg.ROLE_SOURCE: "camera"})
 
 
 def main() -> None:

@@ -70,8 +70,8 @@ def test_a_log_axis_keeps_its_own_subdivisions(ax):
 
 def test_a_legend_is_placed_under_the_axes_not_inside_them(ax):
     ax.plot([0, 1], [0, 1], label="experiment_0")
-    cs.reserve_legend_space(ax.get_figure(), 1, 1)
     legend = cs.legend_below(ax, ncol=1)
+    cs.layout_with_legends_below(ax.get_figure())
 
     # On the figure rather than the axes: an axes-anchored legend sits on
     # top of the rotated tick labels hanging below them.
@@ -84,28 +84,56 @@ def test_nothing_is_drawn_for_a_chart_with_no_series(ax):
     assert cs.legend_below(ax) is None
 
 
-def test_more_entries_need_more_room():
-    assert cs.legend_height_inches(8, 2) > cs.legend_height_inches(2, 2)
-    assert cs.legend_height_inches(0, 1) == 0.0
-    # Columns are what keeps a dozen experiments from becoming a dozen rows.
-    assert cs.legend_height_inches(8, 4) < cs.legend_height_inches(8, 1)
+def _overlaps_the_axes(figure, ax, legend) -> bool:
+    renderer = figure.canvas.get_renderer()
+    axes_box = ax.get_tightbbox(renderer)   # the axes *and* their tick labels
+    return legend.get_window_extent(renderer).y1 > axes_box.y0
 
 
-def test_a_legend_never_takes_the_whole_figure():
-    figure = plt.figure(figsize=(6, 2))
-    cs.reserve_legend_space(figure, 60, 1)
-    # 60 entries would ask for ten inches out of two; the axes survive.
-    assert figure.subplotpars.bottom <= cs.LEGEND_MAX_FRACTION
-    plt.close(figure)
+def test_a_long_legend_grows_the_figure_rather_than_covering_the_plot():
+    def chart(with_legend: bool):
+        figure, ax = cs.subplots(figsize=(6, 4))
+        for i in range(12):
+            # Wrapped onto two lines each: what an estimate counting
+            # entries got wrong, and printed over the plot.
+            ax.plot([0, 1], [0, i], label=cs.legend_name(f"run_{i}_" + "x" * 140))
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels(["a_long_class_name", "another_long_class_name"], rotation=45, ha="right")
+        legend = cs.legend_below(ax) if with_legend else None
+        cs.layout_with_legends_below(figure)
+        return figure, ax, legend
+
+    figure, ax, legend = chart(True)
+    assert not _overlaps_the_axes(figure, ax, legend)
+    # The plot kept the room it had without a legend: the figure grew instead.
+    bare_figure, bare_ax, _ = chart(False)
+    height = ax.get_position().height * figure.get_size_inches()[1]
+    bare_height = bare_ax.get_position().height * bare_figure.get_size_inches()[1]
+    assert abs(height - bare_height) < 0.05
+
+
+def test_two_legends_side_by_side_never_touch_and_stay_in_the_figure():
+    figure, axes = cs.subplots(1, 2, figsize=(4, 3))
+    legends = []
+    for ax in axes:
+        ax.plot([0, 1], [0, 1], label=cs.legend_name("x" * 99) + " (AUC=0.900)")
+        legends.append(cs.legend_below(ax, fontsize=7))
+    cs.layout_with_legends_below(figure)
+    renderer = figure.canvas.get_renderer()
+    left, right = (legend.get_window_extent(renderer) for legend in legends)
+    assert left.x1 < right.x0
+    assert left.x0 >= 0 and right.x1 <= figure.get_size_inches()[0] * figure.dpi
+    for ax, legend in zip(axes, legends):
+        assert not _overlaps_the_axes(figure, ax, legend)
 
 
 def test_a_legend_entry_is_wrapped_never_cut():
-    long = "finetuned_resnet_with_a_very_long_name_to_see_what_the_legend_does_with_it_v2"
+    long = ("finetuned_resnet_with_a_very_long_name_to_see_what_the_legend_does_with_it"
+            "_and_then_some_more_words_to_go_past_the_wrap_width_v2")
     wrapped = cs.legend_name(long)
     assert "…" not in wrapped and wrapped.replace("\n", "") == long
     assert all(len(line) <= cs.LEGEND_NAME_WRAP for line in wrapped.split("\n"))
     assert cs.legend_name("short") == "short"
-    assert cs.legend_columns(6) == 1
 
 
 def test_the_pr_curve_is_drawn_on_the_unit_square_with_iso_f1_lines():

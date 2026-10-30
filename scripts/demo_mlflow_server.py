@@ -226,7 +226,7 @@ def _datasets_experiment() -> "FakeExperiment":
     """The runs that produced the datasets: one CSV and a hash.txt each, as
     the dataset scripts log them -- what the Datasets page traces a CSV of
     the shared folders back to. The load test's run has no hash.txt (hashing
-    500k rows at every start would be slow), so it shows as "probable"."""
+    500k rows at every start would be slow), so it shows as "name-matched"."""
     from lookin.core.datasets.fingerprint import dataset_hash, read_for_hash
 
     datasets = FakeExperiment("4", "datasets", "One run per dataset: the CSV and the hash of its content.")

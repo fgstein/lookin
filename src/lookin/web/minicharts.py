@@ -1,9 +1,9 @@
-"""Small charts drawn as inline SVG and HTML: sparklines in a list, bars,
-histograms and shaded tables in a card.
+"""Small charts drawn as inline SVG and HTML: bars, histograms and shaded
+tables in a card.
 
-matplotlib is what the analysis tabs use for their figures, but a PNG per
-row of a list of a hundred datasets would be a hundred renders and a
-hundred images to fetch. These are a few hundred bytes of markup each,
+matplotlib is what the analysis tabs use for their figures, but a page of
+a dozen small charts would be a dozen renders and images to fetch. These
+are a few hundred bytes of markup each,
 drawn from numbers already computed, sharp at any zoom and styled by the
 page's own CSS variables -- so they cost nothing to show.
 """
@@ -16,29 +16,6 @@ ACCENT = "var(--acc)"
 
 def _fmt_count(n) -> str:
     return f"{int(n):,}"
-
-
-def sparkbars(values: list, width: int = 96, height: int = 18, title: str = "") -> str:
-    """One bar per value, in the order given -- a class distribution sorted
-    largest first reads as its long tail. Past `width` values, neighbours
-    are merged by taking their max, so the shape survives."""
-    vals = [float(v) for v in values if v is not None]
-    if not vals:
-        return ""
-    if len(vals) > width:
-        step = len(vals) / width
-        vals = [max(vals[int(i * step):max(int((i + 1) * step), int(i * step) + 1)]) for i in range(width)]
-    top = max(vals) or 1.0
-    bar_w = width / len(vals)
-    gap = 0.6 if bar_w >= 3 else 0.0
-    rects = []
-    for i, v in enumerate(vals):
-        bh = max(1.0, height * v / top) if v > 0 else 0.0
-        rects.append(f'<rect x="{i * bar_w:.2f}" y="{height - bh:.2f}" width="{max(bar_w - gap, 0.4):.2f}" height="{bh:.2f}"/>')
-    tip = f"<title>{h.e(title)}</title>" if title else ""
-    return (f'<svg class="spark" width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
-            f'preserveAspectRatio="none" aria-hidden="{"false" if title else "true"}">{tip}'
-            f'<g fill="{ACCENT}">{"".join(rects)}</g></svg>')
 
 
 def hbars(rows: list, *, limit: int = 0, total: int = 0, more_attr: str = "", value_fmt=_fmt_count) -> str:
