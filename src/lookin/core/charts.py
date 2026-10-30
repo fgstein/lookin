@@ -21,8 +21,8 @@ import numpy as np
 from lookin.core import class_focus as cf
 from lookin.core import slices as sl
 from lookin.core.chart_style import (
-    GRID_MAJOR, GRID_NONE, legend_below, legend_columns, legend_height_inches, legend_name,
-    reserve_legend_space, short_name, style_axes, subplots,
+    GRID_MAJOR, GRID_NONE, layout_with_legends_below, legend_below, legend_name, short_name,
+    style_axes, subplots,
 )
 
 # One series in a single-series chart (a column histogram).
@@ -95,8 +95,7 @@ def per_class_bars(per_class_by_name: dict, metric: str, labels: list, colors: d
     table indexed by label (ExperimentMetrics.per_class.set_index("label"))."""
     n_exp = len(per_class_by_name)
     fig_width = max(6.0, min(18.0, len(labels) * (0.5 + 0.13 * n_exp)))
-    legend_cols = legend_columns(n_exp)
-    fig, ax = subplots(figsize=(fig_width, 4.3 + legend_height_inches(n_exp, legend_cols)))
+    fig, ax = subplots(figsize=(fig_width, 4.3))
     width = 0.8 / max(n_exp, 1)
     x = np.arange(len(labels))
     for i, (name, per_class) in enumerate(per_class_by_name.items()):
@@ -113,8 +112,8 @@ def per_class_bars(per_class_by_name: dict, metric: str, labels: list, colors: d
         ax.set_ylim(0, 1.05)
     ax.set_title(f"Per-class {metric} by experiment")
     style_axes(ax, x=GRID_NONE)
-    reserve_legend_space(fig, n_exp, legend_cols)
-    legend_below(ax, ncol=legend_cols)
+    legend_below(ax)
+    layout_with_legends_below(fig)
     return fig, uneven
 
 
@@ -122,8 +121,7 @@ def roc_pr_curves(curves_by_name: dict, target: str, colors: dict):
     """ROC and Precision-Recall side by side, one line per experiment.
     `curves_by_name` holds drawable CurveData (no disabled_reason)."""
     n_curves = len(curves_by_name)
-    legend_cols = legend_columns(n_curves)
-    fig, (ax1, ax2) = subplots(1, 2, figsize=(11, 4.4 + legend_height_inches(n_curves, legend_cols)))
+    fig, (ax1, ax2) = subplots(1, 2, figsize=(11, 4.4))
     ax1.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1)
     iso_f1_lines(ax2)
     for name, curve in curves_by_name.items():
@@ -143,9 +141,9 @@ def roc_pr_curves(curves_by_name: dict, target: str, colors: dict):
         ax.set_ylim(0, 1.02)
     style_axes(ax1)
     style_axes(ax2)
-    reserve_legend_space(fig, n_curves, legend_cols)
     for ax in (ax1, ax2):
-        legend_below(ax, ncol=legend_cols, fontsize=7)
+        legend_below(ax, fontsize=7)
+    layout_with_legends_below(fig)
     return fig
 
 
@@ -262,8 +260,7 @@ def confidence_split_histogram(name: str, hist, color: str):
 
 def risk_coverage(curves_by_name: dict, colors: dict):
     """Risk-coverage, one line per experiment (calibration.RiskCoverage)."""
-    n = len(curves_by_name)
-    fig, ax = subplots(figsize=(7.4, 4.4 + legend_height_inches(n, legend_columns(n))))
+    fig, ax = subplots(figsize=(7.4, 4.4))
     for name, curve in curves_by_name.items():
         if not len(curve.coverage):
             continue
@@ -276,8 +273,8 @@ def risk_coverage(curves_by_name: dict, colors: dict):
     style_axes(ax)
     # One entry per experiment, under the plot: the interesting part of a
     # risk-coverage curve is its right-hand end.
-    reserve_legend_space(fig, n, legend_columns(n))
-    legend_below(ax, ncol=legend_columns(n))
+    legend_below(ax)
+    layout_with_legends_below(fig)
     return fig
 
 
@@ -360,9 +357,7 @@ def slice_chart(ordered_values: list, reports: dict, metric: str, metric_label: 
     n_exp = len(names)
     fig_width = max(6.0, min(18.0, len(values) * (0.5 + 0.06 * n_exp)))
     counts_agree = _counts_agree(rows_by_name, names, values)
-    legend_entries = n_exp + (n_exp if not counts_agree else 1)
-    legend_cols = legend_columns(legend_entries)
-    fig, ax_counts = subplots(figsize=(fig_width, 4.8 + legend_height_inches(legend_entries, legend_cols)))
+    fig, ax_counts = subplots(figsize=(fig_width, 4.8))
     ax_metric = ax_counts.twinx()
     ax_metric.yaxis.tick_left()
     ax_metric.yaxis.set_label_position("left")
@@ -407,8 +402,8 @@ def slice_chart(ordered_values: list, reports: dict, metric: str, metric_label: 
     style_axes(ax_metric, x=GRID_NONE)
     handles = ax_metric.get_legend_handles_labels()[0] + ax_counts.get_legend_handles_labels()[0]
     labels = ax_metric.get_legend_handles_labels()[1] + ax_counts.get_legend_handles_labels()[1]
-    reserve_legend_space(fig, legend_entries, legend_cols)
-    legend_below(ax_metric, handles, labels, ncol=legend_cols)
+    legend_below(ax_metric, handles, labels)
+    layout_with_legends_below(fig)
     notes = ["Bars are the number of crops in each slice (right axis); the marked lines are the "
              "metric (left axis). The line follows the order chosen, so it traces a real trend "
              "only when the slices are ordered by value."]

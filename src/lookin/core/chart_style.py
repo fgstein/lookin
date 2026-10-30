@@ -133,19 +133,25 @@ def style_axes(ax, x: str = GRID_BOTH, y: str = GRID_BOTH) -> None:
 # it to need a legend at all, and on a chart comparing experiments there
 # always is. Every multi-series chart therefore puts it under the axes.
 #
-# Two calls rather than one, and in this order:
+# Two calls, and in this order:
 #
-#     reserve_legend_space(fig, n_entries, ncol)   # lays the figure out
-#     legend_below(ax, ncol=ncol)                  # ...then fills the gap
+#     legend_below(ax)                 # draws the legend
+#     layout_with_legends_below(fig)   # ...then makes room for it
 #
-# because the legend is placed at the *figure's* bottom edge, not at the
-# axes': anchoring it to the axes puts it on top of the rotated tick labels
-# hanging below them, which is precisely the collision this whole
-# arrangement exists to avoid. A figure legend is invisible to
-# tight_layout(), so the room for it is reserved first -- and reserving it
-# with tight_layout's own `rect` is what guarantees no overlap, since
-# tight_layout fits the axes *and every label around them* inside what is
-# left.
+# The legend is placed at the *figure's* bottom edge, not at the axes':
+# anchoring it to the axes puts it on top of the rotated tick labels hanging
+# below them. A figure legend is invisible to tight_layout(), so the room
+# for it is taken out of tight_layout's `rect` -- which is what guarantees
+# no overlap, since tight_layout fits the axes *and every label around
+# them* inside what is left.
+#
+# That room is *measured* on the drawn legend, never estimated from its
+# number of entries: an entry wrapped onto two lines, a title, a larger
+# font all make the estimate short, and a short estimate is a legend
+# printed over the plot. The figure grows by the legend's height instead
+# of the axes shrinking to make room, so the plot keeps the size its
+# chart asked for however many experiments are compared.
+
 # An experiment name drawn in a chart title is cut past this many
 # characters: a figure cannot show a tooltip, and a long name makes the
 # figure as wide as the name, which shrinks the plot to fit the page.
@@ -153,7 +159,13 @@ CHART_NAME_MAX = 40
 # A legend entry is never cut -- the legend is where a reader finds out
 # which line is which experiment, and two names cut to the same prefix are
 # indistinguishable. Past this many characters it wraps onto a second line.
-LEGEND_NAME_WRAP = 70
+LEGEND_NAME_WRAP = 100
+
+# Space between the lowest tick label and the top of the legend.
+LEGEND_GAP_INCHES = 0.15
+# Space between two legends side by side (ROC and PR), and around a legend
+# wider than its figure once the figure has been widened for it.
+LEGEND_SIDE_GAP_INCHES = 0.3
 
 
 def short_name(name, limit: int = CHART_NAME_MAX) -> str:
@@ -179,69 +191,99 @@ def legend_name(name, width: int = LEGEND_NAME_WRAP) -> str:
     return "\n".join(lines)
 
 
-# One entry per line: entries are experiment names, and side by side they
-# had to be cut to fit the width of the figure.
-LEGEND_MAX_COLS = 1
-LEGEND_ROW_INCHES = 0.24
-# A legend taller than this much of the figure means the chart has become a
-# legend with a plot attached; past it the figure is better grown than the
-# axes squeezed, which is what the callers do by adding
-# legend_height_inches() to their own height.
-LEGEND_MAX_FRACTION = 0.45
-
-
-def legend_columns(n_entries: int, max_cols: int = LEGEND_MAX_COLS) -> int:
-    """How many columns a legend of `n_entries` gets under the plot: one,
-    so every experiment name is written in full on a line of its own."""
-    return max(1, min(max_cols, n_entries))
-
-
-def legend_height_inches(n_entries: int, ncol: int) -> float:
-    """Figure height to add for a legend placed under the axes. One row of
-    slack on top of the rows themselves, so the legend does not sit flush
-    against the tick labels above it."""
-    rows = -(-max(0, n_entries) // max(1, ncol))
-    return (rows + 1) * LEGEND_ROW_INCHES if rows else 0.0
-
-
-def reserve_legend_space(fig, n_entries: int, ncol: int) -> None:
-    """Lay `fig` out leaving a strip along its bottom edge for a legend.
-
-    Replaces the fig.tight_layout() a chart would otherwise end with -- it
-    *is* that call, with the strip taken out of the rectangle the axes are
-    fitted into.
-    """
-    height = float(fig.get_size_inches()[1]) or 1.0
-    fraction = min(LEGEND_MAX_FRACTION, legend_height_inches(n_entries, ncol) / height)
-    fig.tight_layout(rect=(0, fraction, 1, 1))
-
-
 def legend_below(ax, handles=None, labels=None, ncol: int = 1, fontsize: int = 8,
                  title: str | None = None):
-    """Draw a legend at the bottom of the figure, centred under `ax`.
+    """Draw a legend at the bottom of the figure, to sit centred under `ax`.
 
     Centred under the axes rather than under the figure so that a figure
     holding two plots side by side (ROC and PR) gets one legend under each,
-    each one under what it describes.
+    each one under what it describes. One entry per line by default: the
+    entries are experiment names, and side by side they would have to be
+    cut to fit the width of the figure.
 
-    Call after reserve_legend_space(), which is what leaves the room and
-    what fixes the axes position this reads.
+    Call layout_with_legends_below() once every legend is drawn: it is what
+    makes the room and puts each legend under its axes.
     """
     figure = ax.get_figure()
     if handles is None or labels is None:
         handles, labels = ax.get_legend_handles_labels()
     if not handles:
         return None
-    position = ax.get_position()
     kwargs = {
-        "loc": "lower center", "bbox_to_anchor": ((position.x0 + position.x1) / 2, 0.0),
+        "loc": "lower center", "bbox_to_anchor": (0.5, 0.0),
         "bbox_transform": figure.transFigure, "ncol": max(1, ncol), "fontsize": fontsize,
         "frameon": False, "handlelength": 1.6, "columnspacing": 1.4,
     }
     if title:
         kwargs["title"] = title
         kwargs["title_fontsize"] = fontsize
-    return figure.legend(handles, labels, **kwargs)
+    legend = figure.legend(handles, labels, **kwargs)
+    legend.lookin_under = ax
+    return legend
+
+
+def _legends_below(fig) -> list:
+    return [legend for legend in fig.legends if getattr(legend, "lookin_under", None) is not None]
+
+
+def _anchor_legends(fig, legends) -> None:
+    for legend in legends:
+        position = legend.lookin_under.get_position()
+        legend.set_bbox_to_anchor(((position.x0 + position.x1) / 2, 0.0), transform=fig.transFigure)
+
+
+def _legend_extents_inches(fig, legends) -> list:
+    """(x0, x1, height) of each legend, in inches, as currently drawn."""
+    renderer = fig.canvas.get_renderer()
+    extents = []
+    for legend in legends:
+        box = legend.get_window_extent(renderer)
+        extents.append((box.x0 / fig.dpi, box.x1 / fig.dpi, box.height / fig.dpi))
+    return extents
+
+
+def _extra_width_inches(fig_width: float, extents: list) -> float:
+    """How much wider the figure has to be for no legend to run off its
+    edges or into its neighbour; 0.0 when they already fit."""
+    if not extents:
+        return 0.0
+    ordered = sorted(extents)
+    widest = max(x1 - x0 for x0, x1, _ in ordered)
+    needed = widest + 2 * LEGEND_SIDE_GAP_INCHES - fig_width
+    for (_, left_x1, _), (right_x0, _, _) in zip(ordered, ordered[1:]):
+        overlap = left_x1 + LEGEND_SIDE_GAP_INCHES - right_x0
+        # Two legends centred under two halves: widening the figure by w
+        # moves their centres apart by about w / 2.
+        needed = max(needed, 2 * overlap)
+    return max(0.0, needed)
+
+
+def layout_with_legends_below(fig) -> None:
+    """Lay `fig` out with the legends of legend_below() under its axes.
+
+    Replaces the fig.tight_layout() a chart would otherwise end with -- it
+    *is* that call, with a strip along the bottom edge taken out of the
+    rectangle the axes are fitted into. The strip is as tall as the tallest
+    legend actually is, and the figure is grown by it, so the figure's
+    height as created stays the plot's own. The figure is widened too when
+    a legend is wider than it, or two legends side by side would touch.
+    """
+    legends = _legends_below(fig)
+    if not legends:
+        fig.tight_layout()
+        return
+    width, plot_height = (float(v) for v in fig.get_size_inches())
+    # Twice at most: widening re-wraps nothing, so the second measure is
+    # the last one that can change anything.
+    for _ in range(2):
+        strip = max(height for _, _, height in _legend_extents_inches(fig, legends)) + LEGEND_GAP_INCHES
+        fig.set_size_inches(width, plot_height + strip)
+        fig.tight_layout(rect=(0, strip / (plot_height + strip), 1, 1))
+        _anchor_legends(fig, legends)
+        extra = _extra_width_inches(width, _legend_extents_inches(fig, legends))
+        if not extra:
+            return
+        width += extra
 
 
 # Only one expensive rebuild runs at a time, process-wide.
