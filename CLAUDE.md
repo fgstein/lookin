@@ -133,6 +133,17 @@ reports made (`core/agent_outputs.py`). Keep the two in step:
 - Every answer about a workspace carries its `warnings` and an `open_url`
   (`core/links.py`); the link parameters are a format and never renamed.
 
+## Versions
+
+The version lives in one place, `src/lookin/__init__.py` (`__version__`),
+and is bumped in a commit of its own ("Bump version to 5.2"). Whenever a
+change adds or changes something a user can see -- a page, a tab, a tool,
+a behaviour -- at least *propose* bumping the minor version before
+committing or pushing it; never let such a change go out silently at the
+old version. Besides telling users something changed, the version is the
+cache key of the page's stylesheets and scripts (`?v=<version>`), so
+without a bump a browser can keep serving the old CSS.
+
 ## Checking before you commit a text change
 
 Both of these should come back clean:
