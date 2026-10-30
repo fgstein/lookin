@@ -37,6 +37,7 @@ from lookin import __version__
 from lookin.core import agent_actions as actions
 from lookin.core import agent_outputs as outputs
 from lookin.core import agent_tools
+from lookin.core.datasets import agent as dataset_tools
 
 MCP_PATH = "/mcp"
 
@@ -51,6 +52,10 @@ drill down with get_per_class, get_confusions, get_slices, get_calibration, comp
 get_examples or find_cleaning_candidates. plot_chart and make_mosaic return pictures; generate_report
 writes a whole report. Typical building: create_workspace (with its dataset), then add_experiment
 (a local results CSV) or search_mlflow_runs + add_mlflow_run.
+
+Datasets on their own: the CSVs of the team's shared dataset folders, whether or not a workspace uses
+them. list_datasets, then get_dataset (file, the MLflow run it came from, derivatives) and
+get_dataset_stats (class balance, sources, splits, checks); compare_datasets puts two side by side.
 
 Metrics are only comparable within one workspace: two workspaces usually have different datasets.
 Every answer carries a "warnings" list -- report those to the user along with the numbers -- and an
@@ -681,11 +686,82 @@ def export_reviewed_dataset(
                 excluded_uuids)
 
 
+DatasetName = Annotated[str, Field(description=(
+    "Dataset file name ('train.csv' or 'train'), its path from its shared folder's name "
+    "('datasets/train/train_clean.csv'), its absolute path, or its content hash."))]
+
+
+# ---- datasets: the shared folders ---------------------------------------------
+
+def list_datasets() -> str:
+    """List every dataset CSV of the shared dataset folders (independently of any workspace): name,
+    path, the main dataset it is derived from (if any), whether an MLflow run is linked to it, and --
+    when its statistics are already computed -- rows, classes and health (ok / warning / error)."""
+    return _run(dataset_tools.list_datasets)
+
+
+def get_dataset(dataset: DatasetName) -> str:
+    """Describe one dataset without reading it: path, size, content hash, the main dataset it
+    derives from and its own derivatives, the MLflow run it came from (with how sure the link is:
+    confirmed by hash, probable by name and size, or derived from its main dataset) and that run's
+    params, metrics and tags, and the workspaces that use it."""
+    return _run(dataset_tools.get_dataset, dataset)
+
+
+def get_dataset_stats(
+    dataset: DatasetName,
+    sections: Annotated[list[str] | None, Field(description=(
+        "Parts to return, among: " + ", ".join(dataset_tools.SECTIONS) + ". "
+        "Omit for classes, sources, splits and quality."))] = None,
+    top: Top = agent_tools.DEFAULT_TOP,
+) -> str:
+    """Statistics of one dataset: class balance (count, max/min ratio, normalized entropy, rare
+    classes, largest and smallest classes), the distribution of its source and split columns, the
+    class x source and class x split tables, every other column, and the checks (duplicate ids,
+    missing labels, missing crop files...). The first call on a dataset reads the whole CSV."""
+    return _run(dataset_tools.get_dataset_stats, dataset, sections, top)
+
+
+def compare_datasets(
+    dataset_a: Annotated[str, Field(description="The reference dataset (same naming as get_dataset).")],
+    dataset_b: Annotated[str, Field(description="The dataset compared against it.")],
+    top: Top = agent_tools.DEFAULT_TOP,
+) -> str:
+    """Compare two datasets: row counts, classes (and sources, splits) only one of them has, the
+    Jensen-Shannon divergence of their distributions and the largest changes of share, and through
+    their id columns how many rows they share and which labels changed on the shared rows."""
+    return _run(dataset_tools.compare_datasets, dataset_a, dataset_b, top)
+
+
+def find_dataset_issues(
+    dataset: Annotated[str | None, Field(description=(
+        "One dataset to check. Omit to list the issues of every dataset whose statistics are computed."))] = None,
+) -> str:
+    """The problems found in a dataset, worst first: missing crop files, duplicate ids, rows without
+    a label, duplicate rows, heavy imbalance, classes absent from a split, classes that come from a
+    single source."""
+    return _run(dataset_tools.find_dataset_issues, dataset)
+
+
+def get_dataset_rows(
+    dataset: DatasetName,
+    label: Annotated[str | None, Field(description="Only rows with this label.")] = None,
+    source: Annotated[str | None, Field(description="Only rows with this value in the source column.")] = None,
+    split: Annotated[str | None, Field(description="Only rows with this value in the split column.")] = None,
+    limit: Annotated[int, Field(description="Maximum number of rows to return.", ge=1,
+                                le=dataset_tools.MAX_ROWS)] = agent_tools.DEFAULT_TOP,
+) -> str:
+    """A few rows of a dataset, every column as text, optionally filtered by label, source and
+    split, with how many rows match in total."""
+    return _run(dataset_tools.get_dataset_rows, dataset, label, source, split, limit)
+
+
 READ_TOOLS = (
     list_workspaces, get_workspace, get_dataset_summary, get_column_stats, get_metrics, get_per_class,
     get_confusions, compare_experiments, get_slices, get_calibration, get_confidence, get_examples,
     find_cleaning_candidates, find_similar, get_review, get_snapshot, search_mlflow_runs, list_mlflow_run_files,
     plot_chart, make_mosaic, get_notes,
+    list_datasets, get_dataset, get_dataset_stats, compare_datasets, find_dataset_issues, get_dataset_rows,
 )
 WRITE_TOOLS = (
     generate_report, create_workspace, update_workspace, duplicate_workspace, delete_workspace, rename_group,

@@ -100,6 +100,9 @@ class Run:
     params: dict = field(default_factory=dict)
     metrics: dict = field(default_factory=dict)
     experiment_id: str = ""
+    # The run's own tags; MLflow's system tags ("mlflow.*") are left out,
+    # the useful ones among them are the fields above.
+    tags: dict = field(default_factory=dict)
 
     def label(self) -> str:
         return self.run_name or self.run_id[:8]
@@ -198,6 +201,7 @@ def _parse_run(r: dict) -> Run:
         params=params,
         metrics=metrics,
         experiment_id=str(info.get("experiment_id", "")),
+        tags={k: v for k, v in tags.items() if not k.startswith("mlflow.")},
     )
 
 
@@ -334,6 +338,12 @@ def _walk_artifacts(tracking_uri: str, run_id: str, suffixes: tuple, max_files: 
     for files in found.values():
         files.sort(key=lambda a: a.path.lower())
     return found
+
+
+def list_artifacts_by_suffix(tracking_uri: str, run_id: str, suffixes: tuple) -> dict:
+    """{suffix: [ArtifactFile]} for each of `suffixes` (matched on the end of
+    the path, so "hash.txt" finds a file of that name anywhere in the run)."""
+    return _walk_artifacts(tracking_uri, run_id, suffixes, MAX_FILES_PER_SUFFIX)
 
 
 def list_csv_artifacts(tracking_uri: str, run_id: str) -> list[ArtifactFile]:

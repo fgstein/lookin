@@ -5,6 +5,8 @@
     ...&tab=metrics                          then this tab
     ...&crop=<uuid>[&experiment=<name>]      then this crop, in the viewer,
                                              with that experiment's prediction
+    /?view=datasets&dataset=<path>           the Datasets page, on one dataset
+    ...&compare=<path>                       compared with another
 
 Built here rather than in the web package because the MCP endpoint hands
 them out too: an agent's "42 cats taken for dogs" is worth more with the
@@ -20,6 +22,10 @@ SNAPSHOT = "snapshot"
 TAB = "tab"
 CROP = "crop"
 EXPERIMENT = "experiment"
+VIEW = "view"
+VIEW_DATASETS = "datasets"
+DATASET = "dataset"
+COMPARE = "compare"
 
 # The server's own address, as the person reading a link reaches it. Set
 # once at startup (`lookin web --public-url`, or the address it binds);
@@ -48,4 +54,15 @@ def link(workspace_id: str = "", snapshot_id: str = "", tab: str = "", crop: str
         params.append((CROP, str(crop)))
         if experiment:
             params.append((EXPERIMENT, experiment))
+    return f"{_base_url}/?{urlencode(params)}"
+
+
+def dataset_link(dataset: str = "", compare: str = "") -> str:
+    """The address of the Datasets page, on one dataset (its absolute path),
+    and compared with a second one when `compare` is given."""
+    params = [(VIEW, VIEW_DATASETS)]
+    if dataset:
+        params.append((DATASET, dataset))
+        if compare:
+            params.append((COMPARE, compare))
     return f"{_base_url}/?{urlencode(params)}"

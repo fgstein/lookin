@@ -18,9 +18,13 @@ Sources tab in for every one of them:
     ["*_test.csv"]          # or by pattern; an exact name wins over one
     label = "true_class"
     root = "/data/test_images"
+    split = "fold"          # what the Datasets page breaks the classes down by
+    source = "camera"
 
 Keys: `id`, `image`, `label` (column names; `id = ""` says the file has no
-id column) and `root` (the folder crop paths are relative to). A table
+id column), `root` (the folder crop paths are relative to), and `split` and
+`source` (the columns the Datasets page crosses with the classes; without
+them it looks for columns named "split" and "source"). A table
 names only the keys it knows; the others come from [defaults], then from
 the guess. Only this one file name is read, so the user always knows where
 the answer came from.
@@ -35,7 +39,9 @@ from typing import Optional
 
 CONFIG_NAME = "lookin.toml"
 DEFAULTS_TABLE = "defaults"
-KEYS = ("id", "image", "label", "root")
+KEYS = ("id", "image", "label", "root", "split", "source")
+# Keys whose DatasetConfig field has another name (`source` is the file).
+FIELDS = {"split": "split_col", "source": "source_col"}
 
 
 @dataclass
@@ -46,10 +52,12 @@ class DatasetConfig:
     image: Optional[str] = None
     label: Optional[str] = None
     root: Optional[str] = None        # absolute
+    split_col: Optional[str] = None   # the `split` key
+    source_col: Optional[str] = None  # the `source` key
     error: str = ""                   # the file is there but unusable
 
     def any(self) -> bool:
-        return any(getattr(self, k) is not None for k in KEYS)
+        return any(getattr(self, FIELDS.get(k, k)) is not None for k in KEYS)
 
 
 def _table_values(table: dict, base: Path) -> dict:
@@ -64,7 +72,7 @@ def _table_values(table: dict, base: Path) -> dict:
                 continue
             path = Path(value).expanduser()
             value = str(path if path.is_absolute() else (base / path))
-        out[key] = value
+        out[FIELDS.get(key, key)] = value
     return out
 
 

@@ -459,6 +459,39 @@ loads a single CSV from a run into the session on screen.
 A bundled CIFAR-10-based example dataset loads by default so the tool is
 usable immediately.
 
+## Datasets: the shared folders
+
+The **Datasets** page (the button on Home's top bar) lists every dataset CSV
+of the folders you point it at -- typically a team's shared, read-only
+datasets folder -- and reads each one in the background, one at a time.
+Nothing is ever written there: content hashes and statistics are cached in
+`~/.cache/lookin/datasets/`, keyed by content, so a file is read again only
+when it changes.
+
+- **Derived datasets.** A CSV inside a folder named after another CSV
+  (`train.csv` and `train/train_clean.csv`) is listed under it, as derived
+  from it, and can be compared with it in one click.
+- **Where a dataset comes from.** Point the page at the MLflow experiments
+  that log your datasets (one run per dataset: the CSV and a `hash.txt` of
+  its content hash). A CSV is then traced back to its run by that hash --
+  *confirmed* -- or, failing that, by the run's CSV having the same name and
+  size -- *probable*. A derived CSV shows its main dataset's run. The run's
+  params, metrics and tags are shown with the dataset.
+- **Statistics.** Class balance first (max/min ratio, normalized entropy,
+  rare classes), then the distribution of the `source` and `split` columns
+  and the classes across both, the checks (duplicate ids, missing labels,
+  missing crop files, classes absent from a split, classes that come from
+  one source), and a small chart per other column. The `split` and `source`
+  columns are named in `lookin.toml` (keys `split` and `source`), else found
+  by name.
+- **Comparing two datasets.** Ctrl+click a second dataset: class, source and
+  split distributions side by side with their Jensen-Shannon divergence,
+  classes present on one side only, and -- through the id columns -- the
+  rows both share and the labels that changed on them.
+
+The folders and experiments are set in the page's settings and kept in
+`~/.config/lookin/datasets.json`.
+
 ## AI agents: the MCP endpoint
 
 `lookin web` also serves an [MCP](https://modelcontextprotocol.io) endpoint
@@ -495,6 +528,12 @@ The model needs to support tool calling (and images, for the pictures).
 | `get_review`, `get_snapshot` | review versions and their counts; one saved view |
 | `search_mlflow_runs`, `list_mlflow_run_files` | runs on the configured MLflow servers; the CSVs a run logged |
 | `get_notes` | the workspace's notes, as Markdown |
+| `list_datasets` | every dataset CSV of the shared folders: derivatives, MLflow link, rows, classes, health |
+| `get_dataset` | one dataset's file, content hash, MLflow run (and how sure the link is), derivatives, workspaces |
+| `get_dataset_stats` | class balance, sources, splits, class x source / split tables, columns, checks |
+| `compare_datasets` | two datasets: distribution changes, classes on one side only, shared rows, changed labels |
+| `find_dataset_issues` | the checks that failed, for one dataset or all of them |
+| `get_dataset_rows` | a few rows of a dataset, filtered by label, source or split |
 
 **Pictures and files** -- `plot_chart` draws any chart of the tabs (per-class
 bars, ROC/PR, confusion matrix, reliability, risk-coverage, a column, a
@@ -580,6 +619,20 @@ crop images under fresh uuids -- not meant to be committed):
 
 ```bash
 uv run python scripts/generate_stress_test.py --rows 120000 --experiments 5
+```
+
+Generate a load test with one real image per row -- by default 500,000
+synthetic 256x256 PNGs over 40 classes (a class is a coloured shape, e.g.
+`teal_star`), with metadata columns and three simulated models with
+embeddings. It takes about 4 GB, refuses to start if the disk is too
+small, and resumes where it stopped if interrupted. `scripts/demo.py` then
+shows it as two workspaces, one reading the files in place and one from the
+demo MLflow server, not downloaded yet:
+
+```bash
+uv run python scripts/generate_load_test.py --estimate-only   # disk needed, nothing written
+uv run python scripts/generate_load_test.py                   # into .load_test/ (git-ignored)
+uv run python scripts/demo.py
 ```
 
 ### Project layout

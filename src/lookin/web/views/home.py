@@ -893,8 +893,8 @@ class HomeView(View):
         self.s.open_dialog(RunsDialog(self.s))
 
     def on_all_datasets(self, **_):
-        from lookin.web.views.mlflow_dialogs import DatasetsDialog
-        self.s.open_dialog(DatasetsDialog(self.s))
+        from lookin.web.render import AppActions
+        AppActions(self.s).on_datasets()
 
     def on_refresh_server(self, uri: str = "", **_):
         self.hub.refresh(uri)
