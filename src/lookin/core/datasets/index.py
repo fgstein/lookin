@@ -29,7 +29,6 @@ from typing import Callable, Optional
 
 from lookin.core import fileio
 from lookin.core import mlflow_cache
-from lookin.core.dataset_config import CONFIG_NAME
 from lookin.core.datasets import catalog, compare as cmp, config as dcfg, mlflow_link, profile as prof
 
 FINGERPRINTS_FILE = "fingerprints.json"
@@ -45,16 +44,10 @@ def _cache_dir() -> Path:
     return mlflow_cache.user_cache_dir() / "datasets"
 
 
-def _toml_stamp(path: str) -> int:
-    try:
-        return (Path(path).parent / CONFIG_NAME).stat().st_mtime_ns
-    except OSError:
-        return 0
-
-
-def _roles_signature(roles: dict) -> str:
-    text = json.dumps({k: roles.get(k, "") for k in ("id", "image", "label", "split", "source", "root")},
-                      sort_keys=True)
+def _columns_signature(columns: dict) -> str:
+    """Which columns a profile was computed with: part of its cache key, so
+    changing the settings recomputes what they change, and only that."""
+    text = json.dumps({**columns, "version": prof.PROFILE_VERSION}, sort_keys=True)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
@@ -83,7 +76,7 @@ class DatasetIndex:
         self.files: list = []
         self.by_path: dict = {}
         self.scanned_at = 0.0
-        # path -> {"size", "mtime_ns", "toml", "hash", "roles"} (roles signature)
+        # path -> {"size", "mtime_ns", "hash"}: the content hash of a file as it was
         self.fingerprints: dict = self._load_fingerprints()
         self._profiles: OrderedDict = OrderedDict()     # "<hash>-<sig>" -> profile
         self.status: dict = {}                          # path -> (state, text)
@@ -123,7 +116,7 @@ class DatasetIndex:
 
     def rescan(self) -> list:
         cfg = self.reload_config()
-        files = catalog.scan(cfg.folders)
+        files = catalog.scan(cfg.folders, cfg.excluded)
         with self.lock:
             self.files = files
             self.by_path = {f.path: f for f in files}
@@ -183,7 +176,7 @@ class DatasetIndex:
         rec = self.fingerprints.get(path)
         if not rec or f is None:
             return None
-        if rec.get("size") != f.size or rec.get("mtime_ns") != f.mtime_ns or rec.get("toml") != _toml_stamp(path):
+        if rec.get("size") != f.size or rec.get("mtime_ns") != f.mtime_ns or not rec.get("hash"):
             return None
         return rec
 
@@ -201,7 +194,7 @@ class DatasetIndex:
         rec = self._record(path)
         if not rec:
             return None
-        key = f"{rec['hash']}-{rec['roles']}"
+        key = self._key(path, rec["hash"])
         with self.lock:
             hit = self._profiles.get(key)
             if hit is not None:
@@ -215,6 +208,12 @@ class DatasetIndex:
             return None
         self._remember(key, p)
         return p
+
+    def columns_for(self, path: str) -> dict:
+        return self.config.columns_for(path)
+
+    def _key(self, path: str, content_hash: str) -> str:
+        return f"{content_hash}-{_columns_signature(self.columns_for(path))}"
 
     def _remember(self, key: str, p: dict) -> None:
         with self.lock:
@@ -235,13 +234,8 @@ class DatasetIndex:
             if cached is not None:
                 return cached
             f = self.by_path.get(path)
-            toml = _toml_stamp(path)
-            roles = prof.resolve_roles(path)
-            if roles.error:
-                raise ValueError(roles.error)
-            p = prof.compute(path, roles, progress=progress)
-            sig = _roles_signature(p["roles"])
-            key = f"{p['hash']}-{sig}"
+            p = prof.compute(path, self.columns_for(path), progress=progress)
+            key = self._key(path, p["hash"])
             try:
                 target = self._profile_file(key)
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -251,8 +245,7 @@ class DatasetIndex:
             self._remember(key, p)
             if f is not None:
                 with self.lock:
-                    self.fingerprints[path] = {"size": f.size, "mtime_ns": f.mtime_ns, "toml": toml,
-                                               "hash": p["hash"], "roles": sig}
+                    self.fingerprints[path] = {"size": f.size, "mtime_ns": f.mtime_ns, "hash": p["hash"]}
                 self._save_fingerprints()
             return p
 
@@ -292,8 +285,8 @@ class DatasetIndex:
         """Forget what is known of `path` and profile it again, first."""
         with self.lock:
             rec = self.fingerprints.pop(path, None)
-            if rec:
-                self._profiles.pop(f"{rec['hash']}-{rec['roles']}", None)
+            if rec and rec.get("hash"):
+                self._profiles.pop(self._key(path, rec["hash"]), None)
             self.status.pop(path, None)
         self._save_fingerprints()
         self.request(path, first=True)
@@ -387,7 +380,7 @@ class DatasetIndex:
         inherited = mlflow_link.match(sources, parent.name, parent.size, self.hash_of(parent.path))
         if inherited.run is None:
             return own
-        return mlflow_link.Link(mlflow_link.LINK_DERIVED, inherited.run,
+        return mlflow_link.Link(mlflow_link.LINK_PARENT, inherited.run,
                                 f"Derived from {parent.name}, whose run this is ({inherited.status}).")
 
     # ---- comparison ---------------------------------------------------------

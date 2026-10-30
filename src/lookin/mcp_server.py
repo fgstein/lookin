@@ -55,7 +55,8 @@ writes a whole report. Typical building: create_workspace (with its dataset), th
 
 Datasets on their own: the CSVs of the team's shared dataset folders, whether or not a workspace uses
 them. list_datasets, then get_dataset (file, the MLflow run it came from, derivatives) and
-get_dataset_stats (class balance, sources, splits, checks); compare_datasets puts two side by side.
+get_dataset_stats (sources, splits, checks, and per mapping -- a label column; a dataset can have
+several -- class balance); compare_datasets puts two side by side.
 
 Metrics are only comparable within one workspace: two workspaces usually have different datasets.
 Every answer carries a "warnings" list -- report those to the user along with the numbers -- and an
@@ -703,23 +704,31 @@ def list_datasets() -> str:
 def get_dataset(dataset: DatasetName) -> str:
     """Describe one dataset without reading it: path, size, content hash, the main dataset it
     derives from and its own derivatives, the MLflow run it came from (with how sure the link is:
-    confirmed by hash, probable by name and size, or derived from its main dataset) and that run's
+    hash-matched: by content hash; name-matched: by file name and size only; parent-matched: the run of its main dataset) and that run's
     params, metrics and tags, and the workspaces that use it."""
     return _run(dataset_tools.get_dataset, dataset)
 
 
+Mapping = Annotated[str | None, Field(description=(
+    "A mapping: one of the dataset's label columns, as listed by get_dataset. Omit for every mapping."))]
+
+
 def get_dataset_stats(
     dataset: DatasetName,
+    mapping: Mapping = None,
     sections: Annotated[list[str] | None, Field(description=(
-        "Parts to return, among: " + ", ".join(dataset_tools.SECTIONS) + ". "
+        "Parts to return. Per mapping: " + ", ".join(dataset_tools.MAPPING_SECTIONS) + ". For the rows "
+        "whatever their labels: " + ", ".join(dataset_tools.INSTANCE_SECTIONS) + ". "
         "Omit for classes, sources, splits and quality."))] = None,
     top: Top = agent_tools.DEFAULT_TOP,
 ) -> str:
-    """Statistics of one dataset: class balance (count, max/min ratio, normalized entropy, rare
-    classes, largest and smallest classes), the distribution of its source and split columns, the
-    class x source and class x split tables, every other column, and the checks (duplicate ids,
-    missing labels, missing crop files...). The first call on a dataset reads the whole CSV."""
-    return _run(dataset_tools.get_dataset_stats, dataset, sections, top)
+    """Statistics of one dataset. A dataset can carry several mappings (label columns: several
+    labellings of the same rows, not every row labelled in each); per mapping: class balance (count,
+    max/min ratio, normalized entropy, rare classes, largest and smallest classes) and the class x
+    source and class x split tables. For the rows themselves: the distribution of the source and
+    split columns, every other column, and the checks (duplicate ids, rows, images). The first call
+    on a dataset reads the whole CSV."""
+    return _run(dataset_tools.get_dataset_stats, dataset, mapping, sections, top)
 
 
 def compare_datasets(
@@ -727,9 +736,10 @@ def compare_datasets(
     dataset_b: Annotated[str, Field(description="The dataset compared against it.")],
     top: Top = agent_tools.DEFAULT_TOP,
 ) -> str:
-    """Compare two datasets: row counts, classes (and sources, splits) only one of them has, the
-    Jensen-Shannon divergence of their distributions and the largest changes of share, and through
-    their id columns how many rows they share and which labels changed on the shared rows."""
+    """Compare two datasets: row counts; sources and splits; for every mapping both have, the classes
+    only one of them has, the Jensen-Shannon divergence of the class distributions and the largest
+    changes of share; and through their id columns how many rows they share and, per mapping, which
+    labels changed on the shared rows."""
     return _run(dataset_tools.compare_datasets, dataset_a, dataset_b, top)
 
 
@@ -745,15 +755,17 @@ def find_dataset_issues(
 
 def get_dataset_rows(
     dataset: DatasetName,
-    label: Annotated[str | None, Field(description="Only rows with this label.")] = None,
+    label: Annotated[str | None, Field(description="Only rows with this label (in `mapping`).")] = None,
+    mapping: Annotated[str | None, Field(description=(
+        "The label column `label` is looked up in; needed when the dataset has several."))] = None,
     source: Annotated[str | None, Field(description="Only rows with this value in the source column.")] = None,
     split: Annotated[str | None, Field(description="Only rows with this value in the split column.")] = None,
     limit: Annotated[int, Field(description="Maximum number of rows to return.", ge=1,
                                 le=dataset_tools.MAX_ROWS)] = agent_tools.DEFAULT_TOP,
 ) -> str:
-    """A few rows of a dataset, every column as text, optionally filtered by label, source and
-    split, with how many rows match in total."""
-    return _run(dataset_tools.get_dataset_rows, dataset, label, source, split, limit)
+    """A few rows of a dataset, every column as text, optionally filtered by label (in one mapping),
+    source and split, with how many rows match in total."""
+    return _run(dataset_tools.get_dataset_rows, dataset, label, mapping, source, split, limit)
 
 
 READ_TOOLS = (

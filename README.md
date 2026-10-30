@@ -463,33 +463,45 @@ usable immediately.
 
 The **Datasets** page (the button on Home's top bar) lists every dataset CSV
 of the folders you point it at -- typically a team's shared, read-only
-datasets folder -- and reads each one in the background, one at a time.
-Nothing is ever written there: content hashes and statistics are cached in
-`~/.cache/lookin/datasets/`, keyed by content, so a file is read again only
-when it changes.
+datasets folder -- grouped by the folder each one sits in, and reads each
+one in the background, one at a time. Nothing is ever written there:
+content hashes and statistics are cached in `~/.cache/lookin/datasets/`,
+keyed by content and columns, so a file is read again only when it or its
+settings change.
 
+- **Columns, from the settings.** Nothing is guessed from the values: the
+  id, image, split and source columns and the *mappings* -- the label
+  columns -- are set once for every dataset in the page's settings
+  (`mapped_class_label` by default), and can be overridden for one dataset
+  from its page. A dataset can carry several mappings (several labellings of
+  the same rows, each covering all or part of them); a column a file does
+  not have is simply absent.
+- **What is a dataset.** Every CSV of the folders but results CSVs, review
+  files and the paths matching the exclusion patterns of the settings (by
+  default `*/mappings/*` and `mappings/*`, the label mapping tables).
 - **Derived datasets.** A CSV inside a folder named after another CSV
   (`train.csv` and `train/train_clean.csv`) is listed under it, as derived
   from it, and can be compared with it in one click.
 - **Where a dataset comes from.** Point the page at the MLflow experiments
   that log your datasets (one run per dataset: the CSV and a `hash.txt` of
   its content hash). A CSV is then traced back to its run by that hash --
-  *confirmed* -- or, failing that, by the run's CSV having the same name and
-  size -- *probable*. A derived CSV shows its main dataset's run. The run's
+  *hash-matched* -- or, failing that, by the run's CSV having the same name
+  and size -- *name-matched*. A derived CSV shows its main dataset's run --
+  *parent-matched*. The run's
   params, metrics and tags are shown with the dataset.
-- **Statistics.** Class balance first (max/min ratio, normalized entropy,
-  rare classes), then the distribution of the `source` and `split` columns
-  and the classes across both, the checks (duplicate ids, missing labels,
-  missing crop files, classes absent from a split, classes that come from
-  one source), and a small chart per other column. The `split` and `source`
-  columns are named in `lookin.toml` (keys `split` and `source`), else found
-  by name.
-- **Comparing two datasets.** Ctrl+click a second dataset: class, source and
-  split distributions side by side with their Jensen-Shannon divergence,
-  classes present on one side only, and -- through the id columns -- the
-  rows both share and the labels that changed on them.
+- **Statistics, in tabs.** *Instances* holds what does not depend on a
+  labelling: the source and split distributions, the checks (duplicate ids,
+  rows and images, rows without an image path) and a small chart per other
+  column. Then one tab per mapping: class balance (max/min ratio,
+  normalized entropy, rare classes, unlabelled rows), the classes by source
+  and by split, and their checks (classes absent from a split, classes that
+  come from one source). The images themselves are never opened.
+- **Comparing two datasets.** Ctrl+click a second dataset: sources and
+  splits side by side, the rows both share through the id columns, and per
+  mapping the class distributions with their Jensen-Shannon divergence and
+  the labels that changed on the shared rows.
 
-The folders and experiments are set in the page's settings and kept in
+The folders, patterns, columns and experiments are kept in
 `~/.config/lookin/datasets.json`.
 
 ## AI agents: the MCP endpoint
@@ -530,10 +542,10 @@ The model needs to support tool calling (and images, for the pictures).
 | `get_notes` | the workspace's notes, as Markdown |
 | `list_datasets` | every dataset CSV of the shared folders: derivatives, MLflow link, rows, classes, health |
 | `get_dataset` | one dataset's file, content hash, MLflow run (and how sure the link is), derivatives, workspaces |
-| `get_dataset_stats` | class balance, sources, splits, class x source / split tables, columns, checks |
-| `compare_datasets` | two datasets: distribution changes, classes on one side only, shared rows, changed labels |
+| `get_dataset_stats` | sources, splits, columns, checks; per mapping: class balance, class x source / split tables |
+| `compare_datasets` | two datasets: shared rows; per mapping, distribution changes, classes on one side only, changed labels |
 | `find_dataset_issues` | the checks that failed, for one dataset or all of them |
-| `get_dataset_rows` | a few rows of a dataset, filtered by label, source or split |
+| `get_dataset_rows` | a few rows of a dataset, filtered by label (in a mapping), source or split |
 
 **Pictures and files** -- `plot_chart` draws any chart of the tabs (per-class
 bars, ROC/PR, confusion matrix, reliability, risk-coverage, a column, a

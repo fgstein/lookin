@@ -59,8 +59,6 @@ PAGES = (
                     ("image", "the column holding the path to each crop"),
                     ("label", "the column holding the true class"),
                     ("root", "the folder those paths are relative to; itself relative to lookin.toml's folder unless absolute"),
-                    ("split", "the column the Datasets page crosses the classes with as splits (default: a column named split)"),
-                    ("source", "the column it crosses them with as sources (default: a column named source)"),
                 ),
                 weights=(1, 5),
             ),
@@ -335,14 +333,60 @@ PAGES = (
         keywords=("statistics", "histogram", "distribution", "column", "class balance"),
     ),
     ManualPage(
+        id="dataset-columns",
+        title="The columns of the datasets, and their mappings",
+        summary=(
+            "The Datasets page reads every dataset with the same columns, set once in its settings: the "
+            "id, the image path, the split, the source, and the mappings -- the label columns. Nothing is "
+            "guessed from the values. A dataset that names its columns differently can be given columns "
+            "of its own."
+        ),
+        shown_in="Datasets page, settings, and Columns on a dataset",
+        blocks=(
+            Table(
+                headers=("Column", "What it is used for"),
+                rows=(
+                    ("Id", "duplicate ids; rows shared by two compared datasets, and labels changed on them"),
+                    ("Image", "rows without an image path, and images two rows share"),
+                    ("Split", "the distribution of splits, and the classes by split of each mapping"),
+                    ("Source", "the distribution of sources, and the classes by source of each mapping"),
+                    ("Mappings", "the label columns: one tab each, with its classes"),
+                ),
+                weights=(1, 5),
+            ),
+            Heading("Mappings"),
+            Para(
+                "One dataset can carry several labellings of the same rows -- a fine label and a coarse "
+                "one, or the classes of two taxonomies -- each in a column of its own. Every mapping of "
+                "the settings that a dataset has gets a tab, with its class balance, its classes by source "
+                "and by split, and its checks. A row with an empty cell in a mapping is simply not labelled "
+                "in it: it is counted as such, not as an error, and left out of that mapping's shares."
+            ),
+            Para(
+                "A column of the settings that a file does not have is absent from it, and said so under "
+                "Columns. Columns of its own (Edit... beside Columns) replace only the ones they name: a "
+                "later change of the common settings still reaches the others."
+            ),
+            Heading("Which CSVs are datasets"),
+            Para(
+                "Every CSV of the shared folders, except results CSVs, review files, and the ones whose path "
+                "in the folder matches a pattern of the settings -- by default */mappings/* and mappings/*, "
+                "the label mapping tables kept beside the datasets. A star matches anything, slashes included."
+            ),
+        ),
+        see_also=("dataset-class-balance", "dataset-groups", "dataset-quality"),
+        keywords=("columns", "mapping", "label column", "settings", "override", "exclude"),
+    ),
+    ManualPage(
         id="dataset-class-balance",
         title="Class balance of a dataset",
         summary=(
-            "How the rows of a dataset are shared out between its classes, summed up in three numbers: "
-            "the ratio of the largest class to the smallest, the normalized entropy of the class "
-            "distribution, and how many classes are too small to learn or measure."
+            "How the rows of a dataset are shared out between the classes of one mapping (one label "
+            "column), summed up in three numbers: the ratio of the largest class to the smallest, the "
+            "normalized entropy of the class distribution, and how many classes are too small to learn "
+            "or measure."
         ),
-        shown_in="Datasets page, Class balance",
+        shown_in="Datasets page, a mapping's tab, Class balance",
         blocks=(
             Heading("The three numbers"),
             Equation(r"\mathrm{imbalance} = \frac{n_{\max}}{n_{\min}}", where=(
@@ -371,7 +415,7 @@ PAGES = (
             HowToRead(items=(
                 ("Bars", "one per class, largest first; the length is the class's number of rows"),
                 ("Share", "the class's part of the labelled rows"),
-                ("Missing labels", "rows with an empty label cell; they belong to no class"),
+                ("No label", "rows with an empty cell in this mapping; they belong to no class of it, and are not counted in the shares"),
             )),
             Callout(CALLOUT_PITFALL, "Only an empty cell is a missing label", (
                 Para("A class called None or NA is a class: it is counted, not dropped."),
@@ -393,9 +437,9 @@ PAGES = (
         blocks=(
             Heading("Which columns"),
             Para(
-                "The source and split columns are named in the lookin.toml beside the CSV (keys source "
-                "and split, see how the dataset and the results are joined). Without it, a column named "
-                "source (or origin) and a column named split (or subset, fold) are used."
+                "The source and split columns are the ones named in the Datasets page's settings (see the "
+                "columns of the datasets). The distribution of each is on the Instances tab; the tables "
+                "below are on each mapping's tab, one row per class of that mapping."
             ),
             HowToRead(items=(
                 ("A row", "one class, largest first"),
@@ -418,21 +462,20 @@ PAGES = (
         title="Dataset checks",
         summary=(
             "What is checked in every dataset CSV, without opening a single image: ids that repeat, "
-            "rows without a label, crops that two rows share, exact duplicate rows, and whether the crop "
-            "paths actually exist."
+            "images that two rows share, exact duplicate rows, rows without an image path -- and, per "
+            "mapping, how the classes are balanced and spread."
         ),
-        shown_in="Datasets page, Checks",
+        shown_in="Datasets page, Checks (Instances tab, and each mapping's tab)",
         blocks=(
             Table(
                 headers=("Check", "Severity", "Why it matters"),
                 rows=(
-                    ("No label column found", "error", "nothing can be counted per class; name it in lookin.toml"),
-                    ("Crop paths that do not exist", "error", "checked on 200 rows spread over the file, relative to the root in lookin.toml or to the CSV's folder"),
                     ("Repeated ids", "error", "the join with the results matches one id to several rows"),
-                    ("Rows without a label", "warning", "left out of every metric"),
-                    ("Two rows on one crop", "warning", "the same image counted twice, possibly under two labels"),
+                    ("None of the mappings of the settings", "warning", "nothing can be counted per class; give this dataset columns of its own if it names them differently"),
+                    ("Two rows on one image", "warning", "the same image counted twice, possibly under two labels"),
                     ("Exact duplicate rows", "warning", "usually a concatenation done twice"),
-                    ("Rows without a crop path", "warning", "nothing to show in the Gallery"),
+                    ("Rows without an image path", "warning", "nothing to show in the Gallery"),
+                    ("Rows without a label in a mapping", "info", "normal for a mapping that covers part of the rows; they are left out of that mapping's numbers"),
                     ("Large imbalance, rare classes", "warning, info", "see class balance of a dataset"),
                     ("Class absent from a split, single-source classes", "warning, info", "see classes across sources and splits"),
                 ),
@@ -452,7 +495,7 @@ PAGES = (
         summary=(
             "The shared folders hold copies of datasets logged to MLflow, one run per dataset with the "
             "CSV and a hash.txt holding the hash of its content. A CSV is traced back to its run by that "
-            "hash; when no hash matches, a run whose CSV has the same name and size is shown as probable."
+            "hash; when no hash matches, a run whose CSV has the same name and size is shown as name-matched."
         ),
         shown_in="Datasets page, the MLflow column and the run of a dataset",
         blocks=(
@@ -467,9 +510,9 @@ PAGES = (
             Table(
                 headers=("Link", "Meaning"),
                 rows=(
-                    ("confirmed", "the file's content hash is the hash.txt of a run"),
-                    ("probable", "no hash matches, but a run's CSV has the same file name and the same size in bytes"),
-                    ("derived", "the file sits in the folder named after a main dataset and has no run of its own; the run shown is its main dataset's"),
+                    ("hash-matched", "the file's content hash is the hash.txt of a run: the same content, proven"),
+                    ("name-matched", "no hash matches, but a run's CSV has the same file name and the same size in bytes: very likely the same file, not proven"),
+                    ("parent-matched", "the file sits in the folder named after a main dataset and has no run of its own; the run shown is its main dataset's"),
                     ("none", "no run of the datasets experiments matches"),
                 ),
                 weights=(1, 5),
@@ -479,9 +522,9 @@ PAGES = (
                 "hash.txt downloaded when Refresh is pressed; the listing is kept, so the links still "
                 "show when the server cannot be reached."
             ),
-            Callout(CALLOUT_WARNING, "A probable link is a guess", (
+            Callout(CALLOUT_WARNING, "A name match is a guess", (
                 Para(
-                    "The same name and size can be a different file. If many datasets stay probable "
+                    "The same name and size can be a different file. If many datasets stay name-matched "
                     "after their hash is computed, the hash in hash.txt is probably computed differently "
                     "from Lookin's."
                 ),

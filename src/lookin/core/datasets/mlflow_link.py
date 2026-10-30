@@ -6,8 +6,8 @@ the CSV and a hash.txt with its content hash (fingerprint.dataset_hash).
 The CSV is then copied into the shared folder by hand, so nothing on disk
 says which run it came from -- the hash does:
 
-* **confirmed** -- the file's content hash is the hash.txt of a run;
-* **probable**  -- no hash matches, but a run's CSV artifact has the same
+* **hash-matched** -- the file's content hash is the hash.txt of a run;
+* **name-matched** -- no hash matches, but a run's CSV artifact has the same
   file name and the same size in bytes (a hash computed differently, or a
   run logged before hash.txt existed).
 
@@ -35,9 +35,9 @@ HASH_FILE = "hash.txt"
 INDEX_FILE = "mlflow_index.json"
 PARALLEL_RUNS = 4
 
-LINK_CONFIRMED = "confirmed"
-LINK_PROBABLE = "probable"
-LINK_DERIVED = "derived"      # no run of its own; its main dataset has one
+LINK_HASH = "hash-matched"
+LINK_NAME = "name-matched"      # same file name and size: likely, not proven
+LINK_PARENT = "parent-matched"  # no run of its own; its main dataset has one
 LINK_NONE = ""
 
 
@@ -187,7 +187,7 @@ def match(index: dict, name: str, size: int, content_hash: str = "") -> Link:
     if content_hash:
         for r in runs:
             if r.hash and r.hash == content_hash:
-                return Link(LINK_CONFIRMED, r, "Same content hash as the run's hash.txt.")
+                return Link(LINK_HASH, r, "Same content hash as the run's hash.txt.")
     for r in runs:
         if r.csv_path and r.csv_name() == name and r.csv_size is not None and int(r.csv_size) == int(size):
             if not content_hash:
@@ -196,5 +196,5 @@ def match(index: dict, name: str, size: int, content_hash: str = "") -> Link:
                 why = "but the file's content hash differs from the run's hash.txt"
             else:
                 why = "the run has no hash.txt to check the content against"
-            return Link(LINK_PROBABLE, r, f"Same file name and size as the run's CSV; {why}.")
+            return Link(LINK_NAME, r, f"Same file name and size as the run's CSV; {why}.")
     return Link()

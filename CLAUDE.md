@@ -73,12 +73,15 @@ Keys that are compared somewhere and must never be reworded:
 - review statuses and reasons (`core/review.py`): `ok`, `relabel`, `exclude`,
   `uncertain`, `blurred`, ... -- written into the review files and accepted
   as is by the MCP tools; their labels live in `core/review_actions.py`
-- the dataset manager (`core/datasets/`): MLflow link statuses
-  (`mlflow_link.LINK_*`: `confirmed`, `probable`, `derived`, also CSS
-  classes), issue severities and codes in `profile.py` (`error`, `warning`,
-  `info`; `duplicate_ids`, ...), the MCP `sections` of
-  `agent.SECTIONS`, and the page's sort keys (`web/views/datasets.py`
-  `SORTS`)
+- the dataset manager (`core/datasets/`): the column roles of
+  `config.ROLE_*` (`id`, `image`, `split`, `source`, `mappings` -- keys of
+  datasets.json, also stored per dataset in its overrides), MLflow link
+  statuses (`mlflow_link.LINK_*`: `hash-matched`, `name-matched`, `parent-matched`, also
+  CSS classes), issue severities and codes in `profile.py` (`error`,
+  `warning`, `info`; `duplicate_ids`, ...), the MCP `sections` of
+  `agent.SECTIONS`, and the page's keys in `web/views/datasets.py`
+  (`SORTS`, `GROUP_BY`, `TAB_INSTANCES`; the other tabs are keyed by the
+  mapping's own column name)
 - class labels themselves come from the user's CSV: never translate or
   normalize them
 - manual page ids (`core/manual/pages_*.py`, e.g. `f1`, `roc-auc`): every
