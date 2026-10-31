@@ -266,6 +266,10 @@ button.chip { cursor: pointer; }
 button.chip:hover { border-color: var(--acc); }
 .chip.on { border-color: var(--acc); background: var(--acc-soft); color: var(--acc-ink); }
 .chip.off { color: var(--faint); background: var(--surface-2); }
+a.chip { text-decoration: none; cursor: pointer; }
+a.chip:hover { border-color: var(--acc); }
+.th-chip { max-width: 22em; color: var(--acc-ink); }
+.th-chip > span { min-width: 0; }
 .dot { display: inline-block; border-radius: 50%; flex: none; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: var(--r-s); overflow: hidden; flex: none; }
 .seg-b { height: 26px; padding: 0 10px; border: 0; border-left: 1px solid var(--line); background: var(--surface); font: inherit; font-size: 12px; cursor: pointer; color: var(--ink); white-space: nowrap; }

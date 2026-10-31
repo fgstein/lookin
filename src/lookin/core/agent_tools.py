@@ -220,6 +220,18 @@ def list_workspaces() -> dict:
             "groups": sorted({g for g in groups.values() if g}), "workspaces": workspaces}
 
 
+def _trainhub_links(run_id: str) -> list:
+    """Where TrainHub shows this MLflow run (its runs, checkpoints and
+    inferences), each with the address of that page -- [] when no TrainHub
+    is configured or it does not answer (see core/trainhub_links.py)."""
+    from lookin.core.trainhub_links import TrainhubIndex
+
+    index = TrainhubIndex.get()
+    if not index.fetched_at and not index.error:
+        index.refresh(wait=10.0)       # the first call: worth a short wait
+    return [link.as_dict() for link in index.links(run_id)]
+
+
 def get_workspace(workspace_id: str) -> dict:
     w = find_workspace(workspace_id)
     m = w.mount
@@ -230,7 +242,7 @@ def get_workspace(workspace_id: str) -> dict:
         if e.from_mlflow():
             item.update(mlflow_run_id=e.mlflow_run_id, mlflow_run_name=e.mlflow_run_name,
                         mlflow_experiment_id=e.mlflow_experiment_id, mlflow_server=e.mlflow_uri,
-                        artifact=e.artifact_path)
+                        artifact=e.artifact_path, trainhub=_trainhub_links(e.mlflow_run_id))
         else:
             item["results_csv"] = e.path
         experiments.append(item)
@@ -468,6 +480,7 @@ def search_mlflow_runs(filter: str = "", experiment_names: list | None = None, s
                 "params": dict(r.params),
                 "metrics": dict(r.metrics),
                 "in_workspaces": sorted(in_workspaces.get(r.run_id, ())),
+                "trainhub": _trainhub_links(r.run_id),
             })
     runs.sort(key=lambda r: r["start_time"] or "", reverse=True)
     out = {"filter": filter or "", "n_found": len(runs), "truncated": truncated or len(runs) > limit,
@@ -475,6 +488,24 @@ def search_mlflow_runs(filter: str = "", experiment_names: list | None = None, s
     if errors:
         out["errors"] = errors
     return _clean(out)
+
+
+def get_mlflow_run_links(run_ids: list) -> dict:
+    """For each MLflow run id: the workspaces made from it, and where
+    TrainHub shows it."""
+    from lookin.core import run_links
+
+    ids = [str(r).strip() for r in run_ids or [] if str(r).strip()]
+    if not ids:
+        raise ValueError("Give at least one MLflow run id.")
+    workspaces = lib.list_workspaces()
+    in_workspaces = run_links.workspaces_by_run(workspaces, _group_names(workspaces), ids)
+    return _clean({"runs": {
+        run_id: {
+            "workspaces": [{k: v for k, v in e.items() if k != "path"} for e in in_workspaces.get(run_id, [])],
+            "trainhub": _trainhub_links(run_id),
+            "new_workspace_url": links.run_link(run_id),
+        } for run_id in ids}})
 
 
 def list_mlflow_run_files(run_id: str, server: str | None = None) -> dict:
