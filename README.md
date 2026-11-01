@@ -459,6 +459,35 @@ loads a single CSV from a run into the session on screen.
 A bundled CIFAR-10-based example dataset loads by default so the tool is
 usable immediately.
 
+## TrainHub: the runs, checkpoints and inferences behind an experiment
+
+[TrainHub](https://github.com/fgstein/hub) launches and monitors the
+trainings and inferences whose results Lookin explores. The two link each
+other through the **MLflow run id** alone -- nothing is tagged, so a run
+started by hand links exactly like one TrainHub launched:
+
+- **TrainHub -> Lookin.** Next to each inference (and each run) TrainHub
+  shows, a badge per Lookin workspace made from the same MLflow run opens
+  it; its **Lookin** button opens
+  `/?mlflow_run=<run id>&mlflow_server=<tracking uri>` here: Home, with the
+  run found on your MLflow servers (the hinted one first; one you have not
+  added is offered, never dialled on its own), the workspaces already using
+  it, and a choice of a new workspace or an existing one. The run's files
+  are then downloaded and the workspace opens in that tab. TrainHub reads
+  `GET /api/links/mlflow-runs` (read-only JSON: for each run id, the
+  workspaces using it and the link to each).
+- **Lookin -> TrainHub.** Given TrainHub's address -- `lookin web
+  --trainhub-url http://trainhub.lab:8420`, `$LOOKIN_TRAINHUB_URL`, or the
+  **TrainHub** chip on Home (saved as `trainhub_url` in `home_view.json`) --
+  every experiment made from an MLflow run TrainHub shows gets a
+  **TrainHub** badge (Home's workspace rows and runs list, the Sources tab)
+  that opens it there: the run it launched, the run directory of the
+  training, or the inference made with a checkpoint. TrainHub's token, if it
+  has one, goes in `$LOOKIN_TRAINHUB_TOKEN`. Read every 30 s on a worker
+  thread; a TrainHub that does not answer costs the badges, nothing else.
+- **Agents.** `get_mlflow_run_links` answers both for a list of run ids;
+  `get_workspace` and `search_mlflow_runs` carry a `trainhub` list.
+
 ## Datasets: the shared folders
 
 The **Datasets** page (the button on Home's top bar) lists every dataset CSV
@@ -539,6 +568,7 @@ The model needs to support tool calling (and images, for the pictures).
 | `find_cleaning_candidates`, `find_similar` | the Cleaning tab's candidate search; nearest crops in embedding space |
 | `get_review`, `get_snapshot` | review versions and their counts; one saved view |
 | `search_mlflow_runs`, `list_mlflow_run_files` | runs on the configured MLflow servers; the CSVs a run logged |
+| `get_mlflow_run_links` | for MLflow run ids: the workspaces made from them, where TrainHub shows them, the link to a new workspace |
 | `get_notes` | the workspace's notes, as Markdown |
 | `list_datasets` | every dataset CSV of the shared folders: derivatives, MLflow link, rows, classes, health |
 | `get_dataset` | one dataset's file, content hash, MLflow run (and how sure the link is), derivatives, workspaces |
@@ -690,7 +720,7 @@ serves comes from anywhere else:
   and sent as images; the Embeddings map is drawn on a canvas by
   `static/js/projection.js`.
 - Nothing is installed or downloaded at runtime. The only outbound calls
-  are to the MLflow servers you configure yourself.
+  are to the MLflow servers and the TrainHub server you configure yourself.
 
 You can confirm this by opening your browser's Network tab while running
 `lookin web`: every request stays on the Lookin server.

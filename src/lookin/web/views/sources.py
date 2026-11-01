@@ -41,6 +41,7 @@ from lookin.core.chart_style import color_for_experiment
 from lookin.web import html as h
 from lookin.web.views.base import View
 from lookin.web.views.files import FileBrowserDialog
+from lookin.web.views.trainhub import badges as trainhub_badges
 from lookin.web.views.widgets import experiment_color_menu
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
@@ -123,6 +124,11 @@ class SourcesView(View):
 
     def __init__(self, session):
         super().__init__(session)
+        # The TrainHub badges of MLflow experiments, when its index moves.
+        from lookin.core.trainhub_links import TrainhubIndex
+        key = (session.sid, self.name)
+        TrainhubIndex.get().subscribe(key, self.refresh)
+        session.on_close(lambda: TrainhubIndex.get().unsubscribe(key))
         self.dataset_path = str(EXAMPLE_DATASET) if not session.app.dataset else session.app.dataset
         self.uuid_value = "uuid"
         self.crop_value = "crop"
@@ -541,6 +547,9 @@ class SourcesView(View):
             link = (f' · <a href="{h.e(url)}" target="_blank" rel="noopener">Open in MLflow</a>' if url else "")
             files += (f'<div class="muted small" style="margin-top:4px">MLflow: {h.e(origin.mlflow_uri)} › '
                       f'{h.e(origin.mlflow_run_name or origin.mlflow_run_id)} › {h.e(origin.artifact_path)}{link}</div>')
+            trainhub = trainhub_badges(origin.mlflow_run_id)
+            if trainhub:
+                files += f'<div class="row-wrap" style="gap:4px;margin-top:4px">{trainhub}</div>'
         original = self._original_name(row, origin)
         if original and original != row.name:
             files = (f'<div class="small" style="margin-bottom:4px"><span class="muted">Original name</span> '

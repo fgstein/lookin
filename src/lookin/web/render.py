@@ -148,7 +148,8 @@ def boot(session, query: dict) -> None:
 def _route(session, query: dict) -> None:
     """?snapshot=lk-... or ?workspace=lkw-... -- the id someone pasted, or
     how every Open button opens a workspace: in a tab of its own. Then
-    ?tab= and ?crop= (see core/links.py), once it is open."""
+    ?tab= and ?crop= (see core/links.py), once it is open. ?mlflow_run=
+    opens Home with that run ready to go in a workspace."""
     from lookin.core import library as lib
     from lookin.core import links
 
@@ -160,6 +161,14 @@ def _route(session, query: dict) -> None:
     tab, crop, experiment = arg(links.TAB), arg(links.CROP), arg(links.EXPERIMENT)
     then = (lambda: _open_extras(session, tab, crop, experiment)) if (tab or crop) else None
     if not snapshot_id and not workspace_id:
+        if arg(links.MLFLOW_RUN):
+            from lookin.web.views.run_link import open_run_link
+
+            if session.mode != "home":
+                session.mode = "home"
+                session.mark("page")
+            open_run_link(session, arg(links.MLFLOW_RUN), arg(links.MLFLOW_SERVER), arg(links.ARTIFACT))
+            return
         if arg(links.VIEW) == links.VIEW_DATASETS:
             view = session.view("datasets")
             if session.mode != "datasets":

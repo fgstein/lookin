@@ -39,6 +39,12 @@ def main(argv: list[str] | None = None) -> None:
              "gateway): links handed out by the MCP endpoint start with it.",
     )
     web_parser.add_argument(
+        "--trainhub-url", default=None, metavar="URL",
+        help="A TrainHub server (e.g. http://trainhub.lab:8420): experiments made from an MLflow run it "
+             "launched or lists get a badge that opens it there. Wins over $LOOKIN_TRAINHUB_URL and the "
+             "Home page's setting; its token, if it has one, goes in $LOOKIN_TRAINHUB_TOKEN.",
+    )
+    web_parser.add_argument(
         "--no-mcp", action="store_false", dest="mcp",
         help="Do not serve the MCP endpoint for AI agents (served at /mcp on the same port by default).",
     )
@@ -63,7 +69,7 @@ def main(argv: list[str] | None = None) -> None:
         from lookin.web.server import run_web  # deferred: keep `lookin --help` fast and dependency-light
         run_web(host=args.host, port=args.port, dataset=args.dataset, experiments=experiments,
                 library_dir=args.library, enable_mcp=args.mcp, mcp_read_only=args.mcp_read_only,
-                public_url=args.public_url)
+                public_url=args.public_url, trainhub_url=args.trainhub_url)
     else:
         parser.print_help()
 

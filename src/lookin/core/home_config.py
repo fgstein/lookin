@@ -24,8 +24,13 @@ The shape, with every key optional::
       },
       "columns": [{"key": "params.backbone", "label": "backbone"},
                   {"key": "metrics.val_acc"}],
-      "parallel_requests": 4
+      "parallel_requests": 4,
+      "trainhub_url": "http://trainhub.lab:8420"
     }
+
+"trainhub_url" is the TrainHub server whose runs, checkpoints and
+inferences get a badge next to the experiments made from the same MLflow
+runs (see core/trainhub_links.py); "" for none.
 
 Experiments are named, not numbered: a name is what someone editing this
 file by hand can read, and MLflow keeps names unique per server. Hidden
@@ -86,6 +91,7 @@ def default_config(tracking_uri: str = "") -> dict:
         "runs": {"hidden": [], "show_unsuccessful": False, "search": "", "filter": ""},
         "columns": [],
         "parallel_requests": DEFAULT_PARALLEL_REQUESTS,
+        "trainhub_url": "",
     }
 
 
@@ -115,6 +121,9 @@ def normalize(raw) -> dict:
     cfg["servers"] = servers
     if isinstance(raw.get("dataset_param"), str):
         cfg["dataset_param"] = raw["dataset_param"].strip()
+    trainhub = raw.get("trainhub_url")
+    if isinstance(trainhub, str) and trainhub.strip().lower().startswith(("http://", "https://")):
+        cfg["trainhub_url"] = normalize_uri(trainhub)
     experiments = raw.get("experiments")
     if isinstance(experiments, dict):
         for uri, entry in experiments.items():
@@ -387,6 +396,16 @@ class HomeConfig:
     @property
     def dataset_param(self) -> str:
         return self.data.get("dataset_param", DEFAULT_DATASET_PARAM)
+
+    @property
+    def trainhub_url(self) -> str:
+        return self.data.get("trainhub_url", "")
+
+    @_mutator
+    def set_trainhub_url(self, url: str) -> None:
+        url = normalize_uri(url)
+        self.data["trainhub_url"] = url if url.lower().startswith(("http://", "https://")) else ""
+        self.save()
 
 
 def column_label(column: dict) -> str:

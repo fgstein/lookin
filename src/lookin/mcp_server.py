@@ -140,7 +140,8 @@ def list_workspaces() -> str:
 def get_workspace(workspace_id: WorkspaceId) -> str:
     """Describe one workspace without computing anything: its dataset (path, columns, split, row
     filter, dataset filter, review version), its experiments (with their MLflow run when they come from
-    one, and whether they are downloaded), and its saved snapshots with their links."""
+    one, whether they are downloaded, and `trainhub`: where TrainHub -- the tool that launches the
+    trainings and inferences -- shows that run, with links), and its saved snapshots with their links."""
     return _run(agent_tools.get_workspace, workspace_id)
 
 
@@ -329,9 +330,20 @@ def search_mlflow_runs(
                                       le=agent_tools.MAX_RUNS)] = agent_tools.DEFAULT_MAX_RUNS,
 ) -> str:
     """Search training runs on the MLflow servers configured in Lookin, most recent first: run id
-    and name, experiment, status, start time, params, metrics, and the Lookin workspaces each run is
-    already part of."""
+    and name, experiment, status, start time, params, metrics, the Lookin workspaces each run is
+    already part of, and where TrainHub shows it (`trainhub`, when a TrainHub is configured)."""
     return _run(agent_tools.search_mlflow_runs, filter, experiment_names, server, max_results)
+
+
+def get_mlflow_run_links(
+    run_ids: Annotated[list[str], Field(description="MLflow run ids, e.g. from TrainHub or search_mlflow_runs.")],
+) -> str:
+    """For each MLflow run id: the Lookin workspaces made from it (id, name, group, experiment name,
+    open_url), where TrainHub -- the tool that launches and monitors the trainings and inferences --
+    shows it (a run it launched, a run directory of its checkpoints, an inference made with a checkpoint;
+    each with a link), and the link that offers to put the run in a new workspace. The MLflow run id is
+    the only link between the two tools: no tag is needed."""
+    return _run(agent_tools.get_mlflow_run_links, run_ids)
 
 
 def list_mlflow_run_files(
@@ -772,7 +784,7 @@ READ_TOOLS = (
     list_workspaces, get_workspace, get_dataset_summary, get_column_stats, get_metrics, get_per_class,
     get_confusions, compare_experiments, get_slices, get_calibration, get_confidence, get_examples,
     find_cleaning_candidates, find_similar, get_review, get_snapshot, search_mlflow_runs, list_mlflow_run_files,
-    plot_chart, make_mosaic, get_notes,
+    get_mlflow_run_links, plot_chart, make_mosaic, get_notes,
     list_datasets, get_dataset, get_dataset_stats, compare_datasets, find_dataset_issues, get_dataset_rows,
 )
 WRITE_TOOLS = (
@@ -784,8 +796,9 @@ WRITE_TOOLS = (
 )
 TOOLS = READ_TOOLS + WRITE_TOOLS
 DESTRUCTIVE_TOOLS = (delete_workspace, delete_snapshot, remove_experiment, undo_review_batch)
-# The tools that reach outside Lookin, to the MLflow servers the user configured.
-OPEN_WORLD_TOOLS = (search_mlflow_runs, list_mlflow_run_files, add_mlflow_run, download_workspace)
+# The tools that reach outside Lookin, to the MLflow and TrainHub servers the user configured.
+OPEN_WORLD_TOOLS = (search_mlflow_runs, list_mlflow_run_files, get_mlflow_run_links, add_mlflow_run,
+                    download_workspace)
 
 
 def build_server(read_only: bool = False):

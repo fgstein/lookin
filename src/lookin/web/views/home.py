@@ -28,12 +28,15 @@ from lookin.core import library as lib
 from lookin.core import mlflow_cache
 from lookin.core import mlflow_client as mlf
 from lookin.core import workspace_sources as wss
+from lookin.core.trainhub_links import TrainhubIndex
 from lookin.web.home_model import csv_key, parse_key, run_key, workspace_color
 from lookin.web import html as h
 from lookin.web.home_index import HomeIndex, hash_dataset_later
 from lookin.web.mlflow_hub import MlflowHub
 from lookin.web.views.base import ConfirmDialog, Dialog, PromptDialog, View
 from lookin.web.views.files import FileBrowserDialog, menu
+from lookin.web.views.trainhub import badges as trainhub_badges
+from lookin.web.views.trainhub import status_chip as trainhub_chip
 
 GROUP_PAGE = 25
 # Home is redrawn at most this often by what happens elsewhere (an MLflow
@@ -117,7 +120,9 @@ class HomeView(View):
         self._mark_lock = threading.Lock()
         self.hub.subscribe(session.sid, self._hub_changed)
         self.index.subscribe(session.sid, self._index_changed)
-        session.on_close(lambda: (self.hub.unsubscribe(session.sid), self.index.unsubscribe(session.sid)))
+        TrainhubIndex.get().subscribe(session.sid, self._redraw)
+        session.on_close(lambda: (self.hub.unsubscribe(session.sid), self.index.unsubscribe(session.sid),
+                                  TrainhubIndex.get().unsubscribe(session.sid)))
         self.index.ensure(self.hub)
 
     @property
@@ -398,6 +403,7 @@ class HomeView(View):
                 state = h.dot("var(--ok)" if downloaded else "var(--ghost)", "Downloaded" if downloaded else "Not downloaded yet", 7)
                 link = h.link_button("", mlf.run_ui_url(e.mlflow_uri, e.mlflow_experiment_id, e.mlflow_run_id, e.artifact_path),
                                      icon_name="external", title="Open this run in MLflow", small=True)
+                link += trainhub_badges(e.mlflow_run_id)
                 lead = h.icon("cloud", 13)
             else:
                 where = e.path
@@ -439,6 +445,7 @@ class HomeView(View):
                 f'<button type="button" class="danger"{self.a("remove_server", uri=server.uri)}>{h.icon("unlink", 14)}<span>Remove this server</span></button>'
                 f'</div></span>')
         chips.append(h.button("+ server", act_attr=self.a("add_server"), small=True, cls="chip"))
+        chips.append(trainhub_chip(self.a("trainhub")))
         banners = []
         if not hub.servers:
             banners.append(h.banner("No MLflow server yet. Add one to list its runs here -- workspaces work without one.", "info"))
@@ -465,6 +472,7 @@ class HomeView(View):
             key = run_key(server.uri, run.run_id)
             in_ws = by_run.get((server.uri, run.run_id), [])
             badge = f'<span class="small muted nowrap">in {len(in_ws)} ws</span>' if in_ws else ""
+            badge += trainhub_badges(run.run_id)
             rows.append(
                 f'<div class="lst-row" draggable="true" data-drag="{h.e(key)}" data-drag-kind="run" data-drag-label="{h.e(run.label())}"'
                 f'{" style=opacity:.55" if server.offline else ""} title="{h.e(run.label())} · {h.e(run.status)} · drag onto a workspace">'
@@ -902,6 +910,10 @@ class HomeView(View):
     def on_remove_server(self, uri: str = "", **_):
         from lookin.web.views.mlflow_dialogs import confirm_remove_server
         confirm_remove_server(self.s, uri)
+
+    def on_trainhub(self, **_):
+        from lookin.web.views.trainhub import TrainhubDialog
+        self.s.open_dialog(TrainhubDialog(self.hub))
 
     def on_add_server(self, **_):
         from lookin.web.views.mlflow_dialogs import AddServerDialog

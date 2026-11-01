@@ -7,6 +7,9 @@
                                              with that experiment's prediction
     /?view=datasets&dataset=<path>           the Datasets page, on one dataset
     ...&compare=<path>                       compared with another
+    /?mlflow_run=<run id>                    Home, with "New workspace from this
+    ...&mlflow_server=<tracking uri>         run" open: what TrainHub's "Lookin"
+    ...&artifact=<csv path>                  button opens (see core/run_links.py)
 
 Built here rather than in the web package because the MCP endpoint hands
 them out too: an agent's "42 cats taken for dogs" is worth more with the
@@ -26,6 +29,9 @@ VIEW = "view"
 VIEW_DATASETS = "datasets"
 DATASET = "dataset"
 COMPARE = "compare"
+MLFLOW_RUN = "mlflow_run"
+MLFLOW_SERVER = "mlflow_server"
+ARTIFACT = "artifact"
 
 # The server's own address, as the person reading a link reaches it. Set
 # once at startup (`lookin web --public-url`, or the address it binds);
@@ -66,3 +72,21 @@ def dataset_link(dataset: str = "", compare: str = "") -> str:
         if compare:
             params.append((COMPARE, compare))
     return f"{_base_url}/?{urlencode(params)}"
+
+
+def run_link(run_id: str, server: str = "", artifact: str = "") -> str:
+    """The address that offers to put one MLflow run in a workspace: a new
+    one, or one of the library's. `server` is a hint (the tracking URI as
+    the sender knows it), `artifact` the results CSV to preselect."""
+    params = [(MLFLOW_RUN, run_id)]
+    if server:
+        params.append((MLFLOW_SERVER, server))
+    if artifact:
+        params.append((ARTIFACT, artifact))
+    return f"{_base_url}/?{urlencode(params)}"
+
+
+def relative(url: str) -> str:
+    """A link of this module without the server's address ("/?..."): what
+    another tool gets, to put behind the address *it* reaches Lookin at."""
+    return url[len(_base_url):] if _base_url and url.startswith(_base_url) else url

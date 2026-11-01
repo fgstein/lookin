@@ -10,6 +10,9 @@ stream, crops, charts and downloads.
     GET  /chart/{sid}/{key}.png
     GET  /dl/{sid}/{key}   a file the session prepared (report, export)
     GET  /exports/{name}   a file an agent had written (see core/agent_outputs.py)
+    GET  /api/links/mlflow-runs
+                           which workspaces use each MLflow run (for TrainHub's
+                           badges, see core/run_links.py) -- read-only JSON
     POST /mcp              the MCP endpoint for AI agents (see lookin/mcp_server.py)
     GET  /static/...       the CSS, the JS, the fonts -- all local
 
@@ -29,7 +32,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, quote
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -180,6 +183,18 @@ def create_app(webapp: WebApp, enable_mcp: bool = False, mcp_read_only: bool = F
 
     def bad_request():
         return JSONResponse({"error": "expected a JSON object"}, status_code=400)
+
+    @app.get("/api/links/mlflow-runs")
+    def mlflow_run_links(run_id: Optional[list[str]] = Query(default=None)):
+        # Read-only, and a GET: a page on another site can send it, but
+        # never read the answer (no CORS header is ever granted).
+        from lookin.core import run_links
+
+        try:
+            return JSONResponse(run_links.index_payload(run_id), headers={"Cache-Control": "no-store"})
+        except Exception as ex:  # noqa: BLE001
+            traceback.print_exc()
+            return JSONResponse({"app": run_links.APP, "error": str(ex)}, status_code=500)
 
     @app.get("/", response_class=HTMLResponse)
     def index():
@@ -392,10 +407,14 @@ def create_app(webapp: WebApp, enable_mcp: bool = False, mcp_read_only: bool = F
 
 def run_web(host: str = "127.0.0.1", port: int = 8560, dataset: Optional[str] = None,
             experiments=None, library_dir: Optional[str] = None, enable_mcp: bool = True,
-            mcp_read_only: bool = False, public_url: Optional[str] = None) -> None:
+            mcp_read_only: bool = False, public_url: Optional[str] = None,
+            trainhub_url: Optional[str] = None) -> None:
     import uvicorn
 
-    from lookin.core import library, links
+    from lookin.core import library, links, trainhub_links
+
+    if trainhub_url:
+        trainhub_links.set_url(trainhub_url)
 
     if library_dir:
         library.set_library_root(library_dir)
