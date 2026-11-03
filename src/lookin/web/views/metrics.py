@@ -23,6 +23,7 @@ from pathlib import Path
 
 from lookin.core import charts
 from lookin.core import class_focus as cf
+from lookin.core import experiment_groups as eg
 from lookin.core import library
 from lookin.core.metrics import MACRO_AVERAGE, compute_curves, compute_metrics
 from lookin.core.report import Report
@@ -42,7 +43,9 @@ from lookin.web.views.common import (
 from lookin.web.views.files import FileBrowserDialog
 from lookin.web.views.media import fig_html
 from lookin.web.views.slice_panel import SlicePanel
-from lookin.web.views.widgets import ClassFocus, GroupActions, class_select, experiment_dot, group_tag, groups_switch
+from lookin.web.views.widgets import (
+    ClassFocus, GroupActions, class_select, experiment_dot, group_color_menu, groups_switch,
+)
 
 
 # Every per-class column compute_metrics() produces, so the chart below can
@@ -91,6 +94,7 @@ class MetricsView(GroupActions, RebuildView):
     def __init__(self, session):
         super().__init__(session)
         self.checked: dict = {}                 # experiment name -> shown
+        self.folded_groups: set = set()         # experiment group ids folded in the picker
         self._metrics_cache: dict = {}
         self._curves_cache: dict = {}
         self._overlap_cache: dict = {}
@@ -140,27 +144,70 @@ class MetricsView(GroupActions, RebuildView):
         return [name for name in self.state.experiments if self.checked.get(name, True)]
 
     def _picker_html(self) -> str:
-        names = list(self.state.experiments)
+        """The experiments, a row each -- and, once there are experiment
+        groups, a row per group above its members: the group's arrows move
+        it as a block, its box ticks or unticks all its members, its
+        members' arrows move them within it (experiment_groups.units)."""
+        state = self.state
+        names = list(state.experiments)
         total = len(names)
         selected = len(self._selected_names())
         summary = (f"{selected} of {total} experiment(s) shown -- the arrows set the order used by "
                    f"every table, legend and chart below, a dot its color.")
+        unit_list = eg.units(names, state.groups)
+        n_units = len(unit_list)
+        any_group = any(group is not None for group, _ in unit_list)
         rows = []
-        for position, name in enumerate(names):
-            rows.append(
-                f'<div class="mx-row" data-key="mx-{h.e(name)}">'
-                f'{h.button(icon_name="chev-up", act_attr=self.a("move", name=name, delta=-1), small=True, kind="ghost", title="Move up", disabled=position == 0)}'
-                f'{h.button(icon_name="chev-down", act_attr=self.a("move", name=name, delta=1), small=True, kind="ghost", title="Move down", disabled=position == total - 1)}'
-                f'{experiment_dot(self.target, self.state, name)}'
-                f'{h.checkbox(name, self.checked.get(name, True), change=self.c("check", name=name), cls="grow", ellipsis=True)}'
-                f'{group_tag(self.state, name)}'
-                f'</div>')
+        for position, (group, members) in enumerate(unit_list):
+            first, last = position == 0, position == n_units - 1
+            if group is None:
+                rows.append(self._experiment_row(members[0], first, last, indent=any_group))
+                continue
+            rows.append(self._group_row(group, members, first, last))
+            if group.id not in self.folded_groups:
+                for i, name in enumerate(members):
+                    rows.append(self._experiment_row(name, i == 0, i == len(members) - 1, member=True))
         head = (f'<div class="row"><span class="muted small grow">{h.e(summary)}</span>'
                 f'{h.button("Select all", act_attr=self.a("select_all"), small=True, kind="ghost", icon_name="check")}'
                 f'{h.button("Select none", act_attr=self.a("select_none"), small=True, kind="ghost", icon_name="x")}'
                 f'{h.button("Sort A-Z", act_attr=self.a("sort_az"), small=True, kind="ghost", icon_name="list")}'
-                f'{groups_switch(self.target, self.state)}</div>')
+                f'{groups_switch(self.target, state)}</div>')
         return f'<section class="card"><div class="card-b">{head}<div class="mx-list">{"".join(rows)}</div></div></section>'
+
+    @staticmethod
+    def _arrows(act_up: str, act_down: str, first: bool, last: bool, suffix: str = "") -> str:
+        return (h.button(icon_name="chev-up", act_attr=act_up, small=True, kind="ghost", title=f"Move up{suffix}",
+                         disabled=first)
+                + h.button(icon_name="chev-down", act_attr=act_down, small=True, kind="ghost",
+                           title=f"Move down{suffix}", disabled=last))
+
+    def _experiment_row(self, name: str, first: bool, last: bool, member: bool = False, indent: bool = False) -> str:
+        """`indent`: a spacer the width of a group's fold arrow, so an
+        experiment in no group lines up with the groups around it."""
+        arrows = self._arrows(self.a("move", name=name, delta=-1), self.a("move", name=name, delta=1),
+                              first, last, " within its group" if member else "")
+        spacer = '<span class="mx-fold-spacer"></span>' if indent else ""
+        return (f'<div class="mx-row{" mx-member" if member else ""}" data-key="mx-{h.e(name)}">'
+                f'{spacer}{arrows}'
+                f'{experiment_dot(self.target, self.state, name)}'
+                f'{h.checkbox(name, self.checked.get(name, True), change=self.c("check", name=name), cls="grow", ellipsis=True)}'
+                f'</div>')
+
+    def _group_row(self, group, members: list, first: bool, last: bool) -> str:
+        state = self.state
+        ticked = [self.checked.get(n, True) for n in members]
+        folded = group.id in self.folded_groups
+        color = color_for_experiment(members[0], state.colors_with_groups(True))
+        hidden = "" if state.groups.shown else " -- not drawn: experiment groups are hidden"
+        chev = (f'<button type="button" class="chev"{self.a("fold_group", group=group.id)} '
+                f'aria-expanded="{"false" if folded else "true"}" aria-label="Show its experiments" '
+                f'style="font-size:9px">{"▶" if folded else "▼"}</button>')
+        return (f'<div class="mx-row mx-group" data-key="mxg-{h.e(group.id)}">{chev}'
+                f'{self._arrows(self.a("move_group", group=group.id, delta=-1), self.a("move_group", group=group.id, delta=1), first, last, " -- the whole group")}'
+                f'{group_color_menu(self.target, group, color)}'
+                f'{h.checkbox(group.name, all(ticked), change=self.c("check_group", group=group.id), cls="grow", ellipsis=True, indeterminate=any(ticked) and not all(ticked), title=f"Experiment group {group.name}: tick or untick all its experiments{hidden}")}'
+                f'<span class="small muted nowrap">{sum(ticked)} of {len(members)} shown</span>'
+                f'</div>')
 
     def _apply_order(self, names: list) -> None:
         self.state.reorder_experiments(names)
@@ -180,14 +227,31 @@ class MetricsView(GroupActions, RebuildView):
             self._redraw()
 
     def on_move(self, name: str = "", delta: int = 0, **_):
+        """An experiment in no group moves among the groups and the other
+        experiments; a group's member, within its group."""
         names = list(self.state.experiments)
         if name not in names:
             return
-        old = names.index(name)
-        new = old + int(delta)
-        if 0 <= new < len(names):
-            names.insert(new, names.pop(old))
-            self._apply_order(names)
+        order = eg.move_member(names, self.state.groups, name, int(delta))
+        if order != names:
+            self._apply_order(order)
+
+    def on_move_group(self, group: str = "", delta: int = 0, **_):
+        names = list(self.state.experiments)
+        order = eg.move_unit(names, self.state.groups, int(delta), group=group)
+        if order != names:
+            self._apply_order(order)
+
+    def on_check_group(self, group: str = "", value=False, **_):
+        members = self.state.groups.members(group, self.state.experiments)
+        if members:
+            for name in members:
+                self.checked[name] = bool(value)
+            self._redraw()
+
+    def on_fold_group(self, group: str = "", **_):
+        self.folded_groups ^= {group}
+        self.refresh()
 
     def on_select_all(self, **_):
         self.checked = {n: True for n in self.state.experiments}
@@ -198,7 +262,7 @@ class MetricsView(GroupActions, RebuildView):
         self._redraw()
 
     def on_sort_az(self, **_):
-        self._apply_order(sorted(self.state.experiments))
+        self._apply_order(eg.sort_units(self.state.experiments, self.state.groups))
 
     def on_metric(self, value: str = "", **_):
         if value in METRIC_OPTIONS:

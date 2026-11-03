@@ -1607,6 +1607,7 @@ class SourcesView(GroupActions, View):
                         row.proto_path, row.proto_status = path, (note if ok else f"error: {note}", "neutral" if ok else "error")
                 if not ok:
                     print(f"[lookin] library: could not restore {kind} for {e.name!r}: {note}", flush=True)
+        self.state.keep_groups_together()
 
     def rename_experiment(self, old: str, new: str) -> None:
         for r in self.rows:

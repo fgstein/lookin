@@ -200,6 +200,15 @@ PAGES = (
                     "groups turned off."
                 ),
             )),
+            Heading("Order and selection"),
+            Para(
+                "In the Metrics tab's experiment picker, a group is a row of its own with its experiments "
+                "under it. The group's arrows move it as a block, its box ticks or unticks all its "
+                "experiments at once (half ticked when only some are shown), and its triangle folds it. "
+                "Its experiments' arrows move them within the group. The members of a group always sit "
+                "side by side in the experiment order, at the place of its first member -- that order is "
+                "the one every table, legend and chart reads."
+            ),
             Heading("Making groups"),
             Bullets((
                 "In the Sources tab, pick a group in an experiment's Group column, or \"New group...\".",

@@ -228,14 +228,17 @@ def select(options: Iterable, value, *, change: str = "", name: str = "", label:
 
 
 def checkbox(label: str, checked: bool, *, change: str = "", name: str = "", title: str = "",
-             disabled: bool = False, cls: str = "", ellipsis: bool = False) -> str:
+             disabled: bool = False, cls: str = "", ellipsis: bool = False, indeterminate: bool = False) -> str:
     """ellipsis: the label is a name of any length (an experiment): kept on
-    one line, cut with an ellipsis, the full text in the tooltip."""
+    one line, cut with an ellipsis, the full text in the tooltip.
+    indeterminate: drawn half ticked (app.js sets the property from
+    data-indeterminate) -- a group with some of its members ticked."""
     if ellipsis:
         cls = f"{cls} ell".strip()
         title = title or label
     return (f'<label class="chk {e(cls)}"{attrs(title=title or None)}>'
-            f'<input type="checkbox"{change}{attrs(name=name or None, checked=bool(checked), disabled=disabled)}>'
+            f'<input type="checkbox"{change}{" data-indeterminate" if indeterminate else ""}'
+            f'{attrs(name=name or None, checked=bool(checked), disabled=disabled)}>'
             f'<span>{e(label)}</span></label>')
 
 

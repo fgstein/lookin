@@ -339,9 +339,12 @@ class Session:
         self.mark("*")
 
     def notify_colors(self) -> None:
-        """An experiment's color changed (AppState.set_experiment_color):
-        the views that draw it in a chart redraw from what they computed
-        (on_colors_changed); everything else only needs a re-render."""
+        """An experiment's color changed (AppState.set_experiment_color), or
+        an experiment group did: the views that draw it in a chart redraw
+        from what they computed (on_colors_changed); everything else only
+        needs a re-render. A group's members are first put side by side in
+        the experiment order (AppState.keep_groups_together)."""
+        self.state.keep_groups_together()
         for v in list(self.views.values()):
             fn = getattr(v, "on_colors_changed", None)
             if fn is not None:

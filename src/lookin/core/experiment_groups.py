@@ -295,6 +295,9 @@ def from_mount(mount) -> ExperimentGroups:
 def write_to_mount(groups: ExperimentGroups, mount) -> None:
     """Store `groups` back into `mount`: the definitions in use, each
     experiment's group id, and the switch."""
+    # Each group's members side by side, as the session keeps them.
+    by_name = {e.name: e for e in mount.experiments}
+    mount.experiments = [by_name[n] for n in grouped_order(list(by_name), groups)]
     names = [e.name for e in mount.experiments]
     for e in mount.experiments:
         group = groups.group_of(e.name)
@@ -335,3 +338,80 @@ def group_added(groups: ExperimentGroups, added: list, grouping: str, name: str 
             if run_id and len(names) >= 2:
                 created.append(groups.create(groups.unique_name(run_label or run_id[:8]), names))
     return created
+
+
+# ---- the experiment order, a group at a time ----------------------------------
+#
+# The experiment order (AppState.experiments, Mount.experiments) is what every
+# table, legend and chart reads. With groups it is read as *units*: a group
+# -- all its members, side by side -- or an experiment in no group. A group
+# sits where its first member is; its members keep their order inside it.
+# The Metrics tab's picker moves a unit, or a member within its group, and
+# these functions say what the order becomes.
+
+def units(order, groups: ExperimentGroups) -> list:
+    """[(group or None, [names])] in the order of `order`: one entry per
+    group (at its first member, with all its members) and one per
+    experiment in no group."""
+    order = list(order)
+    out, seen = [], set()
+    for name in order:
+        group = groups.group_of(name)
+        if group is None:
+            out.append((None, [name]))
+        elif group.id not in seen:
+            seen.add(group.id)
+            out.append((group, groups.members(group.id, order)))
+    return out
+
+
+def flatten(unit_list) -> list:
+    return [name for _, names in unit_list for name in names]
+
+
+def grouped_order(order, groups: ExperimentGroups) -> list:
+    """`order` with the members of each group side by side, at the place of
+    its first member -- what the order is kept as (AppState.keep_groups_together)."""
+    return flatten(units(order, groups))
+
+
+def move_unit(order, groups: ExperimentGroups, delta: int, group: str = "", name: str = "") -> list:
+    """The order once a unit -- the group `group`, or the ungrouped
+    experiment `name` -- moves `delta` places among the units. Out of range
+    leaves it where it is."""
+    unit_list = units(order, groups)
+    index = next((i for i, (g, names) in enumerate(unit_list)
+                  if (group and g is not None and g.id == group) or (name and g is None and names == [name])), None)
+    if index is None:
+        return flatten(unit_list)
+    target = index + int(delta)
+    if 0 <= target < len(unit_list):
+        unit_list.insert(target, unit_list.pop(index))
+    return flatten(unit_list)
+
+
+def move_member(order, groups: ExperimentGroups, name: str, delta: int) -> list:
+    """The order once `name` moves `delta` places among the members of its
+    own group. An experiment in no group moves as a unit (move_unit)."""
+    group = groups.group_of(name)
+    if group is None:
+        return move_unit(order, groups, delta, name=name)
+    unit_list = units(order, groups)
+    for i, (g, names) in enumerate(unit_list):
+        if g is not None and g.id == group.id:
+            names = list(names)
+            old = names.index(name)
+            new = old + int(delta)
+            if 0 <= new < len(names):
+                names.insert(new, names.pop(old))
+            unit_list[i] = (g, names)
+            break
+    return flatten(unit_list)
+
+
+def sort_units(order, groups: ExperimentGroups) -> list:
+    """A-Z: the units by what they are called (a group by its name), and
+    the members of each group by theirs."""
+    unit_list = [(g, sorted(names) if g is not None else names) for g, names in units(order, groups)]
+    unit_list.sort(key=lambda u: (u[0].name if u[0] is not None else u[1][0]).lower())
+    return flatten(unit_list)

@@ -400,3 +400,61 @@ def test_unique_legend_entries_keeps_same_name_different_color():
     lines = [SimpleNamespace(get_color=lambda c=c: c) for c in ("#ff0000", "#ff0000", "#00ff00")]
     handles, labels = unique_legend_entries(lines, ["g", "g", "g"])
     assert labels == ["g", "g"] and [to_hex(h.get_color()) for h in handles] == ["#ff0000", "#00ff00"]
+
+
+# ---- the order, a group at a time (the Metrics tab's picker) --------------------
+
+def _abc_groups():
+    groups = eg.ExperimentGroups()
+    g = groups.create("G", ["b", "d"])
+    return groups, g
+
+
+def test_units_put_a_group_at_its_first_member():
+    groups, g = _abc_groups()
+    order = ["a", "b", "c", "d", "e"]
+    assert [(u[0].name if u[0] else None, u[1]) for u in eg.units(order, groups)] == \
+        [(None, ["a"]), ("G", ["b", "d"]), (None, ["c"]), (None, ["e"])]
+    assert eg.grouped_order(order, groups) == ["a", "b", "d", "c", "e"]
+
+
+def test_a_group_moves_as_a_block():
+    groups, g = _abc_groups()
+    order = ["a", "b", "d", "c", "e"]
+    assert eg.move_unit(order, groups, -1, group=g.id) == ["b", "d", "a", "c", "e"]
+    assert eg.move_unit(order, groups, 1, group=g.id) == ["a", "c", "b", "d", "e"]
+    assert eg.move_unit(order, groups, -5, group=g.id) == order          # out of range: stays
+    # An experiment in no group steps over a whole group.
+    assert eg.move_member(order, groups, "c", -1) == ["a", "c", "b", "d", "e"]
+    assert eg.move_member(order, groups, "a", 1) == ["b", "d", "a", "c", "e"]
+
+
+def test_a_member_moves_within_its_group_only():
+    groups, g = _abc_groups()
+    order = ["a", "b", "d", "c", "e"]
+    assert eg.move_member(order, groups, "d", -1) == ["a", "d", "b", "c", "e"]
+    assert eg.move_member(order, groups, "d", 1) == order               # already last of its group
+    assert eg.move_member(order, groups, "b", -1) == order              # already first of its group
+
+
+def test_sort_a_to_z_sorts_groups_by_name_and_members_inside():
+    groups = eg.ExperimentGroups()
+    groups.create("alpha", ["z", "y"])
+    assert eg.sort_units(["m", "z", "b", "y"], groups) == ["y", "z", "b", "m"]
+
+
+def test_the_session_keeps_a_groups_members_together():
+    s = AppState()
+    s.experiments = {n: object() for n in "abcde"}
+    s.groups.create("G", ["b", "e"])
+    assert s.keep_groups_together()
+    assert list(s.experiments) == ["a", "b", "e", "c", "d"]
+    assert not s.keep_groups_together()
+
+
+def test_a_saved_mount_keeps_a_groups_members_together():
+    mount = lib.Mount(experiments=[lib.MountExperiment(name=n, path=f"{n}.csv") for n in "abcd"])
+    groups = eg.from_mount(mount)
+    groups.create("G", ["a", "d"])
+    eg.write_to_mount(groups, mount)
+    assert [e.name for e in mount.experiments] == ["a", "d", "b", "c"]
