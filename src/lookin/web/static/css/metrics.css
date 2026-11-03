@@ -21,3 +21,7 @@
 tr.clk { cursor: pointer; }
 tr.clk:hover td { background: var(--acc-soft-2); }
 .cm-area > .card { margin: 0; }
+/* Experiment groups in the picker: the group's row, then its members, indented under it. */
+.mx-row.mx-group { background: var(--line-2); border-top: 1px solid var(--line); font-weight: 600; }
+.mx-row.mx-member { padding-left: 30px; }
+.mx-fold-spacer { width: 20px; flex: none; }

@@ -112,6 +112,7 @@ def load_workspace_state(workspace: lib.Workspace) -> LoadedWorkspace:
             loaded.warnings.append(
                 f"Only {overlap.matched:,} of experiment {experiment.name!r}'s {n_rows:,} rows match a crop "
                 f"of the dataset -- it may have been scored on another dataset.")
+    state.keep_groups_together()
     return loaded
 
 

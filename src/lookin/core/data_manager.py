@@ -1130,6 +1130,19 @@ class AppState:
                 out[name] = group.color or group_slots[group.id]
         return out
 
+    def keep_groups_together(self) -> bool:
+        """Put the members of each experiment group side by side in the
+        experiment order, at the place of the group's first member (see
+        experiment_groups.units) -- the order the Metrics tab's picker shows
+        and moves a group at a time. Returns whether the order changed."""
+        from lookin.core.experiment_groups import grouped_order
+
+        order = grouped_order(self.experiments, self.groups)
+        if order == list(self.experiments):
+            return False
+        self.reorder_experiments(order)
+        return True
+
     def chart_labels(self, names) -> Optional[dict]:
         """What a chart calls each of `names` (see
         ExperimentGroups.chart_labels): None when none of them is drawn as
