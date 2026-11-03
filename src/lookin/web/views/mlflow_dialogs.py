@@ -15,6 +15,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+from lookin.core import experiment_groups as eg
 from lookin.core import library as lib
 from lookin.core import mlflow_cache
 from lookin.core import mlflow_client as mlf
@@ -108,6 +109,8 @@ class RunsDialog(Dialog):
         self.show_hidden = False
         self.limit = RUN_PAGE
         self.dest_ws = ""
+        # The group everything goes in, with "All in one new group".
+        self.group_name = ""
         _follow_hub(self, session)
         self.hub.activate()
 
@@ -334,7 +337,21 @@ class RunsDialog(Dialog):
             actions += h.button("Add", act_attr=self.a("add_to", keys=sorted(self.selected)), disabled=not n or not opts, cls="btn-acc")
             actions += h.button("New workspace from selection", act_attr=self.a("new_ws"), kind="primary", disabled=not n)
         note = '<span class="small muted">Adding is instant; files download when you choose to.</span>' if self.mode == "home" else ""
-        return f'{bits}{sel}{note}<span class="sp"></span>{actions}{h.button("Close", act_attr=self.a("close"))}'
+        return (f'{bits}{sel}{note}<span class="sp"></span>{self._grouping_html()}{actions}'
+                f'{h.button("Close", act_attr=self.a("close"))}')
+
+    def _grouping_html(self) -> str:
+        """How what is added is grouped (core/experiment_groups.py): kept in
+        home_view.json, so it holds for drops on a Home card too."""
+        grouping = self.hub.config.grouping
+        html = h.select(GROUPING_OPTIONS, grouping, change=self.c("grouping"), label="Groups",
+                        title="Experiment groups are drawn under one name and one color in the charts. "
+                              "One per run groups the checkpoints of a run added together; an experiment "
+                              "added later joins no existing group by itself.")
+        if grouping == eg.GROUPING_ONE:
+            html += h.text_input(self.group_name, change=self.c("group_name"), placeholder="Group name",
+                                 width="150px", title="Empty: the first run's name")
+        return html
 
     # ---- actions: filters ----
 
@@ -487,6 +504,14 @@ class RunsDialog(Dialog):
     def on_dest(self, value: str = "", **_):
         self.dest_ws = value
 
+    def on_grouping(self, value: str = "", **_):
+        if value in eg.GROUPINGS:
+            self.hub.config.set_run_option("grouping", value)
+        self.refresh()
+
+    def on_group_name(self, value: str = "", **_):
+        self.group_name = (value or "").strip()
+
     def on_add_to(self, keys=None, **_):
         keys = list(keys or [])
         if not keys:
@@ -500,14 +525,14 @@ class RunsDialog(Dialog):
             self.s.open_dialog(AddToDialog(self, keys))
             return
         ws = next((w for w in workspaces if w.id == self.dest_ws), workspaces[0])
-        home.add_keys(ws, keys, on_done=self._added)
+        home.add_keys(ws, keys, on_done=self._added, group_name=self.group_name)
 
     def _added(self) -> None:
         self.selected.clear()
         self.refresh()
 
     def on_new_ws(self, **_):
-        self.s.view("home").on_new_workspace(keys=sorted(self.selected))
+        self.s.view("home").on_new_workspace(keys=sorted(self.selected), group_name=self.group_name)
 
     # ---- loading into the session (mode "session") ----
 
@@ -566,10 +591,12 @@ class RunsDialog(Dialog):
             return
         self.close()
         session = self.s
+        grouping, group_name = self.hub.config.grouping, self.group_name
 
         def work():
             sources = session.upload_view
             loaded = 0
+            added = []        # (name, run id, run label), for the groups
             for c in candidates:
                 taken = set(session.state.experiments) | {r.name for r in sources.rows}
                 name = wss.unique_name(taken, c.default_name(), c.run.run_id)
@@ -585,6 +612,7 @@ class RunsDialog(Dialog):
                         session.toast(f"{name}: {message}", "error")
                         continue
                     loaded += 1
+                    added.append((name, c.run.run_id, c.run.label()))
                     for art, kind in ((c.embeddings, "embed"), (c.prototypes, "proto")):
                         if art is None:
                             continue
@@ -612,12 +640,28 @@ class RunsDialog(Dialog):
                     session.toast(f"Could not load: {ex}", "error")
                 finally:
                     session.busy.end()
+            made = []
+            if grouping != eg.GROUPING_NONE:
+                with session.lock:
+                    made = eg.group_added(session.state.groups, added, grouping, group_name)
             if loaded:
                 session.notify_change()
-                session.toast(f"Loaded {loaded} experiment(s) from MLflow.", "ok")
+                if made:
+                    session.notify_colors()
+                session.toast(f"Loaded {loaded} experiment(s) from MLflow"
+                              + (f", grouped in {', '.join(g.name for g in made)}." if made else "."), "ok")
             session.push({"dirty": ["*"]})
 
         threading.Thread(target=work, daemon=True).start()
+
+
+# The runs dialog's "Groups" choices: (key, label) -- keys from
+# experiment_groups.GROUPINGS, compared in code.
+GROUPING_OPTIONS = (
+    (eg.GROUPING_BY_RUN, "One per run (its checkpoints together)"),
+    (eg.GROUPING_NONE, "No group"),
+    (eg.GROUPING_ONE, "All in one new group"),
+)
 
 
 class AddToDialog(Dialog):
@@ -643,7 +687,7 @@ class AddToDialog(Dialog):
         self.close()
         ws = next((w for w in self.workspaces if w.id == self.dest), None)
         if ws is not None:
-            self.session.view("home").add_keys(ws, self.keys)
+            self.session.view("home").add_keys(ws, self.keys, group_name=self.runs.group_name)
 
 
 class AddServerDialog(Dialog):

@@ -220,6 +220,9 @@ class MountExperiment:
     # "#rrggbb" the user picked for it, "" for its palette color (see
     # AppState.experiment_colors).
     color: str = ""
+    # The id of the experiment group it is drawn as, "" for none (see
+    # core/experiment_groups.py and Mount.experiment_groups).
+    group: str = ""
 
     def from_mlflow(self) -> bool:
         return bool(self.mlflow_run_id and self.artifact_path)
@@ -247,6 +250,11 @@ class Mount:
     dataset_mtime: float = 0.0
     # The Filter tab's filter (a core.dataset_filter spec; {} for none).
     dataset_filter: dict = field(default_factory=dict)
+    # Experiment groups (core/experiment_groups.py): [{"id", "name", "color"}]
+    # -- an experiment names its own with MountExperiment.group -- and
+    # whether the charts draw them (the one-click switch).
+    experiment_groups: list = field(default_factory=list)
+    show_experiment_groups: bool = True
 
     def label(self) -> str:
         return Path(self.dataset_path).name or self.dataset_path
@@ -326,6 +334,12 @@ def mount_from_dict(raw: dict) -> Mount:
     kwargs = {k: v for k, v in raw.items() if k in known}
     if not isinstance(kwargs.get("dataset_filter", {}), dict):
         kwargs.pop("dataset_filter")
+    groups = kwargs.pop("experiment_groups", [])
+    kwargs["experiment_groups"] = [
+        {"id": str(g.get("id") or ""), "name": str(g.get("name") or ""), "color": str(g.get("color") or "")}
+        for g in (groups if isinstance(groups, list) else []) if isinstance(g, dict) and g.get("id")]
+    shown = kwargs.pop("show_experiment_groups", True)
+    kwargs["show_experiment_groups"] = shown if isinstance(shown, bool) else str(shown).lower() not in ("false", "0", "")
     # Typed the way the rest of the app uses them. A hand-edited manifest
     # with "dataset_size": "big" or "dataset_path": 5 otherwise loads fine
     # and raises later, from Mount.exists()/changed_on_disk() -- which the
@@ -338,7 +352,7 @@ def mount_from_dict(raw: dict) -> Mount:
                 kwargs[name] = float(value or 0.0)
             except (TypeError, ValueError):
                 kwargs[name] = 0.0
-        elif name != "dataset_filter":
+        elif name not in ("dataset_filter", "experiment_groups", "show_experiment_groups"):
             kwargs[name] = "" if value is None else str(value)
     return Mount(experiments=experiments, **kwargs)
 

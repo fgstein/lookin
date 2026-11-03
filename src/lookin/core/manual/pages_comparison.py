@@ -153,4 +153,73 @@ PAGES = (
         see_also=("fixes-regressions", "delta-confusion", "support-and-imbalance", "averaging"),
         keywords=("per class", "change", "trade", "class level regression"),
     ),
+
+    ManualPage(
+        id="experiment-groups",
+        title="Experiment groups",
+        summary=(
+            "A group draws several experiments as one in the charts -- typically the checkpoints of one "
+            "training run, shown as that run next to another. Its members share one color and one legend "
+            "entry, the group's name. Nothing is merged or averaged: every member is still computed and "
+            "drawn exactly as before, and every table keeps its own row."
+        ),
+        shown_in="Sources tab (\"Experiment groups\", and each experiment's Group column); the Metrics and "
+                 "Calibration tabs (\"Draw experiment groups\")",
+        blocks=(
+            Heading("What a group changes"),
+            HowToRead((
+                ("Color", "every member of a group is drawn in the group's color -- the color its first "
+                          "member had, unless you pick another in the group's color menu"),
+                ("Legend", "one entry per group, under the group's name, however many of its experiments "
+                           "are drawn"),
+                ("Chart titles", "a chart drawn for one experiment (a reliability diagram) is titled with its "
+                                 "group's name"),
+                ("Lines and bars", "unchanged: the same curves and bars as without the group, at the same "
+                                   "places, only painted and named differently"),
+            ), title="In a chart"),
+            Para(
+                "Everything that is not a chart keeps naming each experiment by its own name: the "
+                "Summary table, the experiment pickers, the confusion matrices, the report's tables, the "
+                "MCP tools' answers. A group never renames its members, and renaming the group changes "
+                "only what the charts call it."
+            ),
+            Heading("Turning them off"),
+            Para(
+                "\"Draw experiment groups\" -- in the experiment picker of the Metrics and Calibration "
+                "tabs, and in the Sources tab's group card -- switches every chart between the groups and "
+                "every experiment on its own, in one click. Off, each chart is exactly what it would be "
+                "with no group at all; the groups, their names and colors are kept for when you turn it "
+                "back on. The switch is saved with the workspace."
+            ),
+            Callout(CALLOUT_PITFALL, "No number in a grouped legend", (
+                Para(
+                    "The ROC / precision-recall and risk-coverage legends normally print a number per "
+                    "experiment (AUC, AP, AURC). While groups are drawn they print none: one entry stands "
+                    "for several curves, and one number for all of them would be the number of one of them "
+                    "presented as the group's. Each experiment's number is in the tables, or with the "
+                    "groups turned off."
+                ),
+            )),
+            Heading("Making groups"),
+            Bullets((
+                "In the Sources tab, pick a group in an experiment's Group column, or \"New group...\".",
+                "\"Group by run\" makes one group per MLflow run from its experiments that are in no group "
+                "yet -- for a run with at least two of them.",
+                "When runs are loaded or added from MLflow, the runs dialog's \"Groups\" setting decides: "
+                "one group per run (its checkpoints added together; the default), no group, or everything "
+                "added at once in one new group. An experiment added later never joins an existing group "
+                "by itself -- put it in one from its Group column.",
+                "A group left with no experiment disappears; \"Ungroup\" dissolves one and keeps its "
+                "experiments.",
+            )),
+            Callout(CALLOUT_TIP, "Each member keeps its own color", (
+                Para(
+                    "A color you gave an experiment is not lost when it joins a group: it comes back as "
+                    "soon as the experiment leaves the group or the groups are turned off."
+                ),
+            )),
+        ),
+        see_also=("summary-table", "roc-auc", "risk-coverage", "fixes-regressions"),
+        keywords=("group", "groups", "checkpoint", "checkpoints", "run", "legend", "color", "colour", "series"),
+    ),
 )

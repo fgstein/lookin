@@ -191,6 +191,48 @@ def legend_name(name, width: int = LEGEND_NAME_WRAP) -> str:
     return "\n".join(lines)
 
 
+def _handle_color(handle) -> str:
+    """The color a legend handle is drawn in, as "#rrggbbaa" -- a line, a
+    bar container, an errorbar container or a patch -- or "" when it has
+    none matplotlib can tell."""
+    from matplotlib.colors import to_hex
+
+    inner = handle
+    if hasattr(handle, "patches") and getattr(handle, "patches", None):
+        inner = handle.patches[0]
+    elif hasattr(handle, "lines") and getattr(handle, "lines", None):
+        inner = handle.lines[0]
+    for getter in ("get_color", "get_facecolor"):
+        fn = getattr(inner, getter, None)
+        if fn is None:
+            continue
+        try:
+            return to_hex(fn(), keep_alpha=True)
+        except (TypeError, ValueError):
+            continue
+    return ""
+
+
+def unique_legend_entries(handles, labels) -> tuple:
+    """(handles, labels) with each (label, color) pair once, first one kept.
+
+    Experiment names are unique, so this changes nothing until experiments
+    are drawn as a group (core/experiment_groups.py): the members of one
+    group share its name and its color, and the legend then has one entry
+    for the group. Same name and a *different* color stays two entries --
+    two things drawn differently must never read as one."""
+    seen = set()
+    out_h, out_l = [], []
+    for handle, label in zip(handles, labels):
+        key = (label, _handle_color(handle))
+        if key in seen:
+            continue
+        seen.add(key)
+        out_h.append(handle)
+        out_l.append(label)
+    return out_h, out_l
+
+
 def legend_below(ax, handles=None, labels=None, ncol: int = 1, fontsize: int = 8,
                  title: str | None = None):
     """Draw a legend at the bottom of the figure, to sit centred under `ax`.
@@ -203,10 +245,14 @@ def legend_below(ax, handles=None, labels=None, ncol: int = 1, fontsize: int = 8
 
     Call layout_with_legends_below() once every legend is drawn: it is what
     makes the room and puts each legend under its axes.
+
+    An entry repeated with the same color (the members of an experiment
+    group) is shown once, see unique_legend_entries.
     """
     figure = ax.get_figure()
     if handles is None or labels is None:
         handles, labels = ax.get_legend_handles_labels()
+    handles, labels = unique_legend_entries(handles, labels)
     if not handles:
         return None
     kwargs = {

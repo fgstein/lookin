@@ -42,6 +42,7 @@ from lookin.core import candidates as cand
 from lookin.core import comparison as cmp
 from lookin.core import confidence as conf
 from lookin.core import dataset_filter as dsf
+from lookin.core import experiment_groups
 from lookin.core import library as lib
 from lookin.core import links
 from lookin.core import mlflow_client as mlf
@@ -232,13 +233,25 @@ def _trainhub_links(run_id: str) -> list:
     return [link.as_dict() for link in index.links(run_id)]
 
 
+def experiment_groups_out(mount) -> list:
+    """A mount's experiment groups as an answer lists them: id, name, color
+    ("" for a palette one) and member experiments, in experiment order."""
+    groups = experiment_groups.from_mount(mount)
+    names = [e.name for e in mount.experiments]
+    return [{**g.to_dict(), "experiments": groups.members(g.id, names)} for g in groups.in_use(names)]
+
+
 def get_workspace(workspace_id: str) -> dict:
     w = find_workspace(workspace_id)
     m = w.mount
+    groups = experiment_groups.from_mount(m)
     experiments = []
     for e in m.experiments:
         item = {"name": e.name, "downloaded": workspace_sources.is_downloaded(e),
                 "has_embeddings": bool(e.embeddings_path or e.embeddings_artifact)}
+        group = groups.group_of(e.name)
+        if group is not None:
+            item["experiment_group"] = group.name
         if e.from_mlflow():
             item.update(mlflow_run_id=e.mlflow_run_id, mlflow_run_name=e.mlflow_run_name,
                         mlflow_experiment_id=e.mlflow_experiment_id, mlflow_server=e.mlflow_uri,
@@ -268,6 +281,8 @@ def get_workspace(workspace_id: str) -> dict:
             "review_version": m.review_version or None,
         },
         "experiments": experiments,
+        "experiment_groups": experiment_groups_out(m),
+        "experiment_groups_shown": bool(m.show_experiment_groups),
         "snapshots": [{"id": s.id, "name": s.name, "description": s.description, "updated_at": s.updated_at,
                        "open_url": links.link(snapshot_id=s.id)} for s in lib.list_snapshots(w)],
         "download_state": workspace_sources.download_state(w),

@@ -26,6 +26,7 @@ from pathlib import Path
 from lookin.core import agent_tools as tools
 from lookin.core import board as bd
 from lookin.core import dataset_filter as dsf
+from lookin.core import experiment_groups as eg
 from lookin.core import library as lib
 from lookin.core import links
 from lookin.core import mlflow_client as mlf
@@ -235,7 +236,7 @@ def rename_group(group: str, new_name: str) -> dict:
 # ---- experiments -------------------------------------------------------------
 
 def add_experiment(workspace_id: str, results_csv: str, name: str = "", embeddings: str = "",
-                   prototypes: str = "") -> dict:
+                   prototypes: str = "", group: str = "") -> dict:
     """A results CSV on the machine running Lookin, with its sidecars --
     found next to it by name when not given."""
     workspace = find_workspace(workspace_id)
@@ -260,11 +261,15 @@ def add_experiment(workspace_id: str, results_csv: str, name: str = "", embeddin
         return True
 
     fresh = _update(workspace, change)
-    return _workspace_out(fresh, added=added["name"], embeddings=embeddings or None, prototypes=prototypes or None)
+    if group.strip():
+        _join_group(fresh.id, added["name"], group.strip())
+        fresh = find_workspace(fresh.id)
+    return _workspace_out(fresh, added=added["name"], embeddings=embeddings or None, prototypes=prototypes or None,
+                          experiment_group=group.strip() or None)
 
 
 def add_mlflow_run(workspace_id: str, run_id: str, server: str | None = None, csv_path: str = "",
-                   name: str = "", download: bool = True) -> dict:
+                   name: str = "", download: bool = True, group: str = "") -> dict:
     """A run's results CSV (and its sidecars), recorded as a link to the run
     -- what dropping a run on a workspace on Home does -- then fetched."""
     workspace = find_workspace(workspace_id)
@@ -298,6 +303,9 @@ def add_mlflow_run(workspace_id: str, run_id: str, server: str | None = None, cs
     if not res.added:
         raise ValueError(res.message())
     out = {"added": res.added, "message": res.message()}
+    if group.strip():
+        _join_group(fresh.id, res.added[0], group.strip())
+        out["experiment_group"] = group.strip()
     if download:
         out["download"] = download_workspace(fresh.id)
     return _workspace_out(find_workspace(fresh.id), **out)
@@ -349,6 +357,134 @@ def set_experiment_color(workspace_id: str, name: str, color: str = "") -> dict:
         raise ValueError(f"No experiment {name!r} in this workspace.")
 
     return _workspace_out(_update(workspace, change), experiment=name, color=color or None)
+
+
+# ---- experiment groups (core/experiment_groups.py) --------------------------
+
+def _change_groups(workspace_id: str, change) -> tuple:
+    """Read the workspace's groups, `change(groups, names)` them, write them
+    back -- under the manifest's lock, as every other change here. Returns
+    (fresh workspace, what `change` returned)."""
+    workspace = find_workspace(workspace_id)
+    out = {}
+
+    def apply(fresh: lib.Workspace) -> bool:
+        groups = eg.from_mount(fresh.mount)
+        out["value"] = change(groups, [e.name for e in fresh.mount.experiments])
+        eg.write_to_mount(groups, fresh.mount)
+        return True
+
+    fresh = _update(workspace, apply)
+    return fresh, out.get("value")
+
+
+def _groups_out(fresh: lib.Workspace, **extra) -> dict:
+    return _workspace_out(fresh, experiment_groups=tools.experiment_groups_out(fresh.mount),
+                          experiment_groups_shown=bool(fresh.mount.show_experiment_groups), **extra)
+
+
+def _check_members(names: list, experiments) -> list:
+    experiments = list(experiments or [])
+    if not experiments:
+        raise ValueError("Name at least one experiment to put in the group.")
+    missing = [n for n in experiments if n not in names]
+    if missing:
+        raise ValueError(f"No experiment {', '.join(map(repr, missing))} in this workspace. "
+                         f"Experiments: {', '.join(names) or 'none'}.")
+    return experiments
+
+
+def create_experiment_group(workspace_id: str, name: str, experiments: list, color: str = "") -> dict:
+    """A new group holding `experiments` (moved out of any group they were in)."""
+    def change(groups, names):
+        return groups.create(name, _check_members(names, experiments), color).name
+
+    fresh, made = _change_groups(workspace_id, change)
+    return _groups_out(fresh, created=made)
+
+
+def set_experiment_group(workspace_id: str, experiment: str, group: str = "") -> dict:
+    """Put one experiment in an existing group (id or name), or in none."""
+    def change(groups, names):
+        _check_members(names, [experiment])
+        return groups.assign(experiment, groups.resolve(group).id if group else "")
+
+    fresh, _ = _change_groups(workspace_id, change)
+    return _groups_out(fresh, experiment=experiment)
+
+
+def rename_experiment_group(workspace_id: str, group: str, new_name: str) -> dict:
+    def change(groups, names):
+        found = groups.resolve(group)
+        old = found.name
+        groups.rename(found.id, new_name)
+        return {old: found.name}
+
+    fresh, renamed = _change_groups(workspace_id, change)
+    return _groups_out(fresh, renamed=renamed)
+
+
+def set_experiment_group_color(workspace_id: str, group: str, color: str = "") -> dict:
+    def change(groups, names):
+        found = groups.resolve(group)
+        groups.set_color(found.id, color)
+        return found.name
+
+    fresh, name = _change_groups(workspace_id, change)
+    return _groups_out(fresh, group=name, color=color or None)
+
+
+def delete_experiment_group(workspace_id: str, group: str) -> dict:
+    """Dissolve a group; its experiments stay in the workspace, ungrouped."""
+    def change(groups, names):
+        found = groups.resolve(group)
+        members = groups.members(found.id, names)
+        groups.delete(found.id)
+        return {"group": found.name, "ungrouped": members}
+
+    fresh, out = _change_groups(workspace_id, change)
+    return _groups_out(fresh, deleted=out["group"], ungrouped=out["ungrouped"])
+
+
+def show_experiment_groups(workspace_id: str, shown: bool) -> dict:
+    """The switch: charts draw the groups, or every experiment on its own."""
+    fresh, _ = _change_groups(workspace_id, lambda groups, names: groups.set_shown(shown))
+    return _groups_out(fresh)
+
+
+def group_experiments_by_run(workspace_id: str) -> dict:
+    """One group per MLflow run, for its experiments that are in no group
+    yet -- when a run has at least two of them (the Sources tab's "Group by
+    run")."""
+    workspace = find_workspace(workspace_id)
+    runs = {e.name: e for e in workspace.mount.experiments}
+
+    def change(groups, names):
+        ungrouped = [(n, runs[n].mlflow_run_id, runs[n].mlflow_run_name or runs[n].mlflow_run_id[:8])
+                     for n in names if n in runs and runs[n].from_mlflow() and groups.group_of(n) is None]
+        counts = {}
+        for _, run_id, _ in ungrouped:
+            counts[run_id] = counts.get(run_id, 0) + 1
+        made = eg.group_added(groups, [u for u in ungrouped if counts[u[1]] >= 2], eg.GROUPING_BY_RUN)
+        return [g.name for g in made]
+
+    fresh, made = _change_groups(workspace_id, change)
+    if not made:
+        raise ValueError("No MLflow run has two or more experiments outside a group in this workspace.")
+    return _groups_out(fresh, created=made)
+
+
+def _join_group(workspace_id: str, experiment: str, group: str) -> None:
+    """add_experiment / add_mlflow_run's `group`: an existing group (id or
+    name), or a new one of that name."""
+    def change(groups, names):
+        found = groups.get(group) or groups.by_name(group)
+        if found is None:
+            groups.create(group, [experiment])
+        else:
+            groups.assign(experiment, found.id)
+
+    _change_groups(workspace_id, change)
 
 
 def download_workspace(workspace_id: str) -> dict:

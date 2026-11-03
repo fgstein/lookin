@@ -7,6 +7,15 @@ binning, same colours, same captions. Each function takes plain inputs
 a matplotlib Figure, never a widget or a file: the caller decides whether
 it becomes an <img>, a slide or a PNG on disk (see figure_png).
 
+Experiment groups (core/experiment_groups.py): a chart that draws several
+experiments takes `labels`, name -> the name its legend gives it, as
+AppState.chart_labels returns it. None -- no experiment drawn as a group --
+draws exactly what it always did. A dict changes the names, and the legend
+shows each (name, color) once; the data drawn never depends on it. The
+legends that print a number per experiment (AUC, AP, AURC) print none
+while groups are drawn: one entry stands for several curves, and one
+number for all of them would be wrong.
+
 Nothing here computes a metric. What a chart shows is computed in
 core/metrics.py, core/calibration.py, core/slices.py and friends; this only
 lays it out, which is what makes "the agent's chart and the tab's chart
@@ -89,10 +98,17 @@ def class_tick_labels(labels: list, per_class_by_name: dict) -> tuple:
     return tick_labels, uneven
 
 
-def per_class_bars(per_class_by_name: dict, metric: str, labels: list, colors: dict) -> tuple:
+def _name_in_legend(name, names: dict | None) -> str:
+    return legend_name(names.get(name, name) if names else name)
+
+
+def per_class_bars(per_class_by_name: dict, metric: str, labels: list, colors: dict,
+                   names: dict | None = None) -> tuple:
     """(figure, uneven_support): one group of bars per class, one bar per
     experiment. `per_class_by_name` maps an experiment to its per-class
-    table indexed by label (ExperimentMetrics.per_class.set_index("label"))."""
+    table indexed by label (ExperimentMetrics.per_class.set_index("label")).
+    `labels` are the classes; `names` the experiment groups' names (see the
+    module docstring)."""
     n_exp = len(per_class_by_name)
     fig_width = max(6.0, min(18.0, len(labels) * (0.5 + 0.13 * n_exp)))
     fig, ax = subplots(figsize=(fig_width, 4.3))
@@ -101,7 +117,7 @@ def per_class_bars(per_class_by_name: dict, metric: str, labels: list, colors: d
     for i, (name, per_class) in enumerate(per_class_by_name.items()):
         values = [per_class[metric].get(label, np.nan) for label in labels]
         offset = (i - (n_exp - 1) / 2) * width
-        ax.bar(x + offset, values, width, label=legend_name(name), color=colors.get(name))
+        ax.bar(x + offset, values, width, label=_name_in_legend(name, names), color=colors.get(name))
     ax.set_xticks(x)
     tick_labels, uneven = class_tick_labels(labels, per_class_by_name)
     ax.set_xticklabels(tick_labels, rotation=45, ha="right")
@@ -117,17 +133,21 @@ def per_class_bars(per_class_by_name: dict, metric: str, labels: list, colors: d
     return fig, uneven
 
 
-def roc_pr_curves(curves_by_name: dict, target: str, colors: dict):
+def roc_pr_curves(curves_by_name: dict, target: str, colors: dict, labels: dict | None = None):
     """ROC and Precision-Recall side by side, one line per experiment.
-    `curves_by_name` holds drawable CurveData (no disabled_reason)."""
+    `curves_by_name` holds drawable CurveData (no disabled_reason). With
+    `labels` (experiment groups), the legend has no AUC / AP."""
     n_curves = len(curves_by_name)
     fig, (ax1, ax2) = subplots(1, 2, figsize=(11, 4.4))
     ax1.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1)
     iso_f1_lines(ax2)
     for name, curve in curves_by_name.items():
         color = colors.get(name)
-        ax1.plot(curve.fpr, curve.tpr, color=color, label=f"{legend_name(name)} (AUC={curve.roc_auc:.3f})")
-        ax2.plot(curve.recall, curve.precision, color=color, label=f"{legend_name(name)} (AP={curve.average_precision:.3f})")
+        shown = _name_in_legend(name, labels)
+        ax1.plot(curve.fpr, curve.tpr, color=color,
+                 label=shown if labels else f"{shown} (AUC={curve.roc_auc:.3f})")
+        ax2.plot(curve.recall, curve.precision, color=color,
+                 label=shown if labels else f"{shown} (AP={curve.average_precision:.3f})")
     ax1.set_xlabel("False positive rate")
     ax1.set_ylabel("True positive rate")
     ax1.set_title(f"ROC curve — {target}")
@@ -207,12 +227,13 @@ def confusion_matrix(confusion, title: str, focus: list | None = None):
 
 # ---- calibration ----------------------------------------------------------
 
-def reliability_diagram(name: str, data, color: str):
+def reliability_diagram(name: str, data, color: str, label: str | None = None):
     """A bar per confidence bin with its actual accuracy, the mean
     confidence per bin in red, the diagonal for perfect calibration; below,
     the bins' share of all predictions on a log scale (the same binning
     ECE/MCE are computed from). None when the scores are not probabilities
-    (data.disabled_reason says why)."""
+    (data.disabled_reason says why). `label`: what the title calls the
+    experiment, its group's name when it is drawn as one."""
     if data.disabled_reason:
         return None
     width = 1.0 / len(data.bin_centers)
@@ -226,7 +247,7 @@ def reliability_diagram(name: str, data, color: str):
     ax1.set_xlim(0, 1)
     ax1.set_ylim(0, 1)
     ax1.set_ylabel("accuracy")
-    ax1.set_title(f"{short_name(name)} — ECE={data.ece:.3f} · MCE={data.mce:.3f}", fontsize=11)
+    ax1.set_title(f"{short_name(label or name)} — ECE={data.ece:.3f} · MCE={data.mce:.3f}", fontsize=11)
     ax1.legend(fontsize=7, loc="upper left")
 
     ax2.bar(data.bin_centers, data.bin_fraction, width=width * 0.9, color=color)
@@ -240,9 +261,10 @@ def reliability_diagram(name: str, data, color: str):
     return fig
 
 
-def confidence_split_histogram(name: str, hist, color: str):
+def confidence_split_histogram(name: str, hist, color: str, label: str | None = None):
     """Where the correct and the wrong predictions sit on the confidence
-    axis: two separated humps mean an operating point exists."""
+    axis: two separated humps mean an operating point exists. `label` as
+    in reliability_diagram."""
     centers = (hist.edges[:-1] + hist.edges[1:]) / 2
     width = (hist.edges[1] - hist.edges[0]) * 0.9
     fig, ax = subplots(figsize=(4.6, 3.4))
@@ -251,21 +273,23 @@ def confidence_split_histogram(name: str, hist, color: str):
     ax.set_yscale("log")
     ax.set_xlabel("predicted confidence")
     ax.set_ylabel("crops (log)")
-    ax.set_title(f"{short_name(name)} — confidence of right vs. wrong", fontsize=10)
+    ax.set_title(f"{short_name(label or name)} — confidence of right vs. wrong", fontsize=10)
     style_axes(ax)
     ax.legend(fontsize=7)
     fig.tight_layout()
     return fig
 
 
-def risk_coverage(curves_by_name: dict, colors: dict):
-    """Risk-coverage, one line per experiment (calibration.RiskCoverage)."""
+def risk_coverage(curves_by_name: dict, colors: dict, labels: dict | None = None):
+    """Risk-coverage, one line per experiment (calibration.RiskCoverage).
+    With `labels` (experiment groups), the legend has no AURC."""
     fig, ax = subplots(figsize=(7.4, 4.4))
     for name, curve in curves_by_name.items():
         if not len(curve.coverage):
             continue
+        shown = _name_in_legend(name, labels)
         ax.plot(curve.coverage, curve.risk, color=colors.get(name),
-                label=f"{legend_name(name)} (AURC={curve.aurc:.4f})")
+                label=shown if labels else f"{shown} (AURC={curve.aurc:.4f})")
     ax.set_xlabel("Coverage -- share of crops the model is allowed to decide")
     ax.set_ylabel("Selective risk -- error rate among those")
     ax.set_title("Risk-coverage: what abstaining buys")
@@ -345,12 +369,13 @@ def _counts_agree(rows_by_name: dict, names: list, values: list) -> bool:
 
 
 def slice_chart(ordered_values: list, reports: dict, metric: str, metric_label: str, column: str,
-                colors: dict, class_label=None) -> tuple:
+                colors: dict, class_label=None, labels: dict | None = None) -> tuple:
     """(figure, notes): a metric per slice of `column`, one marked line per
     experiment (with its interval), over grey bars counting the crops in
     each slice -- reading a 0.42 without seeing that it rests on nine crops
     is the mistake this arrangement makes hard. `reports` maps an
-    experiment to its slices.SliceReport."""
+    experiment to its slices.SliceReport; `labels` are the experiment
+    groups' names (see the module docstring)."""
     values = ordered_values[:MAX_CHART_SLICES]
     names = list(reports)
     rows_by_name = {name: {row.value: row for row in report.rows} for name, report in reports.items()}
@@ -372,7 +397,7 @@ def slice_chart(ordered_values: list, reports: dict, metric: str, metric_label: 
         for i, name in enumerate(names):
             ax_counts.bar(x + (i - (n_exp - 1) / 2) * bar_width, [rows_by_name[name][v].n for v in values],
                           bar_width, color=colors.get(name), alpha=0.28,
-                          label=f"crops in slice ({legend_name(name)})")
+                          label=f"crops in slice ({_name_in_legend(name, labels)})")
     ax_counts.set_ylabel("crops in slice", color=COUNT_AXIS_COLOR, fontsize=9)
     ax_counts.tick_params(axis="y", colors=COUNT_AXIS_COLOR, labelsize=8)
     ax_counts.set_ylim(0, max([rows_by_name[name][v].n for name in names for v in values] or [1]) * 1.15)
@@ -384,10 +409,11 @@ def slice_chart(ordered_values: list, reports: dict, metric: str, metric_label: 
         if any(low == low for low, _ in intervals):
             lows = [max(0.0, hh - low) if low == low else 0.0 for hh, (low, _) in zip(heights, intervals)]
             highs = [max(0.0, high - hh) if high == high else 0.0 for hh, (_, high) in zip(heights, intervals)]
-            ax_metric.errorbar(x, heights, yerr=[lows, highs], label=legend_name(name), color=color, marker="o",
+            ax_metric.errorbar(x, heights, yerr=[lows, highs], label=_name_in_legend(name, labels), color=color, marker="o",
                                markersize=5, linewidth=1.8, capsize=3, elinewidth=0.9, ecolor=color, alpha=0.95)
         else:
-            ax_metric.plot(x, heights, label=legend_name(name), color=color, marker="o", markersize=5, linewidth=1.8)
+            ax_metric.plot(x, heights, label=_name_in_legend(name, labels), color=color, marker="o", markersize=5,
+                           linewidth=1.8)
         overall = sl.metric_value(reports[name].overall, metric, class_label)
         if overall == overall:
             ax_metric.axhline(overall, color=color, linestyle="--", linewidth=1, alpha=0.6)

@@ -633,8 +633,8 @@ class HomeView(View):
         from lookin.web.views.workspaces import WorkspacesDialog
         self.s.open_dialog(WorkspacesDialog(self.s, select=self._ws(id)))
 
-    def on_new_workspace(self, group: str = "", keys=None, **_):
-        self.s.open_dialog(NewWorkspaceDialog(self, group=group, keys=list(keys or [])))
+    def on_new_workspace(self, group: str = "", keys=None, group_name: str = "", **_):
+        self.s.open_dialog(NewWorkspaceDialog(self, group=group, keys=list(keys or []), group_name=group_name))
 
     def on_set_dataset(self, id: str = "", **_):  # noqa: A002
         ws = self._ws(id)
@@ -820,10 +820,12 @@ class HomeView(View):
         hash_dataset_later(fresh, path, self.index.put)
         self.s.toast(f"{fresh.label()} now uses {Path(path).name or 'no dataset'}.", "ok")
 
-    def add_keys(self, ws, keys: list, on_done=None) -> None:
+    def add_keys(self, ws, keys: list, on_done=None, group_name: str = "") -> None:
         """Add runs and CSVs to `ws`. A run's CSVs have to be known first, so
         any run whose artifacts are not listed yet is listed -- then this
-        comes back round."""
+        comes back round. What is added is grouped as the runs dialog's
+        "Groups" says (HomeConfig.grouping); `group_name` names the group
+        when everything goes in one."""
         hub = self.hub
         pending = []
         for key in keys:
@@ -841,7 +843,7 @@ class HomeView(View):
                 remaining["n"] -= 1
                 if remaining["n"] == 0:
                     with self.s.lock:
-                        self.add_keys(ws, keys, on_done)
+                        self.add_keys(ws, keys, on_done, group_name)
                     self.s.push({"dirty": ["home", "dialogs"]})
 
             for server, run_id in pending:
@@ -869,15 +871,16 @@ class HomeView(View):
             else:
                 ambiguous.extend(candidates)
         if ambiguous:
-            self.s.open_dialog(PickCsvsDialog(self, ws, direct, ambiguous, problems, on_done))
+            self.s.open_dialog(PickCsvsDialog(self, ws, direct, ambiguous, problems, on_done, group_name))
         else:
-            self.commit_add(ws, direct, problems, on_done)
+            self.commit_add(ws, direct, problems, on_done, group_name)
 
-    def commit_add(self, ws, candidates: list, problems: list, on_done=None) -> None:
+    def commit_add(self, ws, candidates: list, problems: list, on_done=None, group_name: str = "") -> None:
         outcome = {}
 
         def change(fresh):
-            outcome["result"] = wss.add_candidates(fresh, candidates, self.hub.config.dataset_param)
+            outcome["result"] = wss.add_candidates(fresh, candidates, self.hub.config.dataset_param,
+                                                   grouping=self.hub.config.grouping, group_name=group_name)
             return bool(outcome["result"].added)
 
         fresh = lib.update_workspace(ws.path, change)
@@ -926,11 +929,14 @@ class NewWorkspaceDialog(Dialog):
     width = 580
     title = "New workspace"
 
-    def __init__(self, home: HomeView, group: str = "", keys=None):
+    def __init__(self, home: HomeView, group: str = "", keys=None, group_name: str = ""):
         super().__init__()
         self.home = home
         self.group = group
         self.keys = list(keys or [])
+        # The experiment group to put the keys in, when the runs dialog
+        # puts everything added in one (see HomeView.add_keys).
+        self.group_name = group_name
         self.name = ""
         self.dataset = ""
         self.add_keys = bool(self.keys)
@@ -1013,7 +1019,7 @@ class NewWorkspaceDialog(Dialog):
         home.s.mark("home")
         self.session.toast(f"Created {ws.label()} ({ws.id}).", "ok")
         if self.add_keys and self.keys:
-            home.add_keys(ws, self.keys)
+            home.add_keys(ws, self.keys, group_name=self.group_name)
         if open_it:
             # Runs added above that finish downloading later reach the open
             # tab on their own (see workspaces.follow_workspace).
@@ -1116,7 +1122,7 @@ class PickCsvsDialog(Dialog):
     width = 640
     title = "Which results CSVs?"
 
-    def __init__(self, home: HomeView, ws, direct, ambiguous, problems, on_done=None):
+    def __init__(self, home: HomeView, ws, direct, ambiguous, problems, on_done=None, group_name: str = ""):
         super().__init__()
         self.home = home
         self.ws = ws
@@ -1124,6 +1130,7 @@ class PickCsvsDialog(Dialog):
         self.ambiguous = ambiguous
         self.problems = problems
         self.on_done = on_done
+        self.group_name = group_name
         self.ticked: set = set()
 
     def body(self) -> str:
@@ -1149,4 +1156,4 @@ class PickCsvsDialog(Dialog):
     def on_add(self, **_):
         self.close()
         chosen = [c for i, c in enumerate(self.ambiguous) if i in self.ticked]
-        self.home.commit_add(self.ws, self.direct + chosen, self.problems, self.on_done)
+        self.home.commit_add(self.ws, self.direct + chosen, self.problems, self.on_done, self.group_name)

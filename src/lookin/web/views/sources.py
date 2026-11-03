@@ -13,7 +13,11 @@ What it does:
 * per experiment, the id match against the dataset and the class mapping
   (results column -> dataset label, dataset labels only);
 * dataset-wide relabeling, which cascades into every experiment's mapping;
-* simple inferences: crops outside the dataset, drawn on the Embeddings map.
+* simple inferences: crops outside the dataset, drawn on the Embeddings map;
+* experiment groups (core/experiment_groups.py): each experiment's group is
+  picked in its row; the groups card renames them, colors them, dissolves
+  them, groups the checkpoints of each MLflow run, and holds the switch
+  that draws them in the charts or not.
 
 Loads run on a worker thread and report their progress live; everything
 else is immediate.
@@ -28,6 +32,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
+from lookin.core import experiment_groups as eg
 from lookin.core import library
 from lookin.core import mlflow_client
 from lookin.core.dataset_config import CONFIG_NAME, config_for_csv
@@ -37,12 +42,11 @@ from lookin.core.data_manager import (
 )
 from lookin.core.schema import sniff_csv
 from lookin.core.workspace_sources import unique_name
-from lookin.core.chart_style import color_for_experiment
 from lookin.web import html as h
-from lookin.web.views.base import View
+from lookin.web.views.base import PromptDialog, View
 from lookin.web.views.files import FileBrowserDialog
 from lookin.web.views.trainhub import badges as trainhub_badges
-from lookin.web.views.widgets import experiment_color_menu
+from lookin.web.views.widgets import GroupActions, experiment_dot, group_color_menu, groups_switch
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_DATASET = PACKAGE_ROOT / "data" / "example" / "dataset.csv"
@@ -54,10 +58,22 @@ MAPPING_MAX_ALL = FOCUS_MAX
 # The uuid picker's "no id column" choice -- a key compared in code, never
 # a column name (see CLAUDE.md).
 NO_UUID_KEY = "__no_uuid__"
+# An experiment's group picker: no group, and "New group..." -- keys compared
+# in code, never a group id (those start with experiment_groups.GROUP_ID_PREFIX).
+NO_GROUP_KEY = ""
+NEW_GROUP_KEY = "__new_group__"
 SPLIT_OPTIONS = ((SPLIT_TEST, "test (held out)"), (SPLIT_TRAIN, "train (used to fit)"), (SPLIT_OTHER, "other"))
 PROGRESS_PUSH_S = 0.25
 
 _ids = itertools.count(1)
+
+
+def color_for_group(state, member: str) -> str:
+    """The color a group is drawn in: its first member's, as color_slots
+    gives it while the groups are shown -- whether or not they are."""
+    from lookin.core.chart_style import color_for_experiment
+
+    return color_for_experiment(member, state.colors_with_groups(True))
 
 
 def _run_url(origin) -> str:
@@ -118,7 +134,7 @@ class InfRow:
         self.loading = False
 
 
-class SourcesView(View):
+class SourcesView(GroupActions, View):
     name = "sources"
     title = "Sources"
 
@@ -148,6 +164,9 @@ class SourcesView(View):
         self.rows: list = []
         self.inf_rows: list = []
         self.held: list = []
+        # The group definitions of the workspace whose experiments are held
+        # (see restore_mount).
+        self._held_groups: list = []
         self.relabel_open = False
         self.relabel_query = ""
         self.relabel_picked: list = []
@@ -263,7 +282,7 @@ class SourcesView(View):
 
     def render(self) -> str:
         return (f'<div class="stack">{self._dataset_card()}{self._experiments_card()}'
-                f'{self._inferences_card()}</div>')
+                f'{self._groups_card()}{self._inferences_card()}</div>')
 
     # ---- dataset ----
 
@@ -414,7 +433,7 @@ class SourcesView(View):
                              sub="a name edited here changes everywhere, nothing is recomputed")
         names = list(state.experiments)
         origins = self._origins()
-        head = ('<thead><tr><th style="width:18px"></th><th>Name</th><th>From</th><th>Results</th>'
+        head = ('<thead><tr><th style="width:18px"></th><th>Name</th><th>Group</th><th>From</th><th>Results</th>'
                 '<th>Ids matched</th><th>Classes</th><th>Embeddings</th><th>Prototypes</th><th></th></tr></thead>')
         bodies = []
         for row in self.rows:
@@ -443,9 +462,7 @@ class SourcesView(View):
     def _exp_tbody(self, row: ExpRow, names: list, origins: dict) -> str:
         state = self.state
         exp = state.experiments.get(row.loaded_name) if row.loaded_name else None
-        color = color_for_experiment(row.loaded_name, self.state.color_slots) if exp is not None else "var(--ghost)"
-        dot = (experiment_color_menu(self.target, row.loaded_name, color, row.loaded_name in state.experiment_colors, size=9)
-               if exp is not None else h.dot(color, size=9))
+        dot = experiment_dot(self.target, state, row.loaded_name, size=9) if exp is not None else h.dot("var(--ghost)", size=9)
         # A row with nothing loaded opens on its files -- except while it
         # waits or loads, which its bar in the row already says.
         is_open = row.open or (exp is None and not row.held and not row.loading)
@@ -506,6 +523,7 @@ class SourcesView(View):
               f'<td><button type="button" class="chev"{self.a("toggle_row", row=row.id)} aria-expanded="{"true" if is_open else "false"}" '
               f'aria-label="Show details" style="font-size:9px">{tri}</button></td>'
               f'<td><div class="row-nw">{dot}{name_input}</div></td>'
+              f'<td class="nowrap">{self._group_cell(row, exp)}</td>'
               f'<td class="small nowrap" style="color:var(--muted)">{src}</td>'
               f'<td class="mono small nowrap" title="{h.e(row.path)}">{h.e(Path(row.path).name if row.path else "—")}</td>'
               f'<td class="nowrap">{ids_html}</td>'
@@ -515,8 +533,87 @@ class SourcesView(View):
               f'<td class="nowrap" style="text-align:right">{actions}</td></tr>')
         detail = ""
         if is_open:
-            detail = f'<tr class="ws-detail"><td colspan="9">{self._exp_detail(row, exp, origin)}</td></tr>'
+            detail = f'<tr class="ws-detail"><td colspan="10">{self._exp_detail(row, exp, origin)}</td></tr>'
         return f'<tbody data-key="exp-{row.id}">{tr}{detail}</tbody>'
+
+    # ---- experiment groups ----
+
+    def _group_cell(self, row: ExpRow, exp) -> str:
+        """The group picker of a loaded experiment: no group, one of the
+        groups, or a new one."""
+        if exp is None:
+            return '<span class="muted small">—</span>'
+        groups = self.state.groups
+        group = groups.group_of(row.loaded_name)
+        options = ([(NO_GROUP_KEY, "No group")]
+                   + [(g.id, g.name) for g in groups.in_use(self.state.experiments)]
+                   + [(NEW_GROUP_KEY, "New group…")])
+        return h.select(options, group.id if group is not None else NO_GROUP_KEY,
+                        change=self.c("set_group", row=row.id),
+                        title="Experiments of one group are drawn under one name and one color in the charts")
+
+    def _run_of(self, name: str, origins: dict) -> tuple:
+        """(run id, run label) of the MLflow run a loaded experiment comes
+        from, ("", "") for a local file."""
+        row = next((r for r in self.rows if r.loaded_name == name), None)
+        origin = self._origin_of(row, origins) if row is not None else None
+        if origin is None or not origin.from_mlflow():
+            return "", ""
+        return origin.mlflow_run_id, origin.mlflow_run_name or origin.mlflow_run_id[:8]
+
+    def _runs_to_group(self) -> list:
+        """The ungrouped experiments that share an MLflow run with at least
+        one other ungrouped one, as experiment_groups.group_added takes them."""
+        origins = self._origins()
+        found = []
+        for name in self.state.experiments:
+            if self.state.groups.group_of(name) is not None:
+                continue
+            run_id, run_label = self._run_of(name, origins)
+            if run_id:
+                found.append((name, run_id, run_label))
+        counts = {}
+        for _, run_id, _ in found:
+            counts[run_id] = counts.get(run_id, 0) + 1
+        return [f for f in found if counts[f[1]] >= 2]
+
+    def _groups_card(self) -> str:
+        state = self.state
+        groups = state.groups
+        in_use = groups.in_use(state.experiments)
+        by_run = self._runs_to_group()
+        if not in_use and not by_run:
+            return ""
+        right = groups_switch(self.target, state)
+        if by_run:
+            n_runs = len({run_id for _, run_id, _ in by_run})
+            right += h.button(f"Group by run ({n_runs})", act_attr=self.a("group_by_run"), small=True, icon_name="list",
+                              title="One group per MLflow run for its experiments that are in no group yet")
+        if not in_use:
+            body = h.empty("No group yet. Pick one in an experiment's Group column, or group the checkpoints of each run.")
+        else:
+            rows = []
+            for group in in_use:
+                members = groups.members(group.id, state.experiments)
+                color = color_for_group(state, members[0])
+                width = min(max(len(group.name), 12), 40)
+                name_input = (f'<input class="inp" value="{h.e(group.name)}" title="{h.e(group.name)}" '
+                              f'style="width:calc({width}ch + 20px);min-width:140px;height:24px"'
+                              f'{self.c("rename_group", group=group.id)}{h.on_enter(self.name, "rename_group", group=group.id)} '
+                              f'aria-label="Group name">')
+                listed = ", ".join(members)
+                rows.append(
+                    f'<tr data-key="grp-{h.e(group.id)}"><td><div class="row-nw">{group_color_menu(self.target, group, color, size=9)}'
+                    f'{name_input}</div></td>'
+                    f'<td class="small">{len(members)} experiment(s) <span class="muted ell" style="max-width:60ch;display:inline-block;vertical-align:bottom" title="{h.e(listed)}">· {h.e(listed)}</span></td>'
+                    f'<td class="nowrap" style="text-align:right">'
+                    f'{h.button("Ungroup", act_attr=self.a("ungroup", group=group.id), small=True, kind="ghost", icon_name="x", title="Dissolve this group; its experiments stay, each drawn on its own")}'
+                    f'</td></tr>')
+            body = (f'<div class="flush"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Group</th><th>Experiments</th>'
+                    f'<th></th></tr></thead><tbody>{"".join(rows)}</tbody></table></div></div>')
+        sub = ("each group is drawn under one name and one color in the charts" if groups.shown
+               else "hidden: the charts draw every experiment on its own")
+        return h.section("Experiment groups", body, manual="experiment-groups", right=right, sub=sub)
 
     def _exp_detail(self, row: ExpRow, exp, origin) -> str:
         def path_line(label, value, field, browse_action, load_action=None, status=None):
@@ -939,6 +1036,56 @@ class SourcesView(View):
         if self.state.set_experiment_color(name, value):
             self.s.notify_colors()
 
+    def on_set_group(self, row=0, value: str = "", **_):
+        r = self._row(row)
+        if r is None or not r.loaded_name or r.loaded_name not in self.state.experiments:
+            return
+        name = r.loaded_name
+        if value == NEW_GROUP_KEY:
+            run_id, run_label = self._run_of(name, self._origins())
+            default = self.state.groups.unique_name(run_label or name)
+
+            def save(values):
+                try:
+                    self.state.groups.create((values.get("name") or "").strip(), [name])
+                except ValueError as ex:
+                    return str(ex)
+                self.s.notify_colors()
+                return None
+            self.s.open_dialog(PromptDialog("New experiment group", [("name", "Group name", default)], save,
+                                            submit_label="Create",
+                                            note=f"{name} goes in it. Charts draw a group's experiments under its "
+                                                 f"name and one color; tables keep each experiment's own name."))
+            self.refresh()
+            return
+        try:
+            changed = self.state.groups.assign(name, value)
+        except ValueError as ex:
+            self.s.toast(str(ex), "error")
+            return
+        if changed:
+            self.s.notify_colors()
+
+    def on_rename_group(self, group: str = "", value: str = "", **_):
+        try:
+            changed = self.state.groups.rename(group, value)
+        except ValueError as ex:
+            self.s.toast(str(ex), "warn")
+            self.refresh()
+            return
+        if changed:
+            self.s.notify_colors()
+
+    def on_ungroup(self, group: str = "", **_):
+        if self.state.groups.delete(group):
+            self.s.notify_colors()
+
+    def on_group_by_run(self, **_):
+        created = eg.group_added(self.state.groups, self._runs_to_group(), eg.GROUPING_BY_RUN)
+        if created:
+            self.s.toast(f"{len(created)} group(s) made, one per run: {', '.join(g.name for g in created)}.", "ok")
+            self.s.notify_colors()
+
     def on_rename(self, row=0, value: str = "", **_):
         """A loaded experiment's name is a label, nothing else: renaming
         keeps every cached metric (see UploadView._on_name_committed)."""
@@ -1290,6 +1437,7 @@ class SourcesView(View):
                 embeddings_path=str(exp.embeddings_path or ""),
                 prototypes_path=str(exp.model_prototypes_path or ""),
                 color=state.experiment_colors.get(name, ""),
+                group=getattr(state.groups.group_of(name), "id", ""),
             )
             origin = origins.get((name, path))
             if origin is None:
@@ -1298,7 +1446,7 @@ class SourcesView(View):
                 origin = self._origin_of(row, origins) if row is not None else None
             if origin is not None:
                 loaded = replace(origin, name=name, path=path, embeddings_path=loaded.embeddings_path,
-                                 prototypes_path=loaded.prototypes_path, color=loaded.color)
+                                 prototypes_path=loaded.prototypes_path, color=loaded.color, group=loaded.group)
             experiments.append(loaded)
         return library.Mount(
             dataset_path=str(state.dataset.csv_path),
@@ -1312,6 +1460,8 @@ class SourcesView(View):
             review_version=str(getattr(store, "active_version_id", "") or ""),
             experiments=[e for e in experiments if e.path],
             dataset_filter=dict(state.dataset_filter or {}),
+            experiment_groups=state.groups.definitions([e.name for e in experiments if e.path]),
+            show_experiment_groups=state.groups.shown,
         )
 
     def _path_for_experiment(self, name: str) -> str:
@@ -1345,6 +1495,11 @@ class SourcesView(View):
                 self.state.remove_experiment(r.loaded_name)
         self.rows = []
         self.held = []
+        # The groups first, each experiment joins its own as it loads --
+        # now, or once a dataset is loaded (_load_held), which may come
+        # after a clear_all.
+        self.state.groups.adopt(mount.experiment_groups, {}, mount.show_experiment_groups)
+        self._held_groups = list(mount.experiment_groups)
         # Every experiment listed from the start, each loading in its own
         # row in turn -- not rows appearing one by one as each is done.
         self._hold(mount.experiments, "Waiting for the dataset...")
@@ -1381,15 +1536,16 @@ class SourcesView(View):
         self._load_mount_experiments(held)
         self.s.notify_change()
 
-    def add_mount_experiments(self, experiments) -> None:
+    def add_mount_experiments(self, experiments, groups=None) -> None:
         """Load a workspace's experiments into what is already loaded --
         runs added to the open workspace from its Home card (see
-        workspaces.follow_workspace)."""
+        workspaces.follow_workspace). `groups`: the workspace's group
+        definitions, for the groups those experiments were added in."""
         if self.state.dataset is None or not experiments:
             return
         self.s.busy.begin("Loading experiments")
         try:
-            self._load_mount_experiments(experiments)
+            self._load_mount_experiments(experiments, groups)
         finally:
             self.s.busy.end()
         self.s.notify_change()
@@ -1424,7 +1580,8 @@ class SourcesView(View):
             row.held = False
         return row
 
-    def _load_mount_experiments(self, experiments) -> None:
+    def _load_mount_experiments(self, experiments, groups=None) -> None:
+        self.state.groups.add_definitions(self._held_groups if groups is None else groups)
         for e in experiments:
             if not e.path:
                 continue
@@ -1433,6 +1590,8 @@ class SourcesView(View):
                 print(f"[lookin] library: could not restore experiment {e.name!r} from {e.path}: {message}", flush=True)
                 continue
             self.state.set_experiment_color(e.name, e.color)
+            if e.group and self.state.groups.get(e.group) is not None:
+                self.state.groups.assign(e.name, e.group)
             for path, loader, kind in (
                 (e.embeddings_path, self.s.prototype_source.load_embeddings_for, "embeddings"),
                 (e.prototypes_path, self.s.prototype_source.load_prototypes_for, "prototypes"),

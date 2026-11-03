@@ -35,7 +35,7 @@ from lookin.web.views.base import RebuildView
 from lookin.web.views.carousel import CarouselDialog
 from lookin.web.views.common import score_diagnostics_banner
 from lookin.web.views.media import chart_html, fig_png, png_size
-from lookin.web.views.widgets import ClassFocus, class_select
+from lookin.web.views.widgets import ClassFocus, GroupActions, class_select, group_tag, groups_switch
 
 CHART_MAX_WIDTH = 1200
 CHART_PX_PER_INCH = 90
@@ -108,7 +108,7 @@ class _Chart:
     key: str = ""
 
 
-class CalibrationView(RebuildView):
+class CalibrationView(GroupActions, RebuildView):
     name = "calibration"
     title = "Calibration"
 
@@ -331,19 +331,23 @@ class CalibrationView(RebuildView):
 
     # ---- charts ------------------------------------------------------------
 
+    def _chart_label(self, name: str) -> Optional[str]:
+        return (self.state.chart_labels([name]) or {}).get(name)
+
     def _reliability_chart(self, name: str, data, color) -> Optional[_Chart]:
-        fig = charts.reliability_diagram(name, data, color)
+        fig = charts.reliability_diagram(name, data, color, label=self._chart_label(name))
         if fig is None:
             return None
         return _Chart(fig_png(fig), f"Calibration — {name}", RELIABILITY_WIDTH)
 
     def _histogram_chart(self, name: str, bundle: ExperimentCalibration, color) -> _Chart:
-        fig = charts.confidence_split_histogram(name, bundle.histogram, color)
+        fig = charts.confidence_split_histogram(name, bundle.histogram, color, label=self._chart_label(name))
         return _Chart(fig_png(fig), f"Confidence distribution — {name}", HISTOGRAM_WIDTH)
 
     def _curve_chart(self, bundles: dict, all_names: list) -> _Chart:
         colors = {name: color_for_experiment(name, self.state.color_slots) for name in bundles}
-        fig = charts.risk_coverage({name: bundle.curve for name, bundle in bundles.items()}, colors)
+        fig = charts.risk_coverage({name: bundle.curve for name, bundle in bundles.items()}, colors,
+                                   self.state.chart_labels(bundles))
         return _Chart(fig_png(fig), "Risk-coverage", _chart_width(fig))
 
     def _chart_html(self, chart: _Chart) -> str:
@@ -567,8 +571,12 @@ class CalibrationView(RebuildView):
         all_names = list(state.experiments)
         ticks = "".join(
             f'<span class="cal-exp">{h.dot(color_for_experiment(name, self.state.color_slots), size=10)}'
-            f'{h.checkbox(name, ticked, change=self.c("tick", experiment=name), ellipsis=True)}</span>'
+            f'{h.checkbox(name, ticked, change=self.c("tick", experiment=name), ellipsis=True)}'
+            f'{group_tag(self.state, name)}</span>'
             for name, ticked in self.checks.items())
+        switch = groups_switch(self.target, self.state)
+        if switch:
+            ticks += f'<span class="sp"></span>{switch}'
         if not ticks:
             ticks = '<span class="muted small">No experiment loaded.</span>'
         head = h.section(
@@ -608,7 +616,12 @@ class CalibrationView(RebuildView):
         parts.append(self._summary_html(bundles, all_names))
         parts.append(self._believable_html(bundles))
         if self.curve_chart is not None:
-            parts.append(h.section("What does abstaining buy?", self._chart_html(self.curve_chart),
+            note = ""
+            if self.state.chart_labels(bundles):
+                note = ('<div class="muted small"><i>AURC is left out of the legend while experiment groups are '
+                        'shown: one entry stands for several curves. The Summary above has each '
+                        'experiment\'s.</i></div>')
+            parts.append(h.section("What does abstaining buy?", self._chart_html(self.curve_chart) + note,
                                    manual="risk-coverage"))
         parts.append(self._operating_point_html(bundles))
         parts.append(self._temperature_html(bundles))
