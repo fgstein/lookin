@@ -15,7 +15,6 @@ re-merge hundreds of thousands of rows.
 """
 from __future__ import annotations
 
-import re
 import time
 import warnings
 import zipfile
@@ -26,6 +25,9 @@ from typing import Callable, Optional
 
 import numpy as np
 import pandas as pd
+
+# normalize_color is kept importable from here: it used to live in this module.
+from lookin.core.experiment_groups import ExperimentGroups, normalize_color  # noqa: F401
 
 BINARY_MAX_UNIQUE = 2
 CATEGORICAL_MAX_UNIQUE = 20
@@ -66,20 +68,6 @@ def _log(msg: str) -> None:
     tell which phase (row counting, CSV parsing, dtype downcasting, preview
     building...) is the one actually taking the time."""
     print(f"[lookin] {msg}", flush=True)
-
-
-_HEX_COLOR = re.compile(r"#?([0-9a-fA-F]{6})")
-
-
-def normalize_color(value) -> Optional[str]:
-    """"#rrggbb" (lower case) for a color, "" for none, None for anything
-    else -- a color arrives from a browser's color input or a hand-edited
-    manifest, and ends up in an HTML attribute and in matplotlib."""
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    m = _HEX_COLOR.fullmatch(text)
-    return f"#{m.group(1).lower()}" if m else None
 
 
 def _count_data_rows(path: str) -> int:
@@ -702,6 +690,13 @@ class AppState:
     # tab's color menu), in place of its palette color. Saved with the
     # workspace (MountExperiment.color), carried over by a rename.
     experiment_colors: dict = field(default_factory=dict)
+    # Experiment groups (core/experiment_groups.py): which experiments a
+    # chart draws as one, under one name and one color, and the switch that
+    # shows or hides them. Saved with the workspace (Mount.experiment_groups).
+    groups: ExperimentGroups = field(default_factory=ExperimentGroups)
+    # group id -> palette slot, kept like _color_slots so a group keeps its
+    # color while it exists (see color_slots).
+    _group_slots: dict = field(default_factory=dict)
     # name -> InferenceSet: crops with embeddings but no place in the
     # dataset. Kept apart from `dataset`/`experiments` on purpose -- see
     # InferenceSet for why nothing that computes a metric may see them.
@@ -932,6 +927,7 @@ class AppState:
     def remove_experiment(self, name: str) -> None:
         self.experiments.pop(name, None)
         self.experiment_colors.pop(name, None)
+        self.groups.forget_experiment(name)
         self._invalidate_merged_cache(name)
 
     def load_inference(
@@ -1057,12 +1053,13 @@ class AppState:
             self._color_slots[new_name] = self._color_slots.pop(old_name)
         if old_name in self.experiment_colors:
             self.experiment_colors[new_name] = self.experiment_colors.pop(old_name)
+        self.groups.rename_experiment(old_name, new_name)
         if self._merged_cache_name == old_name:
             self._merged_cache_name = new_name
 
-    @property
-    def color_slots(self) -> dict:
-        """name -> palette slot of every loaded experiment.
+    def own_color_slots(self) -> dict:
+        """name -> palette slot of every loaded experiment, or the
+        "#rrggbb" the user gave it -- the color it has with no group drawn.
 
         A slot is handed out the first time an experiment is seen (the
         lowest one no loaded experiment holds) and kept until it is
@@ -1086,6 +1083,58 @@ class AppState:
                 taken.add(free)
         self._color_slots = slots
         return {**slots, **{n: c for n, c in self.experiment_colors.items() if n in slots}}
+
+    @property
+    def color_slots(self) -> dict:
+        """name -> the color every chart, table and dot draws it in: its own
+        (own_color_slots), or -- while the groups are shown -- its group's,
+        the same for every member of one group. See colors_with_groups."""
+        return self.colors_with_groups(self.groups.shown)
+
+    def colors_with_groups(self, shown: bool) -> dict:
+        """color_slots as it is with the groups shown (True) or hidden.
+
+        A group's color is the one the user gave it, else a palette slot of
+        its own, kept while the group exists: the slot of its first member
+        when no ungrouped experiment holds it (so grouping the checkpoints
+        of a run keeps the color its first checkpoint had), else the lowest
+        free one. The members' own slots and colors are left as they are,
+        and come back when the groups are hidden.
+        """
+        own = self.own_color_slots()
+        groups = self.groups
+        if not shown or not groups.member_of:
+            return own
+        slots = self._color_slots
+        in_use = groups.in_use(self.experiments)
+        if not in_use:
+            return own
+        taken = {slots[n] for n in self.experiments if groups.group_of(n) is None}
+        group_slots = {}
+        for group in in_use:
+            slot = self._group_slots.get(group.id)
+            if slot is None or slot in taken:
+                first = groups.members(group.id, self.experiments)[0]
+                slot = slots[first]
+                if slot in taken:
+                    slot = 0
+                    while slot in taken:
+                        slot += 1
+            group_slots[group.id] = slot
+            taken.add(slot)
+        self._group_slots = group_slots
+        out = dict(own)
+        for name in self.experiments:
+            group = groups.group_of(name)
+            if group is not None:
+                out[name] = group.color or group_slots[group.id]
+        return out
+
+    def chart_labels(self, names) -> Optional[dict]:
+        """What a chart calls each of `names` (see
+        ExperimentGroups.chart_labels): None when none of them is drawn as
+        a group -- the chart is then exactly what it always was."""
+        return self.groups.chart_labels([n for n in names if n in self.experiments])
 
     def set_experiment_color(self, name: str, color: str) -> bool:
         """Give an experiment its own color ("#rrggbb"), or its palette one
@@ -1121,6 +1170,8 @@ class AppState:
         self.dataset = None
         self.experiments.clear()
         self.experiment_colors.clear()
+        self.groups.clear()
+        self._group_slots.clear()
         self.inferences.clear()
         # Decisions are already on disk (the review store saves after every
         # mutation), so dropping the in-memory store here loses nothing --

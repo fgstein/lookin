@@ -688,7 +688,7 @@ def follow_workspace(session, fresh) -> bool:
             new = [e for e in fresh.mount.experiments
                    if e.name not in here and (e.name, e.path) not in seen and wss.is_downloaded(e)]
             if new:
-                upload.add_mount_experiments(new)
+                upload.add_mount_experiments(new, fresh.mount.experiment_groups)
                 _adopt_loaded_mount(session, fresh)
         _remember_loadable(session, fresh)
         session.mark("*")

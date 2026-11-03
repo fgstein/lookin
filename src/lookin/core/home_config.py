@@ -20,13 +20,19 @@ The shape, with every key optional::
         "hidden": [{"uri": "...", "run_id": "...", "name": "..."}],
         "show_unsuccessful": false,
         "search": "",
-        "filter": ""
+        "filter": "",
+        "grouping": "by_run"
       },
       "columns": [{"key": "params.backbone", "label": "backbone"},
                   {"key": "metrics.val_acc"}],
       "parallel_requests": 4,
       "trainhub_url": "http://trainhub.lab:8420"
     }
+
+"grouping" is how the runs dialog groups the experiments it adds
+(core/experiment_groups.py): "by_run" puts the checkpoints of one run
+added together in one group, "none" groups nothing, "one" puts everything
+added at once in one new group.
 
 "trainhub_url" is the TrainHub server whose runs, checkpoints and
 inferences get a badge next to the experiments made from the same MLflow
@@ -50,6 +56,7 @@ from pathlib import Path
 from typing import Optional
 
 from lookin.core import fileio
+from lookin.core.experiment_groups import GROUPING_BY_RUN, GROUPINGS
 from lookin.core.prefs import config_dir
 from lookin.core.workspace_sources import DEFAULT_DATASET_PARAM, normalize_uri
 
@@ -88,7 +95,8 @@ def default_config(tracking_uri: str = "") -> dict:
         "servers": servers,
         "dataset_param": DEFAULT_DATASET_PARAM,
         "experiments": {},
-        "runs": {"hidden": [], "show_unsuccessful": False, "search": "", "filter": ""},
+        "runs": {"hidden": [], "show_unsuccessful": False, "search": "", "filter": "",
+                 "grouping": GROUPING_BY_RUN},
         "columns": [],
         "parallel_requests": DEFAULT_PARALLEL_REQUESTS,
         "trainhub_url": "",
@@ -144,6 +152,8 @@ def normalize(raw) -> dict:
         for key in ("search", "filter"):
             if isinstance(runs.get(key), str):
                 cfg["runs"][key] = runs[key]
+        if runs.get("grouping") in GROUPINGS:
+            cfg["runs"]["grouping"] = runs["grouping"]
     columns = []
     for c in raw.get("columns") or []:
         if isinstance(c, str):
@@ -388,6 +398,12 @@ class HomeConfig:
         labels = {c["key"]: c.get("label") for c in self.columns}
         self.data["columns"] = [{"key": k, **({"label": labels[k]} if labels.get(k) else {})} for k in keys]
         self.save()
+
+    @property
+    def grouping(self) -> str:
+        """How the runs dialog groups what it adds (experiment_groups.GROUPINGS)."""
+        value = self.runs.get("grouping", GROUPING_BY_RUN)
+        return value if value in GROUPINGS else GROUPING_BY_RUN
 
     @property
     def parallel_requests(self) -> int:

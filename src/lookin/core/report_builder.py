@@ -220,7 +220,9 @@ def _add_per_class_charts(report: Report, state, metrics_by_name: dict, focus: l
     for metric in REPORT_CHART_METRICS:
         if not all(metric in pc.columns for pc in per_class.values()):
             continue
-        fig, _uneven = charts.per_class_bars(per_class, metric, labels, colors)
+        fig, _uneven = charts.per_class_bars(per_class, metric, labels, colors,
+                                             names=state.chart_labels(per_class)
+                                             if hasattr(state, "chart_labels") else None)
         section.blocks.append(report.figure(fig, f"Per-class {metric.replace('_', ' ')} by experiment"))
     section.blocks.append(report.paragraph(
         "[n] under each class name is its support -- the number of ground-truth examples behind that class's "

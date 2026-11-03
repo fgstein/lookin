@@ -236,21 +236,88 @@ class ClassFocus:
             self.min_support = min_support
 
 
+def _color_menu(target: str, action: str, args: dict, color: str, custom: bool, what: str, size: int) -> str:
+    from lookin.core.chart_style import EXPERIMENT_PRESET_COLORS
+
+    swatches = "".join(
+        f'<button type="button" class="swatch{" on" if c == color else ""}" style="background:{c}"'
+        f'{h.act(target, action, **args, value=c)} title="{c}" aria-label="Color {c}"></button>'
+        for c in EXPERIMENT_PRESET_COLORS)
+    picker = (f'<label class="swatch-other">{h.icon("sliders", 14)}<span>Other color…</span>'
+              f'<input type="color" value="{h.e(color)}"{h.on_change(target, action, **args)}></label>')
+    auto = (f'<hr><button type="button"{h.act(target, action, **args, value="")}>'
+            f'{h.icon("refresh", 14)}<span>Automatic</span></button>') if custom else ""
+    return (f'<span class="menu-wrap"><button type="button" class="color-btn" data-menu="1" '
+            f'title="Color of {h.e(what)} -- click to change" aria-label="Color of {h.e(what)}">{h.dot(color, size=size)}</button>'
+            f'<div class="menu menu-fixed color-menu"><div class="swatches">{swatches}</div>{picker}{auto}</div></span>')
+
+
 def experiment_color_menu(target: str, name: str, color: str, custom: bool, size: int = 10) -> str:
     """An experiment's color dot that opens its color menu: ten preset
     swatches, "Other color..." (the browser's own picker -- nothing
     fetched), and "Automatic" to go back to its palette color. Each choice
     runs `target.on_color(name=, value=)`, value "" for Automatic."""
-    from lookin.core.chart_style import EXPERIMENT_PRESET_COLORS
+    return _color_menu(target, "color", {"name": name}, color, custom, name, size)
 
-    swatches = "".join(
-        f'<button type="button" class="swatch{" on" if c == color else ""}" style="background:{c}"'
-        f'{h.act(target, "color", name=name, value=c)} title="{c}" aria-label="Color {c}"></button>'
-        for c in EXPERIMENT_PRESET_COLORS)
-    picker = (f'<label class="swatch-other">{h.icon("sliders", 14)}<span>Other color…</span>'
-              f'<input type="color" value="{h.e(color)}"{h.on_change(target, "color", name=name)}></label>')
-    auto = (f'<hr><button type="button"{h.act(target, "color", name=name, value="")}>'
-            f'{h.icon("refresh", 14)}<span>Automatic</span></button>') if custom else ""
-    return (f'<span class="menu-wrap"><button type="button" class="color-btn" data-menu="1" '
-            f'title="Color of {h.e(name)} -- click to change" aria-label="Color of {h.e(name)}">{h.dot(color, size=size)}</button>'
-            f'<div class="menu menu-fixed color-menu"><div class="swatches">{swatches}</div>{picker}{auto}</div></span>')
+
+def group_color_menu(target: str, group, color: str, size: int = 10) -> str:
+    """The same menu for an experiment group: each choice runs
+    `target.on_group_color(group=<id>, value=)`."""
+    return _color_menu(target, "group_color", {"group": group.id}, color, bool(group.color),
+                       f"group {group.name}", size)
+
+
+def experiment_dot(target: str, state, name: str, size: int = 10) -> str:
+    """An experiment's color dot with its menu, where it is listed: while
+    it is drawn as a group, the dot is the group's and its menu changes the
+    group's color (the experiment's own color is kept underneath and comes
+    back when the groups are hidden)."""
+    from lookin.core.chart_style import color_for_experiment
+
+    color = color_for_experiment(name, state.color_slots)
+    group = state.groups.shown_group_of(name)
+    if group is not None:
+        return group_color_menu(target, group, color, size=size)
+    return experiment_color_menu(target, name, color, name in state.experiment_colors, size=size)
+
+
+def group_tag(state, name: str) -> str:
+    """The name of the group `name` is in, small, after the experiment's
+    own name -- dimmed while the groups are hidden."""
+    group = state.groups.group_of(name)
+    if group is None:
+        return ""
+    style = "" if state.groups.shown else ' style="opacity:.55"'
+    return (f'<span class="small muted nowrap"{style} title="In the experiment group {h.e(group.name)}'
+            f'{"" if state.groups.shown else " (groups hidden)"}">· {h.e(group.name)}</span>')
+
+
+def groups_switch(target: str, state) -> str:
+    """The one-click switch that draws the experiment groups in every chart,
+    or every experiment on its own; nothing when there is no group. Runs
+    `target.on_show_groups(value=)`."""
+    if not state.groups.in_use(state.experiments):
+        return ""
+    return h.checkbox("Draw experiment groups", state.groups.shown, change=h.on_change(target, "show_groups"),
+                      title="Charts draw each group under one name and one color. Untick to draw every "
+                            "experiment on its own -- the groups are kept.")
+
+
+class GroupActions:
+    """The handlers behind group_color_menu and groups_switch, for any view
+    that shows them (it has `self.state` and `self.s`). Every chart follows
+    through Session.notify_colors -- a group changes colors and names, never
+    what is computed."""
+
+    def on_group_color(self, group: str = "", value: str = "", **_):
+        try:
+            changed = self.state.groups.set_color(group, value)
+        except ValueError as ex:
+            self.s.toast(str(ex), "error")
+            return
+        if changed:
+            self.s.notify_colors()
+
+    def on_show_groups(self, value=False, **_):
+        if self.state.groups.set_shown(bool(value)):
+            self.s.notify_colors()

@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Callable, Optional
 
+from lookin.core import experiment_groups as eg
 from lookin.core import library as lib
 from lookin.core import mlflow_cache
 from lookin.core import mlflow_client as mlf
@@ -129,11 +130,14 @@ class AddResult:
     added: list = field(default_factory=list)      # experiment names
     skipped: list = field(default_factory=list)    # (label, reason)
     dataset_set: str = ""                          # the dataset adopted from a run, if any
+    groups: list = field(default_factory=list)     # names of the experiment groups made
 
     def message(self) -> str:
         bits = []
         if self.added:
             bits.append(f"Added {len(self.added)} experiment(s)")
+        if self.groups:
+            bits.append(f"grouped in {', '.join(self.groups)}")
         if self.dataset_set:
             bits.append(f"dataset set to {Path(self.dataset_set).name}")
         if self.skipped:
@@ -143,9 +147,15 @@ class AddResult:
 
 
 def add_candidates(workspace: lib.Workspace, candidates: list,
-                   dataset_param: str = DEFAULT_DATASET_PARAM) -> AddResult:
+                   dataset_param: str = DEFAULT_DATASET_PARAM,
+                   grouping: str = eg.GROUPING_NONE, group_name: str = "") -> AddResult:
     """Add `candidates` to `workspace`'s mount. Does not save -- the caller
     does, once, whatever came of it.
+
+    `grouping` (experiment_groups.GROUPINGS) groups what was added: the
+    checkpoints of one run together, all of it in one new group called
+    `group_name`, or nothing. It never puts an experiment in a group the
+    workspace already had (see experiment_groups.group_added).
 
     A workspace is one dataset. A run that records which dataset it was
     evaluated on (`dataset_param`) either gives an empty workspace its
@@ -156,6 +166,7 @@ def add_candidates(workspace: lib.Workspace, candidates: list,
     """
     result = AddResult()
     mount = workspace.mount
+    added = []
     for c in candidates:
         label = c.default_name()
         if contains(workspace, c.uri, c.run.run_id, c.csv.path):
@@ -191,12 +202,20 @@ def add_candidates(workspace: lib.Workspace, candidates: list,
             experiment.prototypes_path = str(mlflow_cache.cached_path(c.run.run_id, c.prototypes.path))
         mount.experiments.append(experiment)
         result.added.append(name)
+        added.append((name, c.run.run_id, c.run.label()))
+    if added and grouping != eg.GROUPING_NONE:
+        groups = eg.from_mount(mount)
+        result.groups = [g.name for g in eg.group_added(groups, added, grouping, group_name)]
+        eg.write_to_mount(groups, mount)
     return result
 
 
 def remove_experiment(workspace: lib.Workspace, name: str) -> bool:
     before = len(workspace.mount.experiments)
+    groups = eg.from_mount(workspace.mount)
     workspace.mount.experiments = [e for e in workspace.mount.experiments if e.name != name]
+    groups.forget_experiment(name)
+    eg.write_to_mount(groups, workspace.mount)
     return len(workspace.mount.experiments) != before
 
 

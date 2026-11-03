@@ -111,6 +111,13 @@ def _save_png(png: bytes, save_to: str, default_name: str) -> dict:
 
 # ---- charts ------------------------------------------------------------------
 
+# Said with a chart whose legend leaves its per-experiment number out
+# because experiment groups are drawn (see charts.py).
+_GROUPED_LEGEND_NOTE = ("Experiment groups are drawn: the legend names each group once and leaves {what} out, "
+                        "since one entry stands for several curves. get_metrics / get_calibration give each "
+                        "experiment's number.")
+
+
 def _colors(state, names) -> dict:
     return {n: color_for_experiment(n, state.color_slots) for n in names}
 
@@ -135,8 +142,11 @@ def _focus(metrics_list) -> list | None:
 def plot_chart(workspace_id: str, chart: str, experiments: list | None = None, metric: str = "",
                target: str = "", column: str = "", classes: list | None = None, class_label: str | None = None,
                binning: str = "auto", bins: int = 10, min_rows: int = 30, method: str = "pca",
-               max_points: int = DEFAULT_PROJECTION_POINTS, color_by: str = "", save_to: str = "") -> tuple:
-    """(answer, png): one chart of a workspace, drawn as its tab draws it."""
+               max_points: int = DEFAULT_PROJECTION_POINTS, color_by: str = "", save_to: str = "",
+               groups: bool | None = None) -> tuple:
+    """(answer, png): one chart of a workspace, drawn as its tab draws it.
+    `groups`: draw the experiment groups (True) or each experiment on its
+    own (False) for this chart only; None follows the workspace's switch."""
     if chart not in CHART_KINDS:
         raise ValueError(f"chart must be one of {', '.join(CHART_KINDS)}; got {chart!r}.")
     with tools._lock, HEAVY_WORK_LOCK:
@@ -157,9 +167,15 @@ def plot_chart(workspace_id: str, chart: str, experiments: list | None = None, m
             tab = "embeddings"
         else:
             names = _names(entry, experiments)
-            colors = _colors(state, names)
-            fig, title, tab, notes = _metric_chart(entry, chart, names, colors, metric, target, column, classes,
-                                                   class_label, binning, bins, min_rows)
+            saved_switch = state.groups.shown
+            if groups is not None:
+                state.groups.shown = bool(groups)
+            try:
+                colors = _colors(state, names)
+                fig, title, tab, notes = _metric_chart(entry, chart, names, colors, metric, target, column,
+                                                       classes, class_label, binning, bins, min_rows)
+            finally:
+                state.groups.shown = saved_switch
         png = charts.figure_png(fig)
     out = tools._context(entry, tab)
     out.update(chart=chart, title=title)
@@ -187,7 +203,7 @@ def _metric_chart(entry, chart, names, colors, metric, target, column, classes, 
             notes.append(f"{len(focus)} of {len(labels):,} classes shown"
                          + ("." if classes else " -- the most confused; name others with `classes`."))
             labels = [c for c in focus if c in set(labels)]
-        fig, uneven = charts.per_class_bars(per_class, metric, labels, colors)
+        fig, uneven = charts.per_class_bars(per_class, metric, labels, colors, names=state.chart_labels(names))
         notes.append("[n] under each class is its support.")
         return fig, f"Per-class {metric}", "metrics", notes
     if chart == "roc_pr":
@@ -202,7 +218,11 @@ def _metric_chart(entry, chart, names, colors, metric, target, column, classes, 
                 curves[n] = curve
         if not curves:
             raise ValueError(" ".join(notes) or "No curve to draw.")
-        return charts.roc_pr_curves(curves, target, colors), f"ROC and PR curves -- {target}", "metrics", notes
+        labels = state.chart_labels(curves)
+        if labels:
+            notes.append(_GROUPED_LEGEND_NOTE.format(what="AUC and AP"))
+        return (charts.roc_pr_curves(curves, target, colors, labels), f"ROC and PR curves -- {target}",
+                "metrics", notes)
     if chart in ("confusion_matrix", "confusion_overview"):
         if len(names) != 1:
             raise ValueError("A confusion matrix is drawn for one experiment: name exactly one.")
@@ -223,15 +243,20 @@ def _metric_chart(entry, chart, names, colors, metric, target, column, classes, 
             raise ValueError(f"A {chart} chart is drawn for one experiment: name exactly one.")
         c = tools._calibration_of(entry, names[0])
         if chart == "reliability":
-            fig = charts.reliability_diagram(names[0], c["reliability"], colors[names[0]])
+            fig = charts.reliability_diagram(names[0], c["reliability"], colors[names[0]],
+                                             label=(state.chart_labels(names) or {}).get(names[0]))
             if fig is None:
                 raise ValueError(f"No reliability diagram: {c['reliability'].disabled_reason}")
             return fig, f"Reliability -- {names[0]}", "calibration", notes
-        return (charts.confidence_split_histogram(names[0], c["histogram"], colors[names[0]]),
+        return (charts.confidence_split_histogram(names[0], c["histogram"], colors[names[0]],
+                                                  label=(state.chart_labels(names) or {}).get(names[0])),
                 f"Confidence of right vs. wrong -- {names[0]}", "calibration", notes)
     if chart == "risk_coverage":
         curves = {n: tools._calibration_of(entry, n)["curve"] for n in names}
-        return charts.risk_coverage(curves, colors), "Risk-coverage", "calibration", notes
+        labels = state.chart_labels(curves)
+        if labels:
+            notes.append(_GROUPED_LEGEND_NOTE.format(what="AURC"))
+        return charts.risk_coverage(curves, colors, labels), "Risk-coverage", "calibration", notes
     # slices
     if not column:
         raise ValueError("A slices chart needs the dataset column to slice by.")
@@ -246,7 +271,8 @@ def _metric_chart(entry, chart, names, colors, metric, target, column, classes, 
     if not ordered:
         raise ValueError(f"No rows to slice by {column!r}.")
     label = slice_metric.replace("_", " ") + (f" ({class_label})" if class_label is not None else "")
-    fig, notes = charts.slice_chart(ordered, reports, slice_metric, label, column, colors, class_label=class_label)
+    fig, notes = charts.slice_chart(ordered, reports, slice_metric, label, column, colors, class_label=class_label,
+                                    labels=state.chart_labels(names))
     return fig, f"{label} by {column}", "metrics", notes
 
 

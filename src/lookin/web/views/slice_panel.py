@@ -264,7 +264,8 @@ class SlicePanel:
         label = self._metric_title()
         colors = {name: color_for_experiment(name, self.s.state.color_slots) for name in reports}
         fig, notes = charts.slice_chart(ordered_values, reports, self.metric, label, self.column, colors,
-                                        class_label=self._class_label())
+                                        class_label=self._class_label(),
+                                        labels=self.s.state.chart_labels(reports))
         return (fig_html(self.s, fig, f"{label} by {self.column}")
                 + "".join(f'<div class="muted small"><i>{h.e(n)}</i></div>' for n in notes))
 

@@ -42,7 +42,7 @@ from lookin.web.views.common import (
 from lookin.web.views.files import FileBrowserDialog
 from lookin.web.views.media import fig_html
 from lookin.web.views.slice_panel import SlicePanel
-from lookin.web.views.widgets import ClassFocus, class_select, experiment_color_menu
+from lookin.web.views.widgets import ClassFocus, GroupActions, class_select, experiment_dot, group_tag, groups_switch
 
 
 # Every per-class column compute_metrics() produces, so the chart below can
@@ -84,7 +84,7 @@ def _log(msg: str) -> None:
     print(f"[lookin] {msg}", flush=True)
 
 
-class MetricsView(RebuildView):
+class MetricsView(GroupActions, RebuildView):
     name = "metrics"
     title = "Metrics"
 
@@ -147,18 +147,19 @@ class MetricsView(RebuildView):
                    f"every table, legend and chart below, a dot its color.")
         rows = []
         for position, name in enumerate(names):
-            color = color_for_experiment(name, self.state.color_slots)
             rows.append(
                 f'<div class="mx-row" data-key="mx-{h.e(name)}">'
                 f'{h.button(icon_name="chev-up", act_attr=self.a("move", name=name, delta=-1), small=True, kind="ghost", title="Move up", disabled=position == 0)}'
                 f'{h.button(icon_name="chev-down", act_attr=self.a("move", name=name, delta=1), small=True, kind="ghost", title="Move down", disabled=position == total - 1)}'
-                f'{experiment_color_menu(self.target, name, color, name in self.state.experiment_colors)}'
+                f'{experiment_dot(self.target, self.state, name)}'
                 f'{h.checkbox(name, self.checked.get(name, True), change=self.c("check", name=name), cls="grow", ellipsis=True)}'
+                f'{group_tag(self.state, name)}'
                 f'</div>')
         head = (f'<div class="row"><span class="muted small grow">{h.e(summary)}</span>'
                 f'{h.button("Select all", act_attr=self.a("select_all"), small=True, kind="ghost", icon_name="check")}'
                 f'{h.button("Select none", act_attr=self.a("select_none"), small=True, kind="ghost", icon_name="x")}'
-                f'{h.button("Sort A-Z", act_attr=self.a("sort_az"), small=True, kind="ghost", icon_name="list")}</div>')
+                f'{h.button("Sort A-Z", act_attr=self.a("sort_az"), small=True, kind="ghost", icon_name="list")}'
+                f'{groups_switch(self.target, self.state)}</div>')
         return f'<section class="card"><div class="card-b">{head}<div class="mx-list">{"".join(rows)}</div></div></section>'
 
     def _apply_order(self, names: list) -> None:
@@ -341,7 +342,8 @@ class MetricsView(RebuildView):
         if self._many_classes:
             labels_union = [l for l in self._focus if l in set(labels_union)]
         colors = {name: color_for_experiment(name, self.state.color_slots) for name in metrics_by_name}
-        fig, uneven_support = charts.per_class_bars(per_class_by_name, metric_key, labels_union, colors)
+        fig, uneven_support = charts.per_class_bars(per_class_by_name, metric_key, labels_union, colors,
+                                                    names=self.state.chart_labels(per_class_by_name))
         notes = ["[n] under each class name is its support -- the number of ground-truth examples used to compute that class's metrics."]
         if self._many_classes:
             notes.insert(0, f"{len(labels_union)} of {n_all_classes:,} classes -- the ones picked under "
@@ -377,7 +379,11 @@ class MetricsView(RebuildView):
             notes.append(f"Macro-average taken over the classes whose score column varies; "
                          f"excluded: {', '.join(excluded)}.")
         colors = {name: color_for_experiment(name, self.state.color_slots) for name in drawable}
-        fig = charts.roc_pr_curves(drawable, target, colors)
+        labels = self.state.chart_labels(drawable)
+        if labels:
+            notes.append("AUC and AP are left out of the legend while experiment groups are shown: "
+                         "one entry stands for several curves. The table above has each experiment's.")
+        fig = charts.roc_pr_curves(drawable, target, colors, labels)
         return (fig_html(self.s, fig, f"ROC & Precision-Recall — {target}")
                 + "".join(f'<div class="muted small"><i>{h.e(n)}</i></div>' for n in notes))
 

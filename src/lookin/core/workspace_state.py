@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from lookin.core import experiment_groups
 from lookin.core import library as lib
 from lookin.core import workspace_sources
 from lookin.core.data_manager import SPLIT_KINDS, SPLIT_TEST, AppState, ColumnConfig
@@ -89,6 +90,9 @@ def load_workspace_state(workspace: lib.Workspace) -> LoadedWorkspace:
     if store is not None and mount.review_version and mount.review_version in store.versions:
         store.active_version_id = mount.review_version
 
+    # The groups as the workspace holds them; a member that is not loaded
+    # below is simply not drawn.
+    state.groups = experiment_groups.from_mount(mount)
     for experiment in mount.experiments:
         reason = _unloadable_reason(experiment)
         if reason:

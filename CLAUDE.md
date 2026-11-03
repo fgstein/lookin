@@ -70,6 +70,11 @@ Keys that are compared somewhere and must never be reworded:
   `predicted_score`, `correct`
 - `MACRO_AVERAGE` in `core/metrics.py` — a dropdown value *and* a comparison
 - `NO_UUID_KEY` in `web/views/sources.py`: the uuid picker's "None" choice
+- experiment groups (`core/experiment_groups.py`): the runs dialog's grouping
+  `GROUPING_*` (`by_run`, `none`, `one` -- stored in home_view.json), the
+  group ids (`eg-...`, stored in the manifest, which is why renaming a group
+  touches no member), and the group picker's `NO_GROUP_KEY` / `NEW_GROUP_KEY`
+  in `web/views/sources.py`
 - review statuses and reasons (`core/review.py`): `ok`, `relabel`, `exclude`,
   `uncertain`, `blurred`, ... -- written into the review files and accepted
   as is by the MCP tools; their labels live in `core/review_actions.py`

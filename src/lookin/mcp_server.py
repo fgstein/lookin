@@ -58,6 +58,12 @@ them. list_datasets, then get_dataset (file, the MLflow run it came from, deriva
 get_dataset_stats (sources, splits, checks, and per mapping -- a label column; a dataset can have
 several -- class balance); compare_datasets puts two side by side.
 
+Experiment groups: several experiments of a workspace (typically the checkpoints of one training run) can
+be put in a named group. A group only changes how charts are drawn -- its members share one color and
+one legend entry, the group's name -- never a number: every tool still reports each experiment under
+its own name. get_workspace lists the groups; whether charts draw them is the workspace's
+"experiment_groups_shown" switch (show_experiment_groups), and plot_chart can override it per chart.
+
 Metrics are only comparable within one workspace: two workspaces usually have different datasets.
 Every answer carries a "warnings" list -- report those to the user along with the numbers -- and an
 "open_url" that opens the same thing in Lookin's interface; give it to the user. Crops carry their own
@@ -384,12 +390,16 @@ def plot_chart(
     color_by: Annotated[str, Field(description="projection: a dataset column to colour by; empty for the "
                                    "class.")] = "",
     save_to: SaveTo = "",
+    groups: Annotated[bool | None, Field(description=(
+        "Experiment groups, for this chart only: true draws each group's experiments in one colour under one "
+        "legend entry (and leaves AUC/AP/AURC out of the legend), false draws every experiment on its own. "
+        "Omit to follow the workspace's switch."))] = None,
 ) -> list:
     """Draw one chart of a workspace exactly as its tab in Lookin draws it, and return it as a PNG
     image, with a JSON note (title, caveats, link to the tab)."""
     _no_save_in_read_only(save_to)
     return _run_picture(outputs.plot_chart, workspace_id, chart, experiments, metric, target, column, classes,
-                        class_label, binning, bins, min_rows, method, max_points, color_by, save_to)
+                        class_label, binning, bins, min_rows, method, max_points, color_by, save_to, groups)
 
 
 def make_mosaic(
@@ -527,9 +537,12 @@ def add_experiment(
                                      "otherwise).")] = "",
     prototypes: Annotated[str, Field(description="Optional prototypes .npz (found beside the CSV by name "
                                      "otherwise).")] = "",
+    group: Annotated[str, Field(description=(
+        "Optional experiment group to put it in: an existing group's id or name, or a new name to make "
+        "one."))] = "",
 ) -> str:
     """Add a local results CSV to a workspace as an experiment."""
-    return _run(actions.add_experiment, workspace_id, results_csv, name, embeddings, prototypes)
+    return _run(actions.add_experiment, workspace_id, results_csv, name, embeddings, prototypes, group)
 
 
 def add_mlflow_run(
@@ -539,11 +552,15 @@ def add_mlflow_run(
     csv_path: Annotated[str, Field(description="Which CSV of the run, when it logged several.")] = "",
     name: str = "",
     download: Annotated[bool, Field(description="Fetch its files now.")] = True,
+    group: Annotated[str, Field(description=(
+        "Optional experiment group to put it in: an existing group's id or name, or a new name to make "
+        "one. Adding the checkpoints (CSVs) of one run one by one with the same group draws them as one "
+        "series in the charts."))] = "",
 ) -> str:
     """Add an MLflow run's results CSV (and its embeddings/prototypes) to a workspace, as dropping the
     run on it on Lookin's Home page does. A run that records another dataset than the workspace's is
     refused; an empty workspace takes the run's dataset."""
-    return _run(actions.add_mlflow_run, workspace_id, run_id, server, csv_path, name, download)
+    return _run(actions.add_mlflow_run, workspace_id, run_id, server, csv_path, name, download, group)
 
 
 def remove_experiment(workspace_id: WorkspaceId, name: ExperimentName) -> str:
@@ -563,6 +580,74 @@ def set_experiment_color(
 ) -> str:
     """The colour an experiment is drawn in, in every chart."""
     return _run(actions.set_experiment_color, workspace_id, name, color)
+
+
+GroupKey = Annotated[str, Field(description="An experiment group's id or exact name, as get_workspace lists them.")]
+
+
+def create_experiment_group(
+    workspace_id: WorkspaceId,
+    name: Annotated[str, Field(description="The group's name -- what chart legends will show. Unique among the "
+                               "workspace's groups.")],
+    experiments: Annotated[list[str], Field(description=(
+        "The experiments to put in it (names as get_workspace lists them); each leaves the group it was in."))],
+    color: Annotated[str, Field(description="'#rrggbb', or empty for a palette colour.")] = "",
+) -> str:
+    """Put several experiments of a workspace in a new experiment group. While groups are shown, every
+    chart draws the group's members in one colour under one legend entry, the group's name -- e.g. the
+    checkpoints of one training run drawn as that run. Only the drawing changes: each member keeps its
+    own name, its own numbers in every table and tool answer, and its own colour (which comes back when
+    it leaves the group or groups are hidden)."""
+    return _run(actions.create_experiment_group, workspace_id, name, experiments, color)
+
+
+def set_experiment_group(
+    workspace_id: WorkspaceId,
+    experiment: ExperimentName,
+    group: Annotated[str, Field(description="An existing group's id or name; empty to take the experiment out of "
+                                "its group.")] = "",
+) -> str:
+    """Move one experiment into an existing experiment group, or out of any. A group left with no
+    experiment disappears."""
+    return _run(actions.set_experiment_group, workspace_id, experiment, group)
+
+
+def rename_experiment_group(workspace_id: WorkspaceId, group: GroupKey, new_name: str) -> str:
+    """Rename an experiment group: every chart's legend shows the new name. Its experiments keep their
+    own names."""
+    return _run(actions.rename_experiment_group, workspace_id, group, new_name)
+
+
+def set_experiment_group_color(
+    workspace_id: WorkspaceId,
+    group: GroupKey,
+    color: Annotated[str, Field(description="'#rrggbb', or empty for a palette colour.")] = "",
+) -> str:
+    """The colour every experiment of a group is drawn in, in every chart."""
+    return _run(actions.set_experiment_group_color, workspace_id, group, color)
+
+
+def delete_experiment_group(workspace_id: WorkspaceId, group: GroupKey) -> str:
+    """Dissolve an experiment group. Its experiments stay in the workspace, each drawn on its own again;
+    nothing is deleted."""
+    return _run(actions.delete_experiment_group, workspace_id, group)
+
+
+def show_experiment_groups(
+    workspace_id: WorkspaceId,
+    shown: Annotated[bool, Field(description="True: charts draw the groups. False: charts draw every experiment "
+                                 "on its own, exactly as with no group; the groups are kept.")],
+) -> str:
+    """The workspace's switch for experiment groups -- the "Draw experiment groups" checkbox of the
+    Metrics, Calibration and Sources tabs."""
+    return _run(actions.show_experiment_groups, workspace_id, shown)
+
+
+def group_experiments_by_run(workspace_id: WorkspaceId) -> str:
+    """Make one experiment group per MLflow run, named after the run, from its experiments that are in
+    no group yet -- for a run with at least two of them (its checkpoints). Experiments already in a
+    group are left where they are. Refused when there is nothing to group."""
+    return _run(actions.group_experiments_by_run, workspace_id)
 
 
 def download_workspace(workspace_id: WorkspaceId) -> str:
@@ -790,6 +875,8 @@ READ_TOOLS = (
 WRITE_TOOLS = (
     generate_report, create_workspace, update_workspace, duplicate_workspace, delete_workspace, rename_group,
     add_experiment, add_mlflow_run, remove_experiment, rename_experiment, set_experiment_color,
+    create_experiment_group, set_experiment_group, rename_experiment_group, set_experiment_group_color,
+    delete_experiment_group, show_experiment_groups, group_experiments_by_run,
     download_workspace, set_dataset_filter, create_snapshot, update_snapshot, delete_snapshot,
     export_workspace, import_workspace, record_review_decisions, undo_review_batch, create_review_version,
     export_reviewed_dataset, write_notes, regenerate_notes_recap,
