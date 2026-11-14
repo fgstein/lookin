@@ -476,3 +476,108 @@ def projection_scatter(coords, groups, title: str, colors_by_group: dict | None 
         ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=8, frameon=False, markerscale=2.5)
     fig.tight_layout()
     return fig
+
+
+# ---- one model, several datasets (core/embedding_compare.py) -----------------
+
+# One marker per compared experiment, so its points stay its own whatever
+# they are colored by.
+COMPARISON_MARKERS = ("o", "s", "^", "D", "v", "P", "X", "<", ">", "h")
+
+
+def _comparison_points(members, cmap, color_by, colors):
+    from lookin.core import embedding_compare as ec
+
+    out = []
+    for i, (member, rows, pts) in enumerate(zip(members, cmap.rows, cmap.points)):
+        groups = ec.point_groups(member, rows, color_by)
+        out.append((member, np.asarray(pts, dtype=float), [colors.get(g, "#555555") for g in groups], groups,
+                    COMPARISON_MARKERS[i % len(COMPARISON_MARKERS)]))
+    return out
+
+
+def _comparison_legend(ax, members, color_by, colors, max_legend: int = 20):
+    from matplotlib.lines import Line2D
+
+    from lookin.core import embedding_compare as ec
+
+    handles = []
+    for i, member in enumerate(members):
+        color = colors.get(member.name, "#555555") if color_by == ec.COLOR_MEMBER else "#555555"
+        handles.append(Line2D([], [], linestyle="", marker=COMPARISON_MARKERS[i % len(COMPARISON_MARKERS)],
+                              color=color, label=legend_name(member.name)))
+    if color_by != ec.COLOR_MEMBER and len(colors) <= max_legend:
+        handles += [Line2D([], [], linestyle="", marker="o", color=c, label=str(g)) for g, c in colors.items()]
+    if handles:
+        ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=8, frameon=False)
+
+
+def _comparison_prototypes(ax, cmap, colors, color_by) -> None:
+    from lookin.core import embedding_compare as ec
+
+    if cmap.proto_points is None:
+        return
+    for (px, py), label in zip(np.asarray(cmap.proto_points, dtype=float), cmap.proto_labels):
+        color = colors.get(label, "#333333") if color_by == ec.COLOR_CLASS else "#333333"
+        ax.scatter([px], [py], marker="*", s=170, color=color, edgecolors="black", linewidths=0.8, zorder=5)
+
+
+def embedding_comparison_overlay(members, cmap, color_by: str, colors: dict, title: str):
+    """Every compared experiment's points on one map, one marker each; the
+    model's prototypes (shared, once the comparison is allowed) as stars."""
+    fig, ax = subplots(figsize=(7.6, 6.6))
+    drawn = _comparison_points(members, cmap, color_by, colors)
+    n = sum(len(d[1]) for d in drawn)
+    size = max(3.0, min(16.0, 7000.0 / max(n, 1)))
+    for member, pts, point_colors, _, marker in drawn:
+        if len(pts):
+            ax.scatter(pts[:, 0], pts[:, 1], s=size, c=point_colors, marker=marker, alpha=0.75, linewidths=0)
+    _comparison_prototypes(ax, cmap, colors, color_by)
+    ax.set_title(title, fontsize=11)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    _comparison_legend(ax, members, color_by, colors)
+    fig.tight_layout()
+    return fig
+
+
+def embedding_comparison_panels(members, cmap, color_by: str, colors: dict, title: str):
+    """One panel per compared experiment, side by side on the same axes:
+    the experiment's own points in color over every other experiment's in
+    light grey, so where a base sits -- and where it does not -- reads at a
+    glance."""
+    drawn = _comparison_points(members, cmap, color_by, colors)
+    count = len(drawn)
+    ncols = min(count, 3)
+    nrows = int(np.ceil(count / ncols))
+    fig, axes = subplots(nrows, ncols, figsize=(4.2 * ncols, 4.2 * nrows + 0.4), squeeze=False)
+    every = np.concatenate([d[1] for d in drawn]) if drawn else np.zeros((0, 2))
+    if len(every):
+        lo, hi = every.min(axis=0), every.max(axis=0)
+        pad = (hi - lo) * 0.04 + 1e-9
+    size = max(3.0, min(16.0, 3500.0 / max(max((len(d[1]) for d in drawn), default=1), 1)))
+    for i, ax in enumerate(axes.ravel()):
+        if i >= count:
+            ax.axis("off")
+            continue
+        member, pts, point_colors, _, marker = drawn[i]
+        others = [d[1] for j, d in enumerate(drawn) if j != i and len(d[1])]
+        if others:
+            rest = np.concatenate(others)
+            ax.scatter(rest[:, 0], rest[:, 1], s=size * 0.7, color="#d5d9e0", linewidths=0, alpha=0.6)
+        if len(pts):
+            ax.scatter(pts[:, 0], pts[:, 1], s=size, c=point_colors, marker=marker, alpha=0.8, linewidths=0)
+        _comparison_prototypes(ax, cmap, colors, color_by)
+        if len(every):
+            ax.set_xlim(lo[0] - pad[0], hi[0] + pad[0])
+            ax.set_ylim(lo[1] - pad[1], hi[1] + pad[1])
+        ax.set_title(short_name(member.name, 48), fontsize=9)
+        ax.set_xticks([])
+        ax.set_yticks([])
+    from lookin.core import embedding_compare as ec
+
+    if color_by != ec.COLOR_MEMBER and count:
+        _comparison_legend(axes.ravel()[min(count, ncols) - 1], [], color_by, colors)
+    fig.suptitle(title, fontsize=11)
+    fig.tight_layout()
+    return fig

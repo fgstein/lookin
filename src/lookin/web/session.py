@@ -319,6 +319,15 @@ class Session:
 
     def notify_rename(self, old: str, new: str) -> None:
         self.prototype_source.rename_experiment(old, new)
+        workspace = self.current_workspace
+        if workspace is not None:
+            # Comparisons of embeddings name experiments; any that names this
+            # one, in this workspace or another, follows (embedding_compare).
+            try:
+                from lookin.core.embedding_compare import rename_member_everywhere
+                rename_member_everywhere(workspace.id, old, new)
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
         for v in list(self.views.values()):
             fn = getattr(v, "rename_experiment", None)
             if fn is not None:

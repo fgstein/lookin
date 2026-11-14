@@ -224,14 +224,17 @@ class Carousel:
 
     `shuffle_toggle`: offer the shuffle button (a host with its own shuffle
     turns it off). `outcome_borders`: frame each crop green or red by
-    whether the prediction it carries ("correct") was right."""
+    whether the prediction it carries ("correct") was right. `foreign`:
+    the crops are not the session's dataset (Compare embeddings shows other
+    workspaces' crops), so nothing that reads the session's dataset is
+    offered -- no review, no "Find similar", no details panel."""
 
     def __init__(self, owner, session, dataset, total: int, page_provider: Callable[[int, int], list],
                  crop_col: str, uuid_col: Optional[str] = None, highlight_uuid=None,
                  review_source: str = "", suggestions: Optional[dict] = None,
                  label_col: Optional[str] = None, chrome_height: int = 0, action: str = "car",
                  chrome: Optional[tuple] = None, shuffle_toggle: bool = True, outcome_borders: bool = False,
-                 list_id: str = ""):
+                 list_id: str = "", foreign: bool = False):
         self.owner = owner
         self.s = session
         self.dataset = dataset
@@ -247,6 +250,7 @@ class Carousel:
         self.chrome = chrome or (DIALOG_CHROME_W, DIALOG_CHROME_H)
         self.shuffle_toggle = shuffle_toggle
         self.outcome_borders = outcome_borders
+        self.foreign = foreign
         self.action = action
         self.loaded = 0                 # crops in the grid so far
         self.gen = 0                    # bumped whenever the grid starts over
@@ -264,11 +268,11 @@ class Carousel:
     # ---- what the mosaic is allowed to show ----
 
     def _reviewable(self) -> bool:
-        return bool(self.review_source and getattr(self.s.state, "review", None) is not None
+        return bool(not self.foreign and self.review_source and getattr(self.s.state, "review", None) is not None
                     and self.uuid_col is not None)
 
     def _offers_similarity(self) -> bool:
-        return bool(self.review_source != "similarity" and self.uuid_col and similarity_available(self.s))
+        return bool(not self.foreign and self.review_source != "similarity" and self.uuid_col and similarity_available(self.s))
 
     # ---- geometry ----
 
@@ -389,6 +393,8 @@ class Carousel:
 
     def _info_url(self, rec: dict) -> str:
         """Where the full-size view's (i) panel reads this crop's details."""
+        if self.foreign:
+            return ""
         uid = rec.get(self.uuid_col) if self.uuid_col else None
         return details_url(self.s, uid=uid, crop=None if uid is not None else rec.get(self.crop_col))
 
@@ -548,14 +554,15 @@ class CarouselDialog(Dialog):
 
     def __init__(self, session, title: str, dataset, total: int, page_provider, crop_col: str,
                  uuid_col=None, highlight_uuid=None, review_source: str = "", suggestions=None,
-                 label_col=None, header_html: str = "", chrome_height: int = 0, outcome_borders: bool = False):
+                 label_col=None, header_html: str = "", chrome_height: int = 0, outcome_borders: bool = False,
+                 foreign: bool = False):
         super().__init__(title, width=4000)
         self.session = session
         self.header_html = header_html
         self.carousel = Carousel(self, session, dataset, total, page_provider, crop_col, uuid_col,
                                  highlight_uuid, review_source, suggestions, label_col,
                                  chrome_height=chrome_height + (40 if header_html else 0),
-                                 outcome_borders=outcome_borders)
+                                 outcome_borders=outcome_borders, foreign=foreign)
 
     def body(self) -> str:
         head = f'<div class="car-head">{self.header_html}</div>' if self.header_html else ""

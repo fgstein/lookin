@@ -1,0 +1,5 @@
+/* Compare embeddings tab: the Embeddings tab's layout (.emb, embeddings.css)
+   plus the list of compared experiments */
+.ecmp-m { gap: 6px; min-height: 28px; }
+.ecmp-m .ell { min-width: 0; flex: 0 1 auto; }
+.ecmp .kv .info-btn { margin-left: 4px; }

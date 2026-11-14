@@ -54,7 +54,10 @@ def find_workspace(key: str, root=None) -> lib.Workspace:
     raise ValueError(f"No workspace with id or name {key!r}.")
 
 
-def load_workspace_state(workspace: lib.Workspace) -> LoadedWorkspace:
+def load_workspace_state(workspace: lib.Workspace, only=None) -> LoadedWorkspace:
+    """`only`: the names of the experiments to load, None for all of them
+    -- reading one experiment of a workspace (Compare embeddings) need not
+    read every results CSV it holds."""
     mount = workspace.mount
     state = AppState()
     loaded = LoadedWorkspace(workspace=workspace, state=state)
@@ -94,6 +97,8 @@ def load_workspace_state(workspace: lib.Workspace) -> LoadedWorkspace:
     # below is simply not drawn.
     state.groups = experiment_groups.from_mount(mount)
     for experiment in mount.experiments:
+        if only is not None and experiment.name not in only:
+            continue
         reason = _unloadable_reason(experiment)
         if reason:
             loaded.skipped.append(experiment.name)
@@ -124,3 +129,17 @@ def _unloadable_reason(experiment: lib.MountExperiment) -> str:
     if not Path(experiment.path).is_file():
         return f"its results CSV {experiment.path} is not on this machine."
     return ""
+
+
+def attach_sidecars(workspace: lib.Workspace, state: AppState, name: str, prototypes: bool = False) -> None:
+    """Attach the workspace's embeddings (and prototypes) sidecars to a
+    loaded experiment the first time something needs them -- they can be
+    gigabytes, and most questions never do."""
+    experiment = next((e for e in workspace.mount.experiments if e.name == name), None)
+    exp = state.experiments[name]
+    if not exp.has_embeddings() and experiment is not None and experiment.embeddings_path \
+            and Path(experiment.embeddings_path).is_file():
+        exp.load_embeddings(experiment.embeddings_path)
+    if prototypes and exp.model_prototypes is None and experiment is not None and experiment.prototypes_path \
+            and Path(experiment.prototypes_path).is_file():
+        exp.load_model_prototypes(experiment.prototypes_path)

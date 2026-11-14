@@ -53,7 +53,7 @@ from lookin.core.embedding_context import build_analysis_context
 from lookin.core.metrics import (
     PER_CLASS_COLUMNS, compute_metrics, compute_reliability, diagnose_scores,
 )
-from lookin.core.workspace_state import LoadedWorkspace, find_workspace, load_workspace_state
+from lookin.core.workspace_state import LoadedWorkspace, attach_sidecars, find_workspace, load_workspace_state
 
 # A loaded workspace holds its whole dataset in memory. Two lets an agent
 # go back and forth between workspaces without holding the library.
@@ -283,6 +283,7 @@ def get_workspace(workspace_id: str) -> dict:
         "experiments": experiments,
         "experiment_groups": experiment_groups_out(m),
         "experiment_groups_shown": bool(m.show_experiment_groups),
+        "embedding_comparison": _comparison_out(w),
         "snapshots": [{"id": s.id, "name": s.name, "description": s.description, "updated_at": s.updated_at,
                        "open_url": links.link(snapshot_id=s.id)} for s in lib.list_snapshots(w)],
         "download_state": workspace_sources.download_state(w),
@@ -884,16 +885,134 @@ def find_similar(workspace_id: str, experiment: str, uuid: str, k: int = DEFAULT
 
 def ensure_embeddings(entry: _Entry, name: str, prototypes: bool = False) -> None:
     """Attach the workspace's embeddings (and prototypes) sidecars to a
-    loaded experiment the first time something needs them -- they can be
-    gigabytes, and most questions never do."""
-    experiment = next((e for e in entry.loaded.workspace.mount.experiments if e.name == name), None)
-    exp = entry.loaded.state.experiments[name]
-    if not exp.has_embeddings() and experiment is not None and experiment.embeddings_path \
-            and Path(experiment.embeddings_path).is_file():
-        exp.load_embeddings(experiment.embeddings_path)
-    if prototypes and exp.model_prototypes is None and experiment is not None and experiment.prototypes_path \
-            and Path(experiment.prototypes_path).is_file():
-        exp.load_model_prototypes(experiment.prototypes_path)
+    loaded experiment, the first time something needs them."""
+    attach_sidecars(entry.loaded.workspace, entry.loaded.state, name, prototypes=prototypes)
+
+
+# ---- one model, several datasets (core/embedding_compare.py) -------------------
+
+def _comparison_out(workspace) -> dict | None:
+    from lookin.core import embedding_compare as ec
+
+    refs, reference = ec.comparison_from_json(workspace.embedding_comparison)
+    if not refs:
+        return None
+    return {"members": [r.to_json() for r in refs], "reference": reference}
+
+
+def resolve_members(workspace_id: str, members) -> tuple:
+    """(refs, reference index, the workspace) from a tool's `members`
+    ([{"workspace": id or name, "experiment": name}]), or the workspace's
+    saved comparison when none are given."""
+    from lookin.core import embedding_compare as ec
+
+    workspace = find_workspace(workspace_id)
+    if not members:
+        refs, reference = ec.comparison_from_json(workspace.embedding_comparison)
+        if not refs:
+            raise ValueError(f"Workspace {workspace.label()!r} has no saved comparison of embeddings: give `members` "
+                             f"(set_embedding_comparison saves one).")
+        return refs, reference, workspace
+    refs = []
+    for item in members:
+        if not isinstance(item, dict) or not item.get("experiment"):
+            raise ValueError("Each member is {\"workspace\": id or name, \"experiment\": name}.")
+        owner = find_workspace(str(item.get("workspace") or workspace.id))
+        ref = ec.MemberRef(owner.id, str(item["experiment"]))
+        if ref not in refs:
+            refs.append(ref)
+    return refs, 0, workspace
+
+
+def _member_out(member, check) -> dict:
+    return {"name": member.name, "workspace_id": member.ref.workspace_id, "experiment": member.ref.experiment,
+            "crops": len(member), "same_model_as_reference": check.ok, "prototype_check": check.reason}
+
+
+def _crop_link(member, row: int) -> str:
+    return links.link(member.ref.workspace_id, crop=str(member.uuids[row]), experiment=member.ref.experiment)
+
+
+def compare_embedding_spaces(workspace_id: str, members=None, reference: int | None = None,
+                             sort: str = "coverage", top=DEFAULT_TOP) -> dict:
+    """One model's embedding space across several datasets: whether the
+    members may be compared (same prototypes), then each one measured
+    against the reference."""
+    from lookin.core import embedding_compare as ec
+
+    if sort not in ec.CLASS_SORTS:
+        raise ValueError(f"sort must be one of {', '.join(ec.CLASS_SORTS)}; got {sort!r}.")
+    with _lock:
+        refs, saved_reference, workspace = resolve_members(workspace_id, members)
+        reference = saved_reference if reference is None else int(reference)
+        if not 0 <= reference < len(refs):
+            raise ValueError(f"reference must be an index into the {len(refs)} members.")
+        loaded, problems = ec.load_members(refs)
+        if problems:
+            raise ValueError("Some members could not be read: " + " ".join(problems))
+        checks = ec.check_members(loaded, reference)
+        out = {"workspace_id": workspace.id, "workspace": workspace.label(),
+               "open_url": links.link(workspace.id, tab="embcompare"),
+               "warnings": [w for m in loaded for w in m.warnings],
+               "reference": loaded[reference].name,
+               "members": [_member_out(m, c) for m, c in zip(loaded, checks)]}
+        problem = ec.comparison_problem(loaded, reference)
+        if problem:
+            out.update(compared=False, refused=problem)
+            return _clean(out)
+        top = _top(top)
+        pairs = []
+        for i, member in enumerate(loaded):
+            if i == reference:
+                continue
+            stats = ec.pair_stats(loaded[reference], member)
+            per_class = ec.sorted_classes(stats.per_class, sort)
+            pairs.append({
+                "member": member.name, "crops_measured": stats.n_other, "reference_crops_measured": stats.n_reference,
+                "crops_in_both": stats.n_shared, "domain_auc": stats.domain_auc,
+                "coverage": stats.coverage, "coverage_threshold": stats.coverage_threshold,
+                "nearest_reference_similarity_median": stats.nn_similarity_other,
+                "nearest_reference_similarity_median_inside_reference": stats.nn_similarity_reference,
+                "label_agreement": stats.agreement, "label_agreement_inside_reference": stats.agreement_reference,
+                "classes_total": len(per_class), "class_sort": sort,
+                "classes": [vars(c) for c in per_class[:top]],
+                "outside_reference_total": len(stats.outside),
+                "outside_reference": [{"uuid": str(member.uuids[r]), "label": member.labels[r] or None,
+                                       "nearest_reference_similarity": sim, "open_url": _crop_link(member, r)}
+                                      for r, sim in stats.outside[:top]],
+                "label_disagreements_total": len(stats.disagreements),
+                "label_disagreements": [{"uuid": str(member.uuids[r]), "label": own, "neighbours_label": theirs,
+                                         "neighbours_share": share, "open_url": _crop_link(member, r)}
+                                        for r, own, theirs, share in stats.disagreements[:top]],
+            })
+        out.update(compared=True, against_reference=pairs)
+        return _clean(out)
+
+
+def find_neighbours_across(workspace_id: str, experiment: str, uuid: str, target_workspace: str,
+                           target_experiment: str, k=DEFAULT_TOP) -> dict:
+    """The crops of one experiment (target) nearest to a crop of another,
+    both of the same model -- refused otherwise."""
+    from lookin.core import embedding_compare as ec
+
+    with _lock:
+        source = find_workspace(workspace_id)
+        target = find_workspace(target_workspace)
+        query = ec.load_member(ec.MemberRef(source.id, experiment))
+        pool = ec.load_member(ec.MemberRef(target.id, target_experiment))
+        check = ec.check_prototypes(query.prototypes, pool.prototypes, query.name, pool.name)
+        if not check.ok:
+            raise ValueError(f"Not compared: {check.reason}")
+        row = query.index_of(uuid)
+        found = ec.neighbours_across(query, row, pool, k=_top(k))
+        own = query.labels[row] or None
+        return _clean({
+            "workspace_id": source.id, "uuid": str(uuid), "label": own, "experiment": query.name,
+            "searched_in": pool.name, "k": len(found), "same_label": sum(1 for n in found if own and n.label == own),
+            "open_url": _crop_link(query, row), "warnings": list(query.warnings) + list(pool.warnings),
+            "neighbours": [{"uuid": n.uuid, "label": n.label, "similarity": n.similarity,
+                            "open_url": _crop_link(pool, n.index)} for n in found],
+        })
 
 
 # ---- review ------------------------------------------------------------------

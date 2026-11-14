@@ -406,6 +406,12 @@ class Workspace:
     # imports this workspace is on a different MLflow, or none at all.
     provenance: dict = field(default_factory=dict)
     dataset_hash: str = ""
+    # The Compare embeddings tab's comparison (core/embedding_compare.py):
+    # {"members": [{"workspace": id, "experiment": name}], "reference": i}.
+    # References, never copies: a member from another workspace is read
+    # from that workspace whenever the comparison is drawn. Kept here rather
+    # than in the mount, which is rewritten from what is loaded.
+    embedding_comparison: dict = field(default_factory=dict)
     path: Optional[Path] = None
 
     def label(self) -> str:
@@ -494,6 +500,7 @@ def workspace_to_dict(workspace: Workspace) -> dict:
         "mount": mount_to_dict(workspace.mount),
         "provenance": dict(workspace.provenance),
         "dataset_hash": workspace.dataset_hash,
+        **({"embedding_comparison": dict(workspace.embedding_comparison)} if workspace.embedding_comparison else {}),
     }
 
 
@@ -511,6 +518,8 @@ def workspace_from_dict(raw: dict, path: Optional[Path] = None) -> Workspace:
         mount=mount,
         provenance=provenance if isinstance(provenance, dict) else {},
         dataset_hash=str(raw.get("dataset_hash", "")),
+        embedding_comparison=(raw.get("embedding_comparison")
+                              if isinstance(raw.get("embedding_comparison"), dict) else {}),
         path=Path(path) if path is not None else None,
     )
 
@@ -737,8 +746,15 @@ def duplicate_workspace(workspace: Workspace, name: str = "", root=None) -> Opti
                 prototypes_path=moved(e.prototypes_path))
         for e in source.mount.experiments])
     stamp = _now()
+    # The copy compares its own experiments, not the original's.
+    comparison = dict(source.embedding_comparison)
+    if isinstance(comparison.get("members"), list):
+        comparison["members"] = [
+            {**m, "workspace": workspace_id} if isinstance(m, dict) and m.get("workspace") == source.id else m
+            for m in comparison["members"]]
     copy = replace(source, id=workspace_id, name=new_name, tags=list(source.tags), mount=mount,
-                   provenance=dict(source.provenance), created_at=stamp, updated_at=stamp, path=path)
+                   provenance=dict(source.provenance), created_at=stamp, updated_at=stamp, path=path,
+                   embedding_comparison=comparison)
     if not save_workspace(copy):
         shutil.rmtree(path, ignore_errors=True)
         return None

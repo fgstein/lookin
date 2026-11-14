@@ -31,7 +31,7 @@ from __future__ import annotations
 import json
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from lookin import __version__
 from lookin.core import agent_actions as actions
@@ -65,6 +65,10 @@ its own name. get_workspace lists the groups; whether charts draw them is the wo
 "experiment_groups_shown" switch (show_experiment_groups), and plot_chart can override it per chart.
 
 Metrics are only comparable within one workspace: two workspaces usually have different datasets.
+Embeddings are the exception: one model run on several datasets (experiments of different workspaces
+whose prototypes are identical) can be compared in one embedding space -- compare_embedding_spaces,
+find_neighbours_across, plot_embedding_comparison; set_embedding_comparison saves which ones a
+workspace compares. Two different models are always refused.
 Every answer carries a "warnings" list -- report those to the user along with the numbers -- and an
 "open_url" that opens the same thing in Lookin's interface; give it to the user. Crops carry their own
 open_url. Files are written on the machine running Lookin; a "url" next to a path downloads it.
@@ -361,6 +365,62 @@ def list_mlflow_run_files(
     return _run(agent_tools.list_mlflow_run_files, run_id, server)
 
 
+class ComparedExperiment(BaseModel):
+    workspace: str = Field(description="Workspace id or exact name the experiment belongs to.")
+    experiment: str = Field(description="Experiment name in that workspace (it must have embeddings and prototypes).")
+
+
+Members = Annotated[list[ComparedExperiment] | None, Field(description=(
+    "The experiments to compare, possibly from different workspaces -- the same model run on different "
+    "datasets. The first is the reference unless `reference` says otherwise. Omit to use the comparison "
+    "saved in the workspace (see set_embedding_comparison)."))]
+Reference = Annotated[int | None, Field(description=(
+    "Index in `members` of the reference every other member is measured against (and projected onto, "
+    "with mode=reference). Omit for the saved one, or the first."), ge=0)]
+
+
+def _members(members) -> list | None:
+    return [m.model_dump() if isinstance(m, BaseModel) else dict(m) for m in members] if members else None
+
+
+def compare_embedding_spaces(
+    workspace_id: WorkspaceId,
+    members: Members = None,
+    reference: Reference = None,
+    sort: Annotated[str, Field(description=(
+        "Order of the per-class rows, worst first: coverage, agreement, centroid, accuracy_drop or "
+        "support."))] = "coverage",
+    top: Top = agent_tools.DEFAULT_TOP,
+) -> str:
+    """Compare one model's embedding space across several datasets (experiments of possibly different
+    workspaces). First checks the members come from the same model -- their imported prototypes must be
+    identical -- and refuses otherwise (compared=false, refused=why). Then, for every member against the
+    reference: domain_auc (cross-validated AUC of a linear classifier telling the two datasets apart from
+    the embeddings; 0.5 = indistinguishable, 1 = always told apart), coverage (share of the member's crops
+    with a reference crop as close as reference crops usually are to each other), the median similarity to
+    the nearest reference crop, label_agreement (share of crops whose 10 nearest reference crops mostly
+    carry the same label; compare with the same measure inside the reference -- a gap suggests the two
+    datasets were labelled differently), per class (centroid similarity, similarity to the model's
+    prototype, accuracy in each dataset, coverage, agreement), and the crops outside the reference and
+    the label disagreements, each with a link. Measured on samples of a few thousand crops."""
+    return _run(agent_tools.compare_embedding_spaces, workspace_id, _members(members), reference, sort, top)
+
+
+def find_neighbours_across(
+    workspace_id: WorkspaceId,
+    experiment: ExperimentName,
+    uuid: Annotated[str, Field(description="The crop to search from, in that experiment.")],
+    target_workspace: Annotated[str, Field(description="Workspace id or name to search in (may be the same).")],
+    target_experiment: Annotated[str, Field(description="Experiment of that workspace to search in.")],
+    k: Top = agent_tools.DEFAULT_TOP,
+) -> str:
+    """The k crops of another experiment (typically the same model on another dataset) nearest to one crop,
+    by cosine similarity of their embeddings, exact over the whole target, with how many share the crop's
+    label. Refused when the two experiments' prototypes differ (two different models)."""
+    return _run(agent_tools.find_neighbours_across, workspace_id, experiment, uuid, target_workspace,
+                target_experiment, k)
+
+
 # ---- pictures and files ----------------------------------------------------
 
 def plot_chart(
@@ -433,6 +493,30 @@ def make_mosaic(
     return _run_picture(outputs.make_mosaic, workspace_id, experiment, uuids, true_label, predicted_label,
                         errors_only, where, sort, limit, columns, tile_size, caption, lut, roll_column, True,
                         title, save_to)
+
+
+def plot_embedding_comparison(
+    workspace_id: WorkspaceId,
+    members: Members = None,
+    reference: Reference = None,
+    mode: Annotated[Literal["joint", "reference"], Field(description=(
+        "joint: the projection is fitted on every member (equal samples); reference: fitted on the reference "
+        "alone and the others placed onto it (not with tsne)."))] = "joint",
+    method: Annotated[str, Field(description="pca, umap, umap_circle or tsne.")] = "pca",
+    color_by: Annotated[Literal["experiment", "class", "correct"], Field(description=(
+        "experiment (one color per member), class (true label) or correct (right / wrong / no label). "
+        "Each member keeps its own marker."))] = "experiment",
+    display: Annotated[Literal["overlay", "panels"], Field(description=(
+        "overlay: one map; panels: one panel per member on the same axes, the others in grey."))] = "overlay",
+    max_points: Annotated[int, Field(description="Crops drawn per member (sampled beyond).", ge=10,
+                                     le=outputs.MAX_PROJECTION_POINTS)] = outputs.DEFAULT_PROJECTION_POINTS,
+    save_to: SaveTo = "",
+) -> list:
+    """The Compare embeddings map as a PNG: several experiments of one model (different datasets) projected
+    into one 2D space, the model's prototypes as stars. Refused for experiments of different models."""
+    _no_save_in_read_only(save_to)
+    return _run_picture(outputs.plot_embedding_comparison, workspace_id, _members(members), reference, mode, method,
+                        color_by, display, max_points, save_to)
 
 
 def generate_report(
@@ -694,6 +778,18 @@ def delete_snapshot(snapshot_id: str, confirm: Confirm) -> str:
     return _run(actions.delete_snapshot, snapshot_id, confirm)
 
 
+def set_embedding_comparison(
+    workspace_id: WorkspaceId,
+    members: Annotated[list[ComparedExperiment] | None, Field(description=(
+        "The experiments the workspace's Compare embeddings tab compares (at least two, the same model). "
+        "Saved as references to them. Empty to clear."))] = None,
+    reference: Annotated[int, Field(description="Index of the reference in `members`.", ge=0)] = 0,
+) -> str:
+    """Save which experiments a workspace compares in its Compare embeddings tab (and which is the
+    reference). Refused unless every member is readable and has the reference's prototypes."""
+    return _run(actions.set_embedding_comparison, workspace_id, _members(members), reference)
+
+
 def export_workspace(
     workspace_id: WorkspaceId,
     dest: Dest = "",
@@ -870,6 +966,7 @@ READ_TOOLS = (
     get_confusions, compare_experiments, get_slices, get_calibration, get_confidence, get_examples,
     find_cleaning_candidates, find_similar, get_review, get_snapshot, search_mlflow_runs, list_mlflow_run_files,
     get_mlflow_run_links, plot_chart, make_mosaic, get_notes,
+    compare_embedding_spaces, find_neighbours_across, plot_embedding_comparison,
     list_datasets, get_dataset, get_dataset_stats, compare_datasets, find_dataset_issues, get_dataset_rows,
 )
 WRITE_TOOLS = (
@@ -879,7 +976,7 @@ WRITE_TOOLS = (
     delete_experiment_group, show_experiment_groups, group_experiments_by_run,
     download_workspace, set_dataset_filter, create_snapshot, update_snapshot, delete_snapshot,
     export_workspace, import_workspace, record_review_decisions, undo_review_batch, create_review_version,
-    export_reviewed_dataset, write_notes, regenerate_notes_recap,
+    export_reviewed_dataset, write_notes, regenerate_notes_recap, set_embedding_comparison,
 )
 TOOLS = READ_TOOLS + WRITE_TOOLS
 DESTRUCTIVE_TOOLS = (delete_workspace, delete_snapshot, remove_experiment, undo_review_batch)

@@ -1227,91 +1227,12 @@ class EmbeddingsView(StaleTracking, View):
             missing = uid is None or uid != uid or str(uid) == ""     # None, NaN or empty
             return (None if missing else str(uid)), records[i].get(crop_col)
 
-        mkey = self.s.put_point_map(resolve, describe)
-        src = f"/dl/{self.s.sid}/{dkey}?inline=1"
-        pimg = f"/pimg/{self.s.sid}/{mkey}/"
-        pinfo = f"/pinfo/{self.s.sid}/{mkey}/"
-        # One row that never wraps (a button appearing never pushes the map
-        # down), in groups that say what they act on: the view (how the map
-        # is drawn and moved), the lasso selection, the gallery, the export.
-        # Labels show when the map is wide enough, the least needed parts
-        # fold away when it is narrow (embeddings.css).
-        def icon_btn(key: str, icon_name: str, title: str, *, hidden: bool = False, cls: str = "",
-                     label: str = "", attr: str = "") -> str:
-            text = f'<span class="lbl">{h.e(label)}</span>' if label else ""
-            return (f'<button type="button" class="btn btn-sm btn-ghost {"btn-icon " if not label else ""}{cls}" '
-                    f'{attr or f"data-pm={chr(34)}{key}{chr(34)}"} title="{h.e(title)}"{" hidden" if hidden else ""}>'
-                    f'{h.icon(icon_name, 14)}{text}</button>')
-
-        def group(cls: str, title: str, body: str) -> str:
-            return f'<span class="pm-grp {cls}" title="{h.e(title)}">{body}</span>'
-
-        # Shown only while the settings column is folded away (see the
-        # splitter in projection.js): an icon at the head of the toolbar,
-        # set apart from the map's own tools.
-        unfold = (f'<button type="button" class="btn btn-sm btn-icon emb-unfold" data-emb-unfold="1" '
-                  f'title="Show the settings column again" aria-label="Show settings">{h.icon("sliders", 14)}</button>')
-        view = (
-            unfold
-            + f'<div class="seg pm-render"><button type="button" class="seg-b on" data-pm-render="interactive" title="Interactive map">{h.icon("target", 13)}</button>'
-            f'<button type="button" class="seg-b" data-pm-render="static" title="Static matplotlib figure">{h.icon("image", 13)}</button></div>'
-            f'<span class="pm-tools pm-in">'
-            + group("pm-g-view", "Move around the map",
-                    f'<span class="seg">'
-                    f'<button type="button" class="seg-b on" data-pm-mode="pan" title="Pan: drag to move the map">{h.icon("pan", 13)}</button>'
-                    f'<button type="button" class="seg-b" data-pm-mode="zoom" title="Zoom: drag a box to zoom into it">{h.icon("zoom", 13)}</button></span>'
-                    f'<span class="pm-zoom">'
-                    f'<button type="button" class="btn btn-sm btn-ghost btn-icon" data-pm="out" title="Zoom out">-</button>'
-                    f'<span class="pm-zoomtext muted small">x1.0</span>'
-                    f'<button type="button" class="btn btn-sm btn-ghost btn-icon" data-pm="in" title="Zoom in">+</button></span>'
-                    + icon_btn("reset", "refresh", "Reset the view: the whole cloud, centred", hidden=True))
-            + group("pm-g-sel", "Selection",
-                    icon_btn("", "lasso", "Lasso: draw around points to select them", label="Lasso",
-                             attr='data-pm-mode="lasso"')
-                    + '<b class="pm-seltext small"></b>'
-                    + icon_btn("show", "external", "Open the selected points in the carousel", hidden=True)
-                    + icon_btn("clear", "x", "Clear the selection", hidden=True))
-            + group("pm-g-gal", "Gallery",
-                    icon_btn("gallery", "grid", "Gallery: the map moves to a corner, and a lasso fills the rest "
-                             "with crops drawn at random from the selection", cls="pm-toggle", label="Gallery")
-                    + icon_btn("crop-smaller", "minus", "Smaller crops (more of them)", cls="pm-gal-x")
-                    + icon_btn("crop-larger", "plus", "Larger crops (fewer of them)", cls="pm-gal-x")
-                    + icon_btn("shuffle", "refresh", "Draw another random sample of crops", hidden=True, cls="pm-gal-x"))
-            + '<span class="grow"></span>'
-            + group("pm-g-out", "Export what is shown",
-                    icon_btn("copy", "copy", "Copy what is shown as a picture -- always the same size and framing for the same view")
-                    + icon_btn("save", "download", "Save what is shown as a PNG -- always the same size and framing for the same view"))
-            + '</span>')
-        toolbar = f'<div class="pm-row">{view}</div>'
-        map_html = (f'<div class="pmap" data-map="{dkey}" data-src="{h.e(src)}" data-pimg="{h.e(pimg)}" data-pinfo="{h.e(pinfo)}" data-target="{self.name}" '
-                    f'data-static="{dkey}" title="">'
-                    f'<div class="pm-bar">{toolbar}</div>'
-                    f'<div class="pm-inter"><div class="pmap-box"></div></div>'
-                    f'<div class="pm-stat">{static_html}</div></div>')
+        map_html, dkey = map_widget(self.s, self.name, data, resolve, describe, static_html, dkey=dkey)
         legend_html = self._legend_html(mapping, names, dkey)
         return map_html, legend_html
 
     def _legend_html(self, mapping, names: list, dkey: str) -> str:
-        if not mapping.legend:
-            return ""
-        known = set(names)
-        filterable = all(label in known for _, label in mapping.legend)
-        if not filterable:
-            body = "".join(f'<div class="row-nw">{h.dot(color, size=10)}<span class="small xname" title="{h.e(label)}">{h.e(label)}</span></div>'
-                           for color, label in mapping.legend)
-            head = '<b class="small">Legend</b>'
-        else:
-            gi = {n: i for i, n in enumerate(names)}
-            body = "".join(
-                f'<div class="row-nw pm-lg"><button type="button" class="btn btn-sm btn-ghost btn-icon" data-front="{gi[label]}" '
-                f'title="Draw on top of the other points">{h.icon("layers", 13)}</button>{h.dot(color, size=10)}'
-                f'<label class="chk ell" title="{h.e(label)}"><input type="checkbox" checked data-g="{gi[label]}"><span>{h.e(label)}</span></label></div>'
-                for color, label in mapping.legend)
-            head = (f'<div class="row-nw"><b class="small">{h.e(f"Show {mapping.column}")}</b>'
-                    f'<button type="button" class="btn btn-sm btn-link" data-pm="all">All</button>'
-                    f'<button type="button" class="btn btn-sm btn-link" data-pm="none">None</button></div>')
-        return (f'<section class="card pm-legend" data-map="{dkey}" data-static="lg-{dkey}"><div class="card-b">{head}'
-                f'<div class="pm-lg-list">{body}</div></div></section>')
+        return legend_card(mapping.legend, names, dkey, f"Show {mapping.column}")
 
     # ---- crops behind points ----
 
@@ -1830,3 +1751,102 @@ class EmbeddingsView(StaleTracking, View):
         self._render()
         self.refresh()
         return warnings
+
+
+def map_widget(session, target: str, data: dict, resolve, describe, static_html: str, dkey: str = "") -> tuple:
+    """The interactive map of a projection (static/js/projection.js) and
+    the HTML that hosts it: (map_html, dkey). `data` is the map's JSON (x,
+    y, c, palette, g, groups, k, hl, hi, protos -- see
+    EmbeddingsView._interactive_map), `resolve(i)` / `describe(i)` the
+    crop behind point i, and `target` the view the map's clicks and lasso
+    are sent to (its on_point / on_select). Shared by the Embeddings and
+    Compare embeddings tabs, which is why it is not a method."""
+    if not dkey:
+        dkey = session.put_download(json.dumps(data).encode("utf-8"), "map.json", "application/json")
+    mkey = session.put_point_map(resolve, describe)
+    src = f"/dl/{session.sid}/{dkey}?inline=1"
+    pimg = f"/pimg/{session.sid}/{mkey}/"
+    pinfo = f"/pinfo/{session.sid}/{mkey}/"
+    # One row that never wraps (a button appearing never pushes the map
+    # down), in groups that say what they act on: the view (how the map
+    # is drawn and moved), the lasso selection, the gallery, the export.
+    # Labels show when the map is wide enough, the least needed parts
+    # fold away when it is narrow (embeddings.css).
+    def icon_btn(key: str, icon_name: str, title: str, *, hidden: bool = False, cls: str = "",
+                 label: str = "", attr: str = "") -> str:
+        text = f'<span class="lbl">{h.e(label)}</span>' if label else ""
+        return (f'<button type="button" class="btn btn-sm btn-ghost {"btn-icon " if not label else ""}{cls}" '
+                f'{attr or f"data-pm={chr(34)}{key}{chr(34)}"} title="{h.e(title)}"{" hidden" if hidden else ""}>'
+                f'{h.icon(icon_name, 14)}{text}</button>')
+
+    def group(cls: str, title: str, body: str) -> str:
+        return f'<span class="pm-grp {cls}" title="{h.e(title)}">{body}</span>'
+
+    # Shown only while the settings column is folded away (see the
+    # splitter in projection.js): an icon at the head of the toolbar,
+    # set apart from the map's own tools.
+    unfold = (f'<button type="button" class="btn btn-sm btn-icon emb-unfold" data-emb-unfold="1" '
+              f'title="Show the settings column again" aria-label="Show settings">{h.icon("sliders", 14)}</button>')
+    view = (
+        unfold
+        + f'<div class="seg pm-render"><button type="button" class="seg-b on" data-pm-render="interactive" title="Interactive map">{h.icon("target", 13)}</button>'
+        f'<button type="button" class="seg-b" data-pm-render="static" title="Static matplotlib figure">{h.icon("image", 13)}</button></div>'
+        f'<span class="pm-tools pm-in">'
+        + group("pm-g-view", "Move around the map",
+                f'<span class="seg">'
+                f'<button type="button" class="seg-b on" data-pm-mode="pan" title="Pan: drag to move the map">{h.icon("pan", 13)}</button>'
+                f'<button type="button" class="seg-b" data-pm-mode="zoom" title="Zoom: drag a box to zoom into it">{h.icon("zoom", 13)}</button></span>'
+                f'<span class="pm-zoom">'
+                f'<button type="button" class="btn btn-sm btn-ghost btn-icon" data-pm="out" title="Zoom out">-</button>'
+                f'<span class="pm-zoomtext muted small">x1.0</span>'
+                f'<button type="button" class="btn btn-sm btn-ghost btn-icon" data-pm="in" title="Zoom in">+</button></span>'
+                + icon_btn("reset", "refresh", "Reset the view: the whole cloud, centred", hidden=True))
+        + group("pm-g-sel", "Selection",
+                icon_btn("", "lasso", "Lasso: draw around points to select them", label="Lasso",
+                         attr='data-pm-mode="lasso"')
+                + '<b class="pm-seltext small"></b>'
+                + icon_btn("show", "external", "Open the selected points in the carousel", hidden=True)
+                + icon_btn("clear", "x", "Clear the selection", hidden=True))
+        + group("pm-g-gal", "Gallery",
+                icon_btn("gallery", "grid", "Gallery: the map moves to a corner, and a lasso fills the rest "
+                         "with crops drawn at random from the selection", cls="pm-toggle", label="Gallery")
+                + icon_btn("crop-smaller", "minus", "Smaller crops (more of them)", cls="pm-gal-x")
+                + icon_btn("crop-larger", "plus", "Larger crops (fewer of them)", cls="pm-gal-x")
+                + icon_btn("shuffle", "refresh", "Draw another random sample of crops", hidden=True, cls="pm-gal-x"))
+        + '<span class="grow"></span>'
+        + group("pm-g-out", "Export what is shown",
+                icon_btn("copy", "copy", "Copy what is shown as a picture -- always the same size and framing for the same view")
+                + icon_btn("save", "download", "Save what is shown as a PNG -- always the same size and framing for the same view"))
+        + '</span>')
+    toolbar = f'<div class="pm-row">{view}</div>'
+    map_html = (f'<div class="pmap" data-map="{dkey}" data-src="{h.e(src)}" data-pimg="{h.e(pimg)}" data-pinfo="{h.e(pinfo)}" data-target="{target}" '
+                f'data-static="{dkey}" title="">'
+                f'<div class="pm-bar">{toolbar}</div>'
+                f'<div class="pm-inter"><div class="pmap-box"></div></div>'
+                f'<div class="pm-stat">{static_html}</div></div>')
+    return map_html, dkey
+
+
+def legend_card(legend: list, names: list, dkey: str, title: str) -> str:
+    """The map's legend as a card: one entry per (color, label), each a
+    checkbox that hides its points in place when every label is a group
+    of the map (see projection.js wireLegend)."""
+    if not legend:
+        return ""
+    known = set(names)
+    if not all(label in known for _, label in legend):
+        body = "".join(f'<div class="row-nw">{h.dot(color, size=10)}<span class="small xname" title="{h.e(label)}">{h.e(label)}</span></div>'
+                       for color, label in legend)
+        head = '<b class="small">Legend</b>'
+    else:
+        gi = {n: i for i, n in enumerate(names)}
+        body = "".join(
+            f'<div class="row-nw pm-lg"><button type="button" class="btn btn-sm btn-ghost btn-icon" data-front="{gi[label]}" '
+            f'title="Draw on top of the other points">{h.icon("layers", 13)}</button>{h.dot(color, size=10)}'
+            f'<label class="chk ell" title="{h.e(label)}"><input type="checkbox" checked data-g="{gi[label]}"><span>{h.e(label)}</span></label></div>'
+            for color, label in legend)
+        head = (f'<div class="row-nw"><b class="small">{h.e(title)}</b>'
+                f'<button type="button" class="btn btn-sm btn-link" data-pm="all">All</button>'
+                f'<button type="button" class="btn btn-sm btn-link" data-pm="none">None</button></div>')
+    return (f'<section class="card pm-legend" data-map="{dkey}" data-static="lg-{dkey}"><div class="card-b">{head}'
+            f'<div class="pm-lg-list">{body}</div></div></section>')

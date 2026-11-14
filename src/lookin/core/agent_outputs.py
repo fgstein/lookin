@@ -420,3 +420,45 @@ def generate_report(workspace_id: str, experiments: list | None = None, format: 
     if snapshot_id:
         out["snapshot"] = {"id": snapshot_id, "open_url": links.link(snapshot_id=snapshot_id)}
     return out
+
+
+# ---- one model, several datasets ---------------------------------------------
+
+def plot_embedding_comparison(workspace_id: str, members: list | None = None, reference: int | None = None,
+                              mode: str = "joint", method: str = "pca", color_by: str = "experiment",
+                              display: str = "overlay", max_points: int = DEFAULT_PROJECTION_POINTS,
+                              save_to: str = "") -> tuple:
+    """(answer, png): the Compare embeddings tab's map, drawn as the tab
+    draws it -- overlaid, or one panel per experiment."""
+    from lookin.core import embedding_compare as ec
+
+    if display not in ("overlay", "panels"):
+        raise ValueError(f"display must be overlay or panels; got {display!r}.")
+    if color_by not in ec.COLOR_MODES:
+        raise ValueError(f"color_by must be one of {', '.join(ec.COLOR_MODES)}; got {color_by!r}.")
+    with tools._lock, HEAVY_WORK_LOCK:
+        refs, saved, workspace = tools.resolve_members(workspace_id, members)
+        reference = saved if reference is None else int(reference)
+        if not 0 <= reference < len(refs):
+            raise ValueError(f"reference must be an index into the {len(refs)} members.")
+        loaded, problems = ec.load_members(refs)
+        if problems:
+            raise ValueError("Some members could not be read: " + " ".join(problems))
+        problem = ec.comparison_problem(loaded, reference)
+        if problem:
+            raise ValueError(f"Not compared: {problem}")
+        cmap = ec.project_members(loaded, reference, mode=mode, method=method,
+                                  per_member=min(int(max_points), ec.MAX_POINTS_PER_MEMBER))
+        names = [m.name for m in loaded]
+        colors = ec.group_colors(loaded, cmap, color_by, {n: color_for_experiment(n, names) for n in names})
+        title = f"{method.upper()} -- {'fitted on all' if mode == ec.PROJ_JOINT else 'fitted on the reference'}"
+        draw = charts.embedding_comparison_panels if display == "panels" else charts.embedding_comparison_overlay
+        fig = draw(loaded, cmap, color_by, colors, title)
+        png = charts.figure_png(fig)
+    answer = {"workspace_id": workspace.id, "title": title, "reference": loaded[reference].name,
+              "members": names, "points_per_member": [len(r) for r in cmap.rows], "notes": cmap.notes,
+              "warnings": [w for m in loaded for w in m.warnings],
+              "open_url": links.link(workspace.id, tab="embcompare")}
+    if save_to:
+        answer["saved"] = _save_png(png, save_to, "embedding_comparison.png")
+    return tools._clean(answer), png

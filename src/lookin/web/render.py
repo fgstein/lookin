@@ -30,6 +30,7 @@ TABS = (
     ("confidence", "Confidence", "Evaluate"),
     ("compare", "Compare", "Evaluate"),
     ("embeddings", "Embeddings", "Representations"),
+    ("embcompare", "Compare embeddings", "Representations"),
     ("prototypes", "Prototypes", "Representations"),
     ("cleaning", "Cleaning", "Curate"),
     ("notes", "Notes", "Write"),
@@ -40,7 +41,7 @@ TAB_TITLES = {t[0]: t[1] for t in TABS}
 # A snapshot records the selected tab by its index in
 # core/view_state.SNAPSHOT_TABS; a tab that is not there is saved as the one
 # it sits under.
-_SNAPSHOT_ALIASES = {"filter": "sources"}
+_SNAPSHOT_ALIASES = {"filter": "sources", "embcompare": "embeddings"}
 
 
 def tab_index(session) -> int:
