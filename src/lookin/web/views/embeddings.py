@@ -1327,7 +1327,8 @@ class EmbeddingsView(StaleTracking, View):
         if not from_dataset:
             title += " — inference crops, no review"
         open_carousel(self.s, title, picked, cols.crop_col, cols.uuid_col,
-                      review_source="projection" if from_dataset else "", label_col=cols.label_col)
+                      review_source="projection" if from_dataset else "", label_col=cols.label_col,
+                      outcome_borders=True)
 
     def on_point(self, i: int = 0, **_):
         i = int(i)
@@ -1462,10 +1463,8 @@ class EmbeddingsView(StaleTracking, View):
             items = [("All classes", self.a("class_all"), None, False)] + [
                 (str(c), self.a("class_toggle", label=str(c)), "check" if c in self._class_filter else None, False)
                 for c in self._classes]
-            controls.append(menu(items, icon_name="filter", label="Restrict to classes", right=False, title="Restrict to classes"))
-        filter_items = [(str(c), self.a("filter_toggle", column=str(c)), "check" if c in self._filter_columns else None, False)
-                        for c in self._filterable_columns()]
-        controls.append(menu(filter_items, icon_name="sliders", label="Filter points", right=False, title="Filter points"))
+            controls.append(menu(items, icon_name="filter", label="Restrict to classes", right=False,
+                                 title="Restrict to classes: only their crops are projected (recomputes the map)"))
         controls.append(h.button("Run projection", act_attr=self.a("run"), kind="primary", icon_name="play"))
         body = [f'<div class="row-wrap">{"".join(controls)}</div>']
         if self._score_note:
@@ -1512,11 +1511,20 @@ class EmbeddingsView(StaleTracking, View):
                 f'<div class="emb-left stack">{"".join(p for p in left if p)}</div>{right}</div>')
 
     def _filters_card(self) -> str:
+        """The display filters, a section of their own and always on show:
+        tucked in a menu beside "Run projection" they read as one more
+        setting of the computation, and went unnoticed."""
+        filter_items = [(str(c), self.a("filter_toggle", column=str(c)), "check" if c in self._filter_columns else None, False)
+                        for c in self._filterable_columns()]
+        add = menu(filter_items, icon_name="plus", label="Add a filter", right=True,
+                   title="Hide points by the value of a column, without recomputing the projection")
         if not self._filter_columns:
-            return ""
+            return h.section("Display filters",
+                             '<div class="muted small">Hide points by any column; the projection is not recomputed.</div>',
+                             right=add)
         active = [self._filters[c].describe() for c in self._filter_columns
                   if c in self._filters and self._filters[c].is_active()]
-        sub = ("Independent of the coloring: hiding points here changes nothing about the projection."
+        sub = ("Hiding points here changes nothing about the projection."
                if not active else "Showing: " + "; ".join(active))
         blocks = []
         ctx = self._last_context
@@ -1553,7 +1561,8 @@ class EmbeddingsView(StaleTracking, View):
                              f'this filter.</i></div>')
             blocks.append(f'<div class="flt" data-key="pf-{h.e(column)}"><div class="row-wrap">{"".join(head)}</div>{body}</div>')
         return h.section("Display filters", f'<div class="muted small">{h.e(sub)}</div>{"".join(blocks)}',
-                         right=h.button("Reset all", act_attr=self.a("filter_reset"), small=True, kind="ghost", icon_name="rotate"))
+                         right=add + h.button("Reset all", act_attr=self.a("filter_reset"), small=True, kind="ghost",
+                                              icon_name="rotate"))
 
     def _overlay_card(self) -> str:
         inferences = self.state.inferences

@@ -548,13 +548,14 @@ class CarouselDialog(Dialog):
 
     def __init__(self, session, title: str, dataset, total: int, page_provider, crop_col: str,
                  uuid_col=None, highlight_uuid=None, review_source: str = "", suggestions=None,
-                 label_col=None, header_html: str = "", chrome_height: int = 0):
+                 label_col=None, header_html: str = "", chrome_height: int = 0, outcome_borders: bool = False):
         super().__init__(title, width=4000)
         self.session = session
         self.header_html = header_html
         self.carousel = Carousel(self, session, dataset, total, page_provider, crop_col, uuid_col,
                                  highlight_uuid, review_source, suggestions, label_col,
-                                 chrome_height=chrome_height + (40 if header_html else 0))
+                                 chrome_height=chrome_height + (40 if header_html else 0),
+                                 outcome_borders=outcome_borders)
 
     def body(self) -> str:
         head = f'<div class="car-head">{self.header_html}</div>' if self.header_html else ""
@@ -570,12 +571,14 @@ class CarouselDialog(Dialog):
 
 
 def open_carousel(session, title: str, records: list, crop_col: str, uuid_col=None, highlight_uuid=None,
-                  review_source: str = "", suggestions=None, label_col=None, header_html: str = "") -> CarouselDialog:
+                  review_source: str = "", suggestions=None, label_col=None, header_html: str = "",
+                  outcome_borders: bool = False) -> CarouselDialog:
     """build_carousel_from_list, as a dialog: a small, fully materialized
     list of row dicts."""
     dialog = CarouselDialog(session, title, session.state.dataset, len(records),
                             lambda start, end: records[start:end], crop_col, uuid_col, highlight_uuid,
-                            review_source, suggestions, label_col, header_html=header_html)
+                            review_source, suggestions, label_col, header_html=header_html,
+                            outcome_borders=outcome_borders)
     session.open_dialog(dialog)
     return dialog
 
