@@ -15,9 +15,13 @@ from that workspace each time the comparison is run.
 
 The map is the Embeddings tab's (static/js/projection.js, through
 embeddings.map_widget): hover a point for its crop, click it for its
-nearest crops in another experiment, lasso a group to see its crops. Below
-it, how far apart the bases are, per class, and the crops of the other
-base that the reference does not cover or labels differently.
+nearest crops in another experiment, lasso a group to see its crops, or
+ring a point's nearest points on the map with the Neighbours tool. Side by
+side, every experiment gets an interactive panel of the same points (its
+own in color, the others in grey), all moving and selecting together.
+Below, one row per experiment against the reference, every pair of
+experiments on demand, per class, and the crops of the other base that the
+reference does not cover or labels differently.
 
 Keys compared in code, never reworded: the projection modes and the color
 modes of core/embedding_compare.py, DISPLAY_*, and the per-class sorts
@@ -32,7 +36,7 @@ import numpy as np
 
 from lookin.core import embedding_compare as ec
 from lookin.core import library as lib
-from lookin.core.chart_style import color_for_experiment
+from lookin.core.chart_style import blues_color, color_for_experiment
 from lookin.core.images import crop_display
 from lookin.web import html as h
 from lookin.web.views.base import NO_RENDER, Dialog, RebuildView
@@ -61,6 +65,20 @@ MANUAL_COVERAGE = "embedding-coverage"
 MANUAL_AGREEMENT = "cross-label-agreement"
 MANUAL_CLASS = "class-shift"
 MANUAL_NEIGHBOURS = "cross-neighbours"
+MANUAL_PAIRWISE = "embedding-pairwise"
+MANUAL_PROBE = "linear-probe"
+# Where the map's Neighbours tool searches (keys): every point of the map,
+# the clicked point's experiment, the other experiments, the reference.
+NN_ALL = "all"
+NN_SAME = "same"
+NN_OTHER = "other"
+NN_REFERENCE = "reference"
+NN_OPTIONS = [(NN_ALL, "Every experiment"), (NN_SAME, "Its own experiment"), (NN_OTHER, "The other experiments"),
+              (NN_REFERENCE, "The reference")]
+# Side by side: the other experiments' points, under the panel's own.
+OTHERS_GREY = "#d5d9e0"
+PANEL_MIN_SIZE = 280
+REFERENCE_CHIP = ' <span class="chip on small">reference</span>'
 
 
 class _Crops:
@@ -104,6 +122,7 @@ class EmbeddingCompareView(RebuildView):
         self.display = DISPLAY_OVERLAY
         self.class_sort = "coverage"
         self.stats_other = 0            # which member's per-class table is shown (index into members)
+        self.nn_scope = NN_ALL
         # The last run.
         self.members: list = []
         self.checks: list = []
@@ -111,6 +130,11 @@ class EmbeddingCompareView(RebuildView):
         self.refusal = ""
         self.cmap = None
         self.stats: dict = {}           # member index -> PairStats
+        self.probes: dict = {}          # member index -> LinearProbe | None
+        self.accuracies: dict = {}      # member index -> the model's accuracy
+        self.pairwise = None            # ec.Pairwise, on demand
+        self.pairwise_busy = False
+        self._vectors = None            # the embedding of every point of the map, in its order
         self.map_html = ""
         self.legend_html = ""
         self.panels_html = ""
@@ -244,6 +268,18 @@ class EmbeddingCompareView(RebuildView):
         self.add_choice = ""
         self._changed()
 
+    def on_add_all(self, **_):
+        same, _ = self._candidates()
+        if not same:
+            return
+        if not self.refs:
+            first = same.pop(0)
+            self.refs.append(ec.MemberRef(first["workspace_id"], first["experiment"]))
+            same, _ = self._candidates()
+        self.refs += [ec.MemberRef(r["workspace_id"], r["experiment"]) for r in same]
+        self.add_choice = ""
+        self._changed()
+
     def on_remove(self, i: int = 0, **_):
         i = int(i)
         if not 0 <= i < len(self.refs):
@@ -267,9 +303,10 @@ class EmbeddingCompareView(RebuildView):
 
     def _clear_results(self) -> None:
         self.members, self.checks, self.problems, self.refusal = [], [], [], ""
-        self.cmap, self.stats = None, {}
+        self.cmap, self.stats, self.probes, self.accuracies, self.pairwise = None, {}, {}, {}, None
         self.map_html = self.legend_html = self.panels_html = ""
         self._map_points = []
+        self._vectors = None
         self.error = ""
 
     # ---- settings ----
@@ -300,6 +337,10 @@ class EmbeddingCompareView(RebuildView):
         if value in (DISPLAY_OVERLAY, DISPLAY_PANELS) and value != self.display:
             self.display = value
             self._redraw()
+
+    def on_nn_scope(self, value: str = "", **_):
+        if value in dict(NN_OPTIONS):
+            self.nn_scope = value
 
     def on_class_sort(self, value: str = "", **_):
         if value in ec.CLASS_SORTS:
@@ -351,10 +392,12 @@ class EmbeddingCompareView(RebuildView):
         self.cmap = ec.project_members(members, reference, mode=self.mode, method=self.method,
                                        per_member=self._per_member())
         for i, member in enumerate(members):
-            if i == reference:
-                continue
-            self.set_progress(f"Measuring {member.name} against the reference...")
-            self.stats[i] = ec.pair_stats(members[reference], member)
+            self.accuracies[i] = ec.member_accuracy(member)
+            if i != reference:
+                self.set_progress(f"Measuring {member.name} against the reference ({i + 1}/{len(members)})...")
+                self.stats[i] = ec.pair_stats(members[reference], member)
+            self.set_progress(f"Linear probe on {member.name} ({i + 1}/{len(members)})...")
+            self.probes[i] = ec.member_probe(member)
         self.stats_other = next(iter(self.stats), 0)
         self._draw()
 
@@ -371,19 +414,56 @@ class EmbeddingCompareView(RebuildView):
 
         members, cmap = self.members, self.cmap
         colors = ec.group_colors(members, cmap, self.color_by, self._member_colors())
-        title = (f"{dict(METHOD_OPTIONS).get(self.method, self.method)} -- "
-                 f"{'fitted on all' if cmap.mode == ec.PROJ_JOINT else 'fitted on the reference'}")
+        data, points, owner = self._map_data(colors)
+        self._map_points = points
+        session = self.s
+
+        def resolve(i: int):
+            if not 0 <= i < len(points):
+                return None
+            m, row = points[i]
+            lut, turns = crop_display(session, members[m].record(row))
+            return members[m].crop_path(row), lut, turns
+
+        title = {ec.COLOR_MEMBER: "Show experiment", ec.COLOR_CLASS: "Show class",
+                 ec.COLOR_CORRECT: "Show"}[self.color_by]
+        names = data["groups"]
+        legend = [(colors.get(n, "#555555"), n) for n in names]
+        if self.color_by == ec.COLOR_CLASS:
+            legend.sort(key=lambda item: str(item[1]))
         if self.display == DISPLAY_PANELS:
-            fig = charts.embedding_comparison_panels(members, cmap, self.color_by, colors, title)
-            self.panels_html = fig_html(self.s, fig, "Compared embeddings, side by side")
-            self.map_html = self.legend_html = ""
+            # One interactive map per experiment, of the same points in the
+            # same order -- its own in color, every other in grey under
+            # them -- linked: they pan, zoom and select together.
+            link = f"ecmp-{len(points)}-{id(cmap)}"
+            grey = OTHERS_GREY
+            panels, first_key = [], ""
+            for m, member in enumerate(members):
+                own = owner == m
+                palette = sorted(set(data["palette"]) | {grey})
+                pindex = {c: k for k, c in enumerate(palette)}
+                panel = dict(data, palette=palette,
+                             c=[pindex[data["palette"][c]] if own[i] else pindex[grey] for i, c in enumerate(data["c"])],
+                             z=own.astype(int).tolist(), k=None)
+                html_, key = map_widget(self.s, self.name, panel, resolve, None, "", compact=True, link=link,
+                                        min_size=PANEL_MIN_SIZE, heading=member.name)
+                first_key = first_key or key
+                panels.append(f'<div class="ecmp-panel">{html_}</div>')
+            self.panels_html = f'<div class="ecmp-panels">{"".join(panels)}</div>'
+            self.legend_html = legend_card(legend, names, first_key, title)
+            self.map_html = ""
             return
-        fig = charts.embedding_comparison_overlay(members, cmap, self.color_by, colors, title)
+        title_fig = (f"{dict(METHOD_OPTIONS).get(self.method, self.method)} -- "
+                     f"{'fitted on all' if cmap.mode == ec.PROJ_JOINT else 'fitted on the reference'}")
+        fig = charts.embedding_comparison_overlay(members, cmap, self.color_by, colors, title_fig)
         static_html = fig_html(self.s, fig, "Compared embeddings")
-        self.map_html, self.legend_html = self._interactive(colors, static_html)
+        self.map_html, dkey = map_widget(self.s, self.name, data, resolve, None, static_html)
+        self.legend_html = legend_card(legend, names, dkey, title)
         self.panels_html = ""
 
-    def _interactive(self, colors: dict, static_html: str) -> tuple:
+    def _map_data(self, colors: dict) -> tuple:
+        """(the map's JSON, point i -> (member, row), point i -> member) --
+        the same points in the same order for the overlay and every panel."""
         members, cmap = self.members, self.cmap
         reference = self.reference if self.reference < len(members) else 0
         xs, ys, groups, kinds, hover, points = [], [], [], [], [], []
@@ -423,23 +503,54 @@ class EmbeddingCompareView(RebuildView):
                        for label in cmap.proto_labels]
             data["protos"] = {"x": coords[:, 0].tolist(), "y": coords[:, 1].tolist(), "color": pcolors,
                               "k": [int(k) for k in cmap.proto_ks], "label": list(cmap.proto_labels)}
-        self._map_points = points
-        session = self.s
+        owner = np.asarray([m for m, _ in points], dtype=int)
+        return data, points, owner
 
-        def resolve(i: int):
-            if not 0 <= i < len(points):
-                return None
-            m, row = points[i]
-            lut, turns = crop_display(session, members[m].record(row))
-            return members[m].crop_path(row), lut, turns
+    # ---- the map's Neighbours tool ----
 
-        map_html, dkey = map_widget(self.s, self.name, data, resolve, None, static_html)
-        title = {ec.COLOR_MEMBER: "Show experiment", ec.COLOR_CLASS: "Show class",
-                 ec.COLOR_CORRECT: "Show"}[self.color_by]
-        legend = [(colors.get(n, "#555555"), n) for n in names]
-        if self.color_by == ec.COLOR_CLASS:
-            legend.sort(key=lambda item: str(item[1]))
-        return map_html, legend_card(legend, names, dkey, title)
+    def _map_vectors(self):
+        if self._vectors is None and self._map_points:
+            self._vectors = np.stack([self.members[m].embeddings[row] for m, row in self._map_points])
+        return self._vectors
+
+    def on_neighbours(self, i: int = 0, k: int = 20, map: str = "", **_):
+        """Point i's k nearest points of the map in embedding space, among
+        the experiments the "Neighbours searched in" setting names; sent
+        back for the map to ring (projection.js)."""
+        from lookin.core.embedding_analysis import nearest_rows
+
+        vectors = self._map_vectors()
+        i = int(i)
+        if vectors is None or not 0 <= i < len(vectors):
+            return NO_RENDER
+        owner = np.asarray([m for m, _ in self._map_points])
+        among = None
+        if self.nn_scope == NN_SAME:
+            among = owner == owner[i]
+        elif self.nn_scope == NN_OTHER:
+            among = owner != owner[i]
+        elif self.nn_scope == NN_REFERENCE:
+            among = owner == self.reference
+        rows, sims = nearest_rows(vectors, i, max(1, min(int(k), 500)), among=among)
+        self.s.cmd(event="map-neighbours", detail={"map": str(map), "query": i, "idx": rows.tolist(),
+                                                    "sims": [round(float(x), 4) for x in sims]})
+        return NO_RENDER
+
+    # ---- every pair ----
+
+    def on_pairwise(self, **_):
+        if len(self.members) < 2 or self.pairwise_busy:
+            return
+        self.pairwise_busy = True
+        members = list(self.members)
+
+        def work():
+            try:
+                self.pairwise = ec.pairwise_stats(members, progress=self.set_progress)
+            finally:
+                self.pairwise_busy = False
+
+        self.rebuild(work, clear_stale=False)
 
     # ---- crops behind the map ----
 
@@ -521,16 +632,17 @@ class EmbeddingCompareView(RebuildView):
         elif self.map_html:
             right.append(self.map_html)
         elif self.panels_html:
-            right.append(f'<section class="card"><div class="card-b">{self.panels_html}</div></section>')
+            right.append(self.panels_html)
         elif not self.progress_text:
             right.append(h.banner("Add the experiments to compare, then click 'Compare'.", "info"))
-        if self.stats:
-            right.append(self._summary_card())
-            right.append(self._classes_card())
+        # The tables go below the map, across the page: with many
+        # experiments they are wider than the map's column.
+        below = [self._summary_card(), self._pairwise_card(), self._classes_card()] if self.stats else []
         display = f"{self.s.display_lut or ''}.{self.s.display_roll_col or ''}"
-        return (f'<div class="emb ecmp{" emb-has-map" if has_map else ""}" data-display="{h.e(display)}">'
+        return (f'<div class="stack"><div class="emb ecmp{" emb-has-map" if has_map else ""}" data-display="{h.e(display)}">'
                 f'<div class="emb-left stack">{"".join(p for p in left if p)}</div>{split}'
-                f'<div class="emb-right stack">{"".join(p for p in right if p)}</div></div>')
+                f'<div class="emb-right stack">{"".join(p for p in right if p)}</div></div>'
+                f'{"".join(b for b in below if b)}</div>')
 
     def _members_card(self) -> str:
         rows = []
@@ -558,7 +670,8 @@ class EmbeddingCompareView(RebuildView):
         if options and self.add_choice not in dict(options):
             self.add_choice = options[0][0]
         add = (f'<div class="row-nw">{h.select(options, self.add_choice, change=self.c("choose"), cls="grow", title="An experiment of the same model")}'
-               f'{h.button("Add", act_attr=self.a("add"), kind="primary", icon_name="plus", small=True)}</div>'
+               f'{h.button("Add", act_attr=self.a("add"), kind="primary", icon_name="plus", small=True)}'
+               f'{h.button(f"Add all ({len(options)})", act_attr=self.a("add_all"), small=True, title="Every experiment of the library from the same model") if len(options) > 1 else ""}</div>'
                if options else '<div class="muted small">No other experiment of the library comes from the same model.</div>')
         notes = []
         if n_others:
@@ -582,6 +695,8 @@ class EmbeddingCompareView(RebuildView):
         redraw = [
             h.select(COLOR_OPTIONS, self.color_by, change=self.c("color"), label="Color by"),
             h.select(DISPLAY_OPTIONS, self.display, change=self.c("display"), label="Show"),
+            h.select(NN_OPTIONS, self.nn_scope, change=self.c("nn_scope"), label="Neighbours searched in",
+                     title="Where the map's Neighbours tool looks for a point's nearest points"),
         ]
         note = ""
         if self.mode == ec.PROJ_REFERENCE and self.method not in ec.TRANSFORM_METHODS:
@@ -600,44 +715,96 @@ class EmbeddingCompareView(RebuildView):
         return h.banner(self.refusal, "error", lines=lines)
 
     def _summary_card(self) -> str:
-        reference = self.members[self.reference] if self.reference < len(self.members) else self.members[0]
-        blocks = []
-        for i, stats in self.stats.items():
+        """One row per experiment -- the reference first -- so that twenty
+        datasets read as one table, not twenty blocks."""
+        reference = self.reference if self.reference < len(self.members) else 0
+        ref_stats = next(iter(self.stats.values()), None)
+        head = (f"<th>Experiment</th><th class='num'>Crops</th><th class='num'>Model accuracy</th>"
+                f"<th class='num'>Probe accuracy{h.info_btn(MANUAL_PROBE)}</th>"
+                f"<th class='num'>Told apart (AUC){h.info_btn(MANUAL_DOMAIN)}</th>"
+                f"<th class='num'>Covered{h.info_btn(MANUAL_COVERAGE)}</th>"
+                f"<th class='num'>Nearest reference similarity</th>"
+                f"<th class='num'>Labels agreeing{h.info_btn(MANUAL_AGREEMENT)}</th><th></th>")
+        rows = []
+        for i in [reference] + [j for j in range(len(self.members)) if j != reference]:
             member = self.members[i]
-
-            def row(label, value, page, title=""):
-                return (f'<span class="kv-k">{h.e(label)}{h.info_btn(page)}</span>'
-                        f'<span class="kv-v"{f" title={chr(34)}{h.e(title)}{chr(34)}" if title else ""}>{value}</span>')
-
-            auc = "--" if stats.domain_auc is None else f"{stats.domain_auc:.3f}"
-            grid = "".join([
-                row("Told apart (domain AUC)", auc, MANUAL_DOMAIN, "0.5: the model sees no difference; 1: always told apart"),
-                row("Covered by the reference", f"{_pct(stats.coverage)} "
-                    f"<span class='muted'>(nearest reference crop at least {stats.coverage_threshold:.3f})</span>",
-                    MANUAL_COVERAGE),
-                row("Similarity to the nearest reference crop",
-                    f"{stats.nn_similarity_other:.3f} <span class='muted'>(inside the reference: "
-                    f"{stats.nn_similarity_reference:.3f}, medians)</span>", MANUAL_COVERAGE),
-                row("Labels agreeing with the reference", f"{_pct(stats.agreement)} "
-                    f"<span class='muted'>(inside the reference: {_pct(stats.agreement_reference)})</span>",
-                    MANUAL_AGREEMENT),
-            ])
-            counts = (f"{stats.n_other:,} crops measured against {stats.n_reference:,} of the reference"
-                      + (f"; {stats.n_shared:,} crops are in both and left out of the domain test" if stats.n_shared else ""))
-            buttons = (h.button(f"Outside the reference ({len(stats.outside):,})", act_attr=self.a("outside", i=i),
-                                small=True, icon_name="grid", disabled=not stats.outside,
-                                title="Crops of this base with no reference crop as close as the reference's own")
-                       + h.button(f"Labelled otherwise ({len(stats.disagreements):,})", act_attr=self.a("disagree", i=i),
-                                  small=True, icon_name="grid", disabled=not stats.disagreements,
-                                  title="Crops whose nearest reference crops mostly carry another label"))
-            blocks.append(f'<div class="stack"><b class="small">{h.e(member.name)} '
-                          f'<span class="muted">vs {h.e(reference.name)}</span></b>'
-                          f'<div class="kv">{grid}</div><div class="muted small">{h.e(counts)}</div>'
-                          f'<div class="row-wrap">{buttons}</div></div>')
+            probe = self.probes.get(i)
+            cells = [f"<td><span class='ell' title='{h.e(member.name)}'>{h.e(member.name)}</span>"
+                     f"{REFERENCE_CHIP if i == reference else ''}</td>",
+                     f"<td class='num'>{len(member):,}</td>", f"<td class='num'>{_pct(self.accuracies.get(i))}</td>",
+                     f"<td class='num'>{_pct(probe.accuracy) if probe is not None else '--'}</td>"]
+            stats = self.stats.get(i)
+            if stats is None:
+                inside = ref_stats
+                cells += ["<td class='num muted'>0.5</td>",
+                          f"<td class='num muted'>{100 - ec.COVERAGE_PERCENTILE:.0f}%</td>",
+                          f"<td class='num muted'>{_num(inside.nn_similarity_reference) if inside else '--'}</td>",
+                          f"<td class='num muted'>{_pct(inside.agreement_reference) if inside else '--'}</td>", "<td></td>"]
+            else:
+                auc = (f"{stats.domain_auc:.3f}" if stats.domain_auc is not None
+                       else "<span class='muted'>same crops</span>" if stats.n_shared else "--")
+                buttons = (h.button(f"{len(stats.outside):,} outside", act_attr=self.a("outside", i=i), small=True,
+                                    kind="link", disabled=not stats.outside,
+                                    title="Crops with no reference crop as close as the reference's own")
+                           + h.button(f"{len(stats.disagreements):,} labelled otherwise", act_attr=self.a("disagree", i=i),
+                                      small=True, kind="link", disabled=not stats.disagreements,
+                                      title="Crops whose nearest reference crops mostly carry another label")
+                           + h.button("classes", act_attr=self.a("stats_other", value=str(i)), small=True, kind="link",
+                                      title="Show this experiment in the per-class table below"))
+                cells += [f"<td class='num' title='{stats.n_shared:,} crops in both left out'>{auc}</td>",
+                          f"<td class='num' title='nearest reference crop at least {stats.coverage_threshold:.3f}'>{_pct(stats.coverage)}</td>",
+                          f"<td class='num'>{_num(stats.nn_similarity_other)}</td>",
+                          f"<td class='num'>{_pct(stats.agreement)}</td>", f"<td class='row-nw'>{buttons}</td>"]
+            rows.append(f"<tr>{''.join(cells)}</tr>")
+        table = (f'<div class="tbl-wrap"><table class="tbl compact"><thead><tr>{head}</tr></thead>'
+                 f'<tbody>{"".join(rows)}</tbody></table></div>')
+        note = ('<div class="muted small">The reference\'s row, in grey, is what each figure is inside the reference '
+                'itself.</div>')
         warnings = [w for m in self.members for w in m.warnings]
-        if warnings:
-            blocks.append(h.banner("Note", "info", lines=warnings))
-        return h.section("How far apart the datasets are", "".join(blocks))
+        extra = h.banner("Note", "info", lines=warnings) if warnings else ""
+        return h.section("How far apart the datasets are", table + note + extra,
+                         sub="each experiment against the reference")
+
+    def _pairwise_card(self) -> str:
+        if len(self.members) < 3 and self.pairwise is None:
+            return ""
+        button = h.button("Measure every pair", act_attr=self.a("pairwise"), small=True, icon_name="layers",
+                          disabled=self.pairwise_busy,
+                          title=f"Domain AUC and coverage of every pair, on {ec.PAIRWISE_POINTS:,} crops per experiment")
+        if self.pairwise is None:
+            return h.section("Every pair of experiments", f'<div class="row">{button}</div>', manual=MANUAL_PAIRWISE,
+                             sub="which datasets resemble which")
+        pw = self.pairwise
+        n = len(pw.names)
+
+        def grid(matrix, fmt, low, high, tip):
+            cells = ['<span></span>'] + [f'<span class="cm-h" style="font-size:9px" title="{h.e(nm)}">{k + 1}</span>'
+                                         for k, nm in enumerate(pw.names)]
+            for a in range(n):
+                cells.append(f'<span class="cm-r small ell" title="{h.e(pw.names[a])}">{a + 1}. {h.e(pw.names[a])}</span>')
+                for b in range(n):
+                    v = matrix[a, b]
+                    if not np.isfinite(v):
+                        cells.append('<span class="ov-c ov-na" style="height:30px"></span>')
+                        continue
+                    f = min(1.0, max(0.0, (v - low) / max(high - low, 1e-9)))
+                    cells.append(f'<span class="ov-c" style="height:30px;background:{blues_color(f)};'
+                                 f'color:{"#ffffff" if f > 0.55 else "#111111"}" '
+                                 f'title="{h.e(tip(a, b, v))}">{fmt(v)}</span>')
+            return (f'<div class="cm-scroll"><div class="cm-grid" style="grid-template-columns:220px '
+                    f'repeat({n}, 44px)">{"".join(cells)}</div></div>')
+
+        auc = grid(pw.domain_auc, lambda v: f"{v:.2f}", 0.5, 1.0,
+                   lambda a, b, v: f"{pw.names[a]} vs {pw.names[b]}: told apart with AUC {v:.3f}")
+        finite = pw.coverage[np.isfinite(pw.coverage)]
+        low = float(finite.min()) if finite.size else 0.0
+        cov = grid(pw.coverage, lambda v: f"{100 * v:.0f}", low, 1.0,
+                   lambda a, b, v: f"{100 * v:.1f}% of {pw.names[b]} covered by {pw.names[a]}")
+        body = (f'<div class="row">{button}</div>'
+                f'<b class="small">Told apart (domain AUC; darker = more different; empty: the same crops)</b>{auc}'
+                f'<b class="small">Covered (%): row covers column (darker = more covered)</b>{cov}')
+        return h.section("Every pair of experiments", body, manual=MANUAL_PAIRWISE,
+                         sub=f"{ec.PAIRWISE_POINTS:,} crops per experiment")
 
     def _classes_card(self) -> str:
         if self.stats_other not in self.stats:

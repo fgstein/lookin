@@ -317,20 +317,41 @@ def test_the_tab_compares_and_saves(bases):
     assert not view.refusal and set(view.stats) == {1}
     with RequestScope(s):
         html = render.render_view(s, "embcompare")
-    for text in ("How far apart the datasets are", "Per class", 'data-target="embcompare"', "Outside the reference"):
+    for text in ("How far apart the datasets are", "Per class", 'data-target="embcompare"', " outside",
+                 "Probe accuracy", 'data-pm-mode="nn"'):
         assert text in html, text
+    assert set(view.probes) == {0, 1} and view.probes[0].accuracy > 0.3
     # A click on the map: the crop's nearest crops in the other base.
     with RequestScope(s):
         view.on_point(i=0)
         dialog = s.dialogs[-1]
         body = dialog.body()
     assert "Nearest crops" in dialog.title and "Search in" in body
-    # Side by side, coloured by class: a redraw, no new projection.
+    # The map's Neighbours tool: the nearest points of the map, among the
+    # other experiment's, sent back for the map to ring.
+    view.on_nn_scope(value="other")
+    with RequestScope(s):
+        view.on_neighbours(i=0, k=5, map="m1")
+        command = s._pending_cmds[-1]
+    detail = command["detail"]
+    assert command["event"] == "map-neighbours" and detail["map"] == "m1" and detail["query"] == 0
+    assert len(detail["idx"]) == 5 and detail["sims"] == sorted(detail["sims"], reverse=True)
+    assert all(view._map_points[j][0] != view._map_points[0][0] for j in detail["idx"])
+    # Side by side, coloured by class: a redraw, no new projection -- one
+    # interactive map per experiment, linked, of the same points.
     cmap = view.cmap
     view.on_color(value=ec.COLOR_CLASS)
     view.display = "panels"
     view._draw()
     assert view.cmap is cmap and view.panels_html and not view.map_html
+    assert view.panels_html.count('class="pmap pmap-compact"') == 2
+    assert view.panels_html.count("data-link=") == 2
+    # Every pair, on demand.
+    view.pairwise = ec.pairwise_stats(view.members)
+    assert view.pairwise.domain_auc.shape == (2, 2)
+    with RequestScope(s):
+        html = render.render_view(s, "embcompare")
+    assert "Every pair of experiments" in html
 
 
 def test_the_tab_refuses_a_saved_comparison_of_two_models(bases):
@@ -351,3 +372,94 @@ def test_the_tab_refuses_a_saved_comparison_of_two_models(bases):
     with RequestScope(s):
         html = render.render_view(s, "embcompare")
     assert "prototypes differ" in html
+
+
+def test_add_all_takes_every_experiment_of_the_same_model(bases, tmp_path):
+    a, b = bases
+    c = lib.create_workspace("Third base", lib.Mount(
+        dataset_path=b.mount.dataset_path, image_root=str(EXAMPLE), experiments=[_experiment("cnn", "baseline_cnn")]),
+        root=lib.library_root())
+    s = _tab_session(a)
+    view = s.view("embcompare")
+    view.on_shown()
+    view.on_add_all()
+    assert view.refs == [ec.MemberRef(a.id, "cnn"), ec.MemberRef(b.id, "cnn"), ec.MemberRef(c.id, "cnn")]
+
+
+def test_pairwise_matrices():
+    rng = np.random.default_rng(0)
+
+    def member(name, shift, n=300):
+        x = rng.normal(size=(n, 16))
+        x[:, 0] += shift
+        x /= np.linalg.norm(x, axis=1, keepdims=True)
+        return ec.Member(ref=ec.MemberRef("w", name), workspace_name="w", embeddings=x.astype(np.float32),
+                         uuids=np.asarray([f"{name}{i}" for i in range(n)]), labels=np.asarray([""] * n, dtype=object),
+                         predicted=None, correct=None, crops=np.asarray([""] * n), image_root=Path("."))
+
+    near_a, near_b, far = member("a", 4.0), member("b", 4.0), member("c", -4.0)
+    pw = ec.pairwise_stats([near_a, near_b, far])
+    assert pw.domain_auc[0, 1] < 0.7 < pw.domain_auc[0, 2]
+    assert pw.coverage[0, 1] > pw.coverage[0, 2]
+    assert np.isnan(pw.domain_auc[0, 0])
+
+
+def test_the_linear_probe_recovers_separable_classes():
+    from lookin.core.embedding_analysis import linear_probe
+
+    rng = np.random.default_rng(0)
+    centers = rng.normal(size=(6, 32)) * 3
+    labels = np.repeat(np.arange(6), 40)
+    x = centers[labels] + rng.normal(size=(len(labels), 32))
+    x /= np.linalg.norm(x, axis=1, keepdims=True)
+    names = np.asarray([f"c{i}" for i in labels], dtype=object)
+    names[:3] = "rare"            # three crops: too few to cross-validate
+    probe = linear_probe(x, names, predicted=names)
+    assert probe.accuracy > 0.9 and probe.model_accuracy == 1.0
+    assert probe.skipped_classes == ["rare"] and probe.n_classes == 6
+    assert {c.label for c in probe.per_class} == {f"c{i}" for i in range(6)}
+
+
+def test_the_embeddings_tab_neighbours_and_probe():
+    """The Embeddings tab's map: its Neighbours tool and the probe section."""
+    from lookin.web import render
+    from lookin.web.server import WebApp
+    from lookin.web.session import RequestScope
+
+    session = WebApp().store.get("y" * 24, create=True)
+    with RequestScope(session):
+        render.boot(session, {})
+    sources = session.view("sources")
+    sources.set_dataset_path(str(EXAMPLE / "dataset.csv"))
+    assert sources.load_dataset_now(then_experiments=[("cnn", str(EXAMPLE / "baseline_cnn_results.csv"))])
+    session.state.experiments["cnn"].load_embeddings(str(EXAMPLE / "baseline_cnn_embeddings.npz"))
+    view = session.view("embeddings")
+    view._map_vector_parts = (session.state.experiments["cnn"].embeddings, np.arange(50), [], None)
+    view._map_vectors_cache = None
+    with RequestScope(session):
+        view.on_neighbours(i=3, k=7, map="mk")
+        command = session._pending_cmds[-1]
+    assert command["event"] == "map-neighbours" and len(command["detail"]["idx"]) == 7
+    assert 3 not in command["detail"]["idx"]
+    from lookin.web.views.embeddings import probe_html
+    from lookin.core.embedding_analysis import linear_probe
+    from lookin.core.embedding_context import build_analysis_context
+
+    ctx = build_analysis_context(session.state, "cnn")
+    html = probe_html(linear_probe(ctx["embeddings"], ctx["labels"], ctx["merged"]["predicted_label"].to_numpy()),
+                      "cnn")
+    assert "Probe accuracy" in html and "The model itself" in html
+
+
+def test_the_mcp_probe_and_every_pair(bases):
+    from lookin.core import agent_tools as tools
+
+    a, b = bases
+    out = tools.get_class_separability(a.id, "cnn", top=3)
+    json.dumps(out)
+    assert 0.3 < out["probe_accuracy"] <= 1 and out["model_accuracy"] is not None
+    assert len(out["worst_classes"]) == 3 and out["classes"] == 10
+    members = [{"workspace": a.id, "experiment": "cnn"}, {"workspace": b.id, "experiment": "cnn"}]
+    out = tools.compare_embedding_spaces(a.id, members, pairwise=True, probe=True)
+    json.dumps(out)
+    assert len(out["pairwise"]["domain_auc"]) == 2 and out["members"][1]["probe_accuracy"] is not None

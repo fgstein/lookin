@@ -854,6 +854,28 @@ def nearest_to_vector(
     ]
 
 
+def nearest_rows(embeddings: np.ndarray, row: int, k: int = 20, among: Optional[np.ndarray] = None) -> tuple:
+    """(rows, similarities) of the k rows of `embeddings` nearest to row
+    `row`, nearest first, the row itself left out -- the interactive maps'
+    Neighbours tool, which rings them on the map. `among`: a boolean mask of
+    the rows that may be returned (one experiment's points of a comparison
+    map, say)."""
+    embeddings = np.asarray(embeddings)
+    if not len(embeddings) or not 0 <= int(row) < len(embeddings):
+        return np.zeros(0, dtype=np.int64), np.zeros(0)
+    similarity = embeddings @ embeddings[int(row)]
+    similarity = np.asarray(similarity, dtype=np.float64).copy()
+    similarity[int(row)] = -np.inf
+    if among is not None:
+        similarity[~np.asarray(among, dtype=bool)] = -np.inf
+    k = min(max(int(k), 0), int(np.isfinite(similarity).sum()))
+    if k <= 0:
+        return np.zeros(0, dtype=np.int64), np.zeros(0)
+    top = np.argpartition(-similarity, k - 1)[:k]
+    top = top[np.argsort(-similarity[top])]
+    return top.astype(np.int64), similarity[top]
+
+
 # ---- how much two classes overlap --------------------------------------
 
 # How many crops of each class the pairwise similarity is measured over.
@@ -952,3 +974,107 @@ def class_overlap(
 
     return ClassOverlap(labels=present, matrix=matrix,
                         counts=np.array(counts), separation=separation)
+
+
+# ---- how separable the classes are, for a linear classifier ---------------
+
+# Crops per class, and in all, the probe is trained and scored on: past
+# these it is sampled (the manual's "Linear probe" page quotes them).
+PROBE_MAX_PER_CLASS = 200
+PROBE_MAX_POINTS = 20_000
+# Cross-validation folds; a class needs at least this many crops to be
+# scored (every fold must be able to hold one out).
+PROBE_FOLDS = 5
+# Most frequent probe mistakes kept.
+PROBE_TOP_CONFUSIONS = 30
+
+
+@dataclass
+class ProbeClass:
+    label: str
+    support: int          # crops of the class the probe was scored on
+    recall: float
+    precision: float
+    f1: float
+    model_recall: Optional[float] = None   # the model's own recall on the same crops
+
+
+@dataclass
+class LinearProbe:
+    """How well a linear classifier, trained on the embeddings alone,
+    recovers the labels -- cross-validated, so every crop is scored by a
+    probe that never saw it."""
+    accuracy: float
+    balanced_accuracy: float
+    n_points: int
+    n_classes: int
+    model_accuracy: Optional[float] = None       # the model's own, on the same crops
+    per_class: list = field(default_factory=list)          # ProbeClass
+    confusions: list = field(default_factory=list)         # (true, predicted by the probe, count)
+    skipped_classes: list = field(default_factory=list)    # too few crops to cross-validate
+    sampled: bool = False
+
+
+def linear_probe(embeddings: np.ndarray, labels: np.ndarray, predicted: Optional[np.ndarray] = None,
+                 seed: int = 0, max_per_class: int = PROBE_MAX_PER_CLASS,
+                 max_points: int = PROBE_MAX_POINTS) -> LinearProbe:
+    """A multinomial logistic regression from embeddings to labels, scored
+    by stratified cross-validation. `predicted`: the model's own predicted
+    labels for the same rows, to read the probe beside the model's head.
+
+    Where the overlap matrix measures how alike classes are on average, this
+    asks whether a *linear* boundary can tell them apart -- which is what a
+    classification head on these embeddings has to do."""
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.model_selection import StratifiedKFold, cross_val_predict
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    labels = np.asarray([("" if l is None or l != l else str(l)) for l in labels], dtype=object)
+    rng = np.random.default_rng(seed)
+    keep, skipped, sampled = [], [], False
+    names, counts = np.unique(labels[labels != ""], return_counts=True)
+    per_class_cap = max(PROBE_FOLDS, min(max_per_class, max_points // max(len(names), 1)))
+    for name, count in zip(names, counts):
+        rows = np.flatnonzero(labels == name)
+        if count < PROBE_FOLDS:
+            skipped.append(str(name))
+            continue
+        if count > per_class_cap:
+            rows = np.sort(rng.choice(rows, per_class_cap, replace=False))
+            sampled = True
+        keep.append(rows)
+    if len(keep) < 2:
+        raise ValueError(f"A linear probe needs at least two classes with {PROBE_FOLDS} or more crops each.")
+    rows = np.concatenate(keep)
+    x = np.asarray(embeddings[rows], dtype=np.float32)
+    y = labels[rows].astype(str)
+    # Standardized first: on unit vectors every feature is ~1/sqrt(D), and
+    # with many classes the solver's first gradient falls under its
+    # tolerance -- it stopped at iteration 0 and predicted one class.
+    model = make_pipeline(StandardScaler(), LogisticRegression(max_iter=500, C=1.0))
+    folds = StratifiedKFold(n_splits=PROBE_FOLDS, shuffle=True, random_state=seed)
+    guess = cross_val_predict(model, x, y, cv=folds)
+    classes = sorted(set(y.tolist()))
+    per_class = []
+    model_pred = np.asarray(predicted, dtype=object)[rows].astype(str) if predicted is not None else None
+    recalls = []
+    for c in classes:
+        truth, said = y == c, guess == c
+        tp = int(np.sum(truth & said))
+        recall = tp / max(int(truth.sum()), 1)
+        precision = tp / int(said.sum()) if said.any() else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+        recalls.append(recall)
+        per_class.append(ProbeClass(
+            label=c, support=int(truth.sum()), recall=recall, precision=precision, f1=f1,
+            model_recall=float(np.mean(model_pred[truth] == c)) if model_pred is not None else None))
+    wrong = y != guess
+    pairs, pair_counts = np.unique(np.stack([y[wrong], guess[wrong]], axis=1), axis=0, return_counts=True) \
+        if wrong.any() else (np.zeros((0, 2)), np.zeros(0, dtype=int))
+    order = np.argsort(-pair_counts)[:PROBE_TOP_CONFUSIONS]
+    return LinearProbe(
+        accuracy=float(np.mean(~wrong)), balanced_accuracy=float(np.mean(recalls)), n_points=len(rows),
+        n_classes=len(classes), model_accuracy=float(np.mean(model_pred == y)) if model_pred is not None else None,
+        per_class=per_class, confusions=[(str(pairs[i][0]), str(pairs[i][1]), int(pair_counts[i])) for i in order],
+        skipped_classes=skipped, sampled=sampled)

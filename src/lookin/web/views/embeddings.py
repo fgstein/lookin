@@ -38,7 +38,7 @@ from lookin.core.embedding_context import build_analysis_context, coverage_note,
 from lookin.core.prototype_source import KMEANS_COLOR, MODEL_COLOR
 from lookin.web import html as h
 from lookin.web.session import checkpoint
-from lookin.web.views.base import StaleTracking, View
+from lookin.web.views.base import NO_RENDER, StaleTracking, View
 from lookin.web.views.carousel import open_carousel
 from lookin.web.views.files import menu
 from lookin.web.views.common import short_column_labels
@@ -316,6 +316,9 @@ class EmbeddingsView(StaleTracking, View):
         self.overlap_busy = False
         self.overlap_html = ""
         self._overlap = None
+        # linear probe
+        self.probe_busy = False
+        self.probe_html = ""
         self.overlap_focus = ClassFocus(self.name, "ofocus", OVERLAP_FOCUS_CRITERIA, self._on_overlap_focus_change,
                                         what="the overlap grid", support_criteria=(cf.FOCUS_LEAST_SEPARATED,))
         self.built = False
@@ -1056,6 +1059,11 @@ class EmbeddingsView(StaleTracking, View):
             self._map_records = records_all
             self._map_uuids = uuids_all
             self._map_n_drawn = n_drawn
+            # What the Neighbours tool searches: the vector of each point on
+            # the map, in the map's order -- gathered when first asked for.
+            self._map_vector_parts = (ctx["embeddings"], result.idx,
+                                      [(layer.name, layer.rows) for layer in layers], shown if n_hidden else None)
+            self._map_vectors_cache = None
 
             notes_above = []
             if result.class_filter:
@@ -1251,6 +1259,36 @@ class EmbeddingsView(StaleTracking, View):
                       review_source="projection" if from_dataset else "", label_col=cols.label_col,
                       outcome_borders=True)
 
+    def _map_vectors(self):
+        if getattr(self, "_map_vectors_cache", None) is not None:
+            return self._map_vectors_cache
+        parts = getattr(self, "_map_vector_parts", None)
+        if parts is None:
+            return None
+        pool, idx, layers, shown = parts
+        blocks = [pool[idx]]
+        for name, rows in layers:
+            inference = self.state.inferences.get(name)
+            if inference is None:
+                return None
+            blocks.append(inference.embeddings[rows])
+        vectors = np.concatenate(blocks, axis=0) if len(blocks) > 1 else blocks[0]
+        if shown is not None:
+            vectors = vectors[shown]
+        self._map_vectors_cache = vectors
+        return vectors
+
+    def on_neighbours(self, i: int = 0, k: int = 20, map: str = "", **_):
+        """The map's Neighbours tool: point i's k nearest points of the map,
+        in embedding space, sent back for the map to ring (projection.js)."""
+        vectors = self._map_vectors()
+        if vectors is None or not 0 <= int(i) < len(vectors):
+            return NO_RENDER
+        rows, sims = ea.nearest_rows(vectors, int(i), max(1, min(int(k), 500)))
+        self.s.cmd(event="map-neighbours", detail={"map": str(map), "query": int(i), "idx": rows.tolist(),
+                                                    "sims": [round(float(x), 4) for x in sims]})
+        return NO_RENDER
+
     def on_point(self, i: int = 0, **_):
         i = int(i)
         if self._map_uuids is None or not 0 <= i < len(self._map_records):
@@ -1288,6 +1326,35 @@ class EmbeddingsView(StaleTracking, View):
         self._overlap = (overlap, exp_name)
         self.overlap_busy = False
         self.overlap_html = self._render_overlap(overlap, exp_name)
+
+    # ---- linear probe ----
+
+    def on_probe(self, **_):
+        exp_name = self.experiment
+        if not exp_name or self.probe_busy:
+            return
+        self.probe_busy = True
+        self.probe_html = ""
+
+        def failed(ex):
+            self.probe_busy = False
+            self.probe_html = h.banner(f"Could not train the probe: {ex}", "error")
+            self.refresh()
+
+        def work():
+            context = self._analysis_context(exp_name)
+            if context is None:
+                self.probe_html = h.banner(f"'{exp_name}' has no embeddings attached.", "info")
+            else:
+                merged = context["merged"]
+                predicted = merged["predicted_label"].to_numpy() if "predicted_label" in merged.columns else None
+                probe = ea.linear_probe(context["embeddings"], context["labels"], predicted=predicted)
+                _log(f"linear probe for '{exp_name}': {probe.n_classes} classes, accuracy {probe.accuracy:.3f}")
+                self.probe_html = probe_html(probe, exp_name)
+            self.probe_busy = False
+            self.refresh()
+
+        self.s.job("Linear probe").run(work, on_error=failed)
 
     def _on_overlap_focus_change(self) -> None:
         if self._overlap is not None:
@@ -1416,6 +1483,10 @@ class EmbeddingsView(StaleTracking, View):
                         f'{h.spinner("Measuring class overlap...") if self.overlap_busy else ""}{self.overlap_html}')
         left.append(h.section("How much the classes overlap", overlap_body, manual="class-overlap",
                               sub="mean cosine similarity within and between classes"))
+        probe_body = (f'<div class="row">{h.button("Train a linear probe", act_attr=self.a("probe"), icon_name="target", disabled=self.probe_busy)}</div>'
+                      f'{h.spinner("Training and cross-validating the probe...") if self.probe_busy else ""}{self.probe_html}')
+        left.append(h.section("How separable the classes are", probe_body, manual="linear-probe",
+                              sub="a linear classifier on the embeddings alone, cross-validated"))
         split = ('<div class="emb-split" title="Drag to resize the map; drag it to the left edge, or double-click, '
                  'for a full-width map"></div>')
         # The settings column folds away (the splitter, see projection.js)
@@ -1753,20 +1824,30 @@ class EmbeddingsView(StaleTracking, View):
         return warnings
 
 
-def map_widget(session, target: str, data: dict, resolve, describe, static_html: str, dkey: str = "") -> tuple:
+# How many neighbours the map's Neighbours tool asks for, as offered.
+NEIGHBOUR_COUNTS = (10, 20, 50, 100)
+
+
+def map_widget(session, target: str, data: dict, resolve, describe, static_html: str, dkey: str = "",
+               compact: bool = False, link: str = "", min_size: int = 0, heading: str = "") -> tuple:
     """The interactive map of a projection (static/js/projection.js) and
     the HTML that hosts it: (map_html, dkey). `data` is the map's JSON (x,
     y, c, palette, g, groups, k, hl, hi, protos -- see
     EmbeddingsView._interactive_map), `resolve(i)` / `describe(i)` the
     crop behind point i, and `target` the view the map's clicks and lasso
-    are sent to (its on_point / on_select). Shared by the Embeddings and
-    Compare embeddings tabs, which is why it is not a method."""
+    are sent to (its on_point / on_select / on_neighbours). Shared by the
+    Embeddings and Compare embeddings tabs, which is why it is not a method.
+
+    `compact`: one of several panels -- the view and selection tools only.
+    `link`: maps with the same link move and select together (they must
+    hold the same points in the same order). `min_size`: the smallest side
+    the map is drawn at. `heading`: a title over the map."""
     if not dkey:
         dkey = session.put_download(json.dumps(data).encode("utf-8"), "map.json", "application/json")
     mkey = session.put_point_map(resolve, describe)
     src = f"/dl/{session.sid}/{dkey}?inline=1"
     pimg = f"/pimg/{session.sid}/{mkey}/"
-    pinfo = f"/pinfo/{session.sid}/{mkey}/"
+    pinfo = f"/pinfo/{session.sid}/{mkey}/" if describe is not None else ""
     # One row that never wraps (a button appearing never pushes the map
     # down), in groups that say what they act on: the view (how the map
     # is drawn and moved), the lasso selection, the gallery, the export.
@@ -1804,6 +1885,11 @@ def map_widget(session, target: str, data: dict, resolve, describe, static_html:
         + group("pm-g-sel", "Selection",
                 icon_btn("", "lasso", "Lasso: draw around points to select them", label="Lasso",
                          attr='data-pm-mode="lasso"')
+                + icon_btn("", "search", "Neighbours: click a point to ring its nearest points of the map, in "
+                           "the embedding space (not on the screen)", label="Neighbours", attr='data-pm-mode="nn"')
+                + '<select class="sel pm-k" data-pm-k="1" title="How many neighbours">'
+                + "".join(f'<option value="{n}"{" selected" if n == 20 else ""}>{n}</option>' for n in NEIGHBOUR_COUNTS)
+                + '</select>'
                 + '<b class="pm-seltext small"></b>'
                 + icon_btn("show", "external", "Open the selected points in the carousel", hidden=True)
                 + icon_btn("clear", "x", "Clear the selection", hidden=True))
@@ -1818,8 +1904,30 @@ def map_widget(session, target: str, data: dict, resolve, describe, static_html:
                 icon_btn("copy", "copy", "Copy what is shown as a picture -- always the same size and framing for the same view")
                 + icon_btn("save", "download", "Save what is shown as a PNG -- always the same size and framing for the same view"))
         + '</span>')
+    if compact:
+        view = (f'<span class="pm-tools pm-in">'
+                + (f'<b class="small ell pm-head" title="{h.e(heading)}">{h.e(heading)}</b>' if heading else "")
+                + group("pm-g-view", "Move around the map -- every panel follows",
+                        f'<span class="seg">'
+                        f'<button type="button" class="seg-b on" data-pm-mode="pan" title="Pan: drag to move the map">{h.icon("pan", 13)}</button>'
+                        f'<button type="button" class="seg-b" data-pm-mode="zoom" title="Zoom: drag a box to zoom into it">{h.icon("zoom", 13)}</button></span>'
+                        + icon_btn("reset", "refresh", "Reset the view: the whole cloud, centred", hidden=True))
+                + group("pm-g-sel", "Selection -- shared by every panel",
+                        icon_btn("", "lasso", "Lasso: draw around points to select them", attr='data-pm-mode="lasso"')
+                        + icon_btn("", "search", "Neighbours: click a point to ring its nearest points of the map, "
+                                   "in the embedding space", attr='data-pm-mode="nn"')
+                        + '<select class="sel pm-k" data-pm-k="1" title="How many neighbours">'
+                        + "".join(f'<option value="{n}"{" selected" if n == 20 else ""}>{n}</option>'
+                                  for n in NEIGHBOUR_COUNTS)
+                        + '</select>'
+                        + '<b class="pm-seltext small"></b>'
+                        + icon_btn("show", "external", "Open the selected points in the carousel", hidden=True)
+                        + icon_btn("clear", "x", "Clear the selection", hidden=True))
+                + '</span>')
     toolbar = f'<div class="pm-row">{view}</div>'
-    map_html = (f'<div class="pmap" data-map="{dkey}" data-src="{h.e(src)}" data-pimg="{h.e(pimg)}" data-pinfo="{h.e(pinfo)}" data-target="{target}" '
+    extra = (f' data-link="{h.e(link)}"' if link else "") + (f' data-min="{int(min_size)}"' if min_size else "")
+    map_html = (f'<div class="pmap{" pmap-compact" if compact else ""}" data-map="{dkey}" data-src="{h.e(src)}" data-pimg="{h.e(pimg)}" '
+                f'data-pinfo="{h.e(pinfo)}" data-target="{target}"{extra} '
                 f'data-static="{dkey}" title="">'
                 f'<div class="pm-bar">{toolbar}</div>'
                 f'<div class="pm-inter"><div class="pmap-box"></div></div>'
@@ -1850,3 +1958,37 @@ def legend_card(legend: list, names: list, dkey: str, title: str) -> str:
                 f'<button type="button" class="btn btn-sm btn-link" data-pm="none">None</button></div>')
     return (f'<section class="card pm-legend" data-map="{dkey}" data-static="lg-{dkey}"><div class="card-b">{head}'
             f'<div class="pm-lg-list">{body}</div></div></section>')
+
+
+# Rows of the linear probe's per-class table, worst F1 first.
+PROBE_CLASS_ROWS = 15
+
+
+def probe_html(probe, exp_name: str) -> str:
+    """A linear probe's result (core/embedding_analysis.linear_probe):
+    its accuracy beside the model's, the classes it separates worst, its
+    most frequent mistakes. Shared by Embeddings and Compare embeddings."""
+    model = (f'<span class="kv-k">The model itself, on the same crops</span><span class="kv-v">{100 * probe.model_accuracy:.1f}%</span>'
+             if probe.model_accuracy is not None else "")
+    grid = (f'<div class="kv"><span class="kv-k">Probe accuracy</span><span class="kv-v">{100 * probe.accuracy:.1f}%</span>'
+            f'<span class="kv-k">Balanced accuracy</span><span class="kv-v">{100 * probe.balanced_accuracy:.1f}%</span>{model}</div>')
+    notes = [f"Measured in {exp_name} on {probe.n_points:,} crops of {probe.n_classes:,} classes"
+             + (" (sampled per class)" if probe.sampled else "") + "."]
+    if probe.skipped_classes:
+        notes.append(f"{len(probe.skipped_classes):,} class(es) with fewer than {ea.PROBE_FOLDS} crops left out.")
+    worst = sorted(probe.per_class, key=lambda c: c.f1)[:PROBE_CLASS_ROWS]
+    has_model = any(c.model_recall is not None for c in worst)
+    head = ("<th>Class</th><th class='num'>Crops</th><th class='num'>Probe recall</th>"
+            "<th class='num'>Probe precision</th><th class='num'>Probe F1</th>"
+            + ("<th class='num'>Model recall</th>" if has_model else ""))
+    rows = "".join(
+        f"<tr><td>{h.e(c.label)}</td><td class='num'>{c.support:,}</td><td class='num'>{100 * c.recall:.1f}%</td>"
+        f"<td class='num'>{100 * c.precision:.1f}%</td><td class='num'>{100 * c.f1:.1f}%</td>"
+        + (f"<td class='num'>{100 * c.model_recall:.1f}%</td>" if has_model and c.model_recall is not None
+           else ("<td></td>" if has_model else ""))
+        + "</tr>" for c in worst)
+    confusions = "".join(f'<div class="small">{h.e(a)} &rarr; {h.e(b)}  —  {n:,}</div>' for a, b, n in probe.confusions[:8])
+    return (f'{grid}<div class="muted small">{h.e(" ".join(notes))}</div>'
+            f'<b class="small">Classes the probe separates worst</b>'
+            f'<div class="tbl-wrap"><table class="tbl compact"><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table></div>'
+            + (f'<b class="small">Its most frequent mistakes (true &rarr; probe)</b>{confusions}' if confusions else ""))

@@ -934,7 +934,8 @@ def _crop_link(member, row: int) -> str:
 
 
 def compare_embedding_spaces(workspace_id: str, members=None, reference: int | None = None,
-                             sort: str = "coverage", top=DEFAULT_TOP) -> dict:
+                             sort: str = "coverage", top=DEFAULT_TOP, pairwise: bool = False,
+                             probe: bool = False) -> dict:
     """One model's embedding space across several datasets: whether the
     members may be compared (same prototypes), then each one measured
     against the reference."""
@@ -986,6 +987,42 @@ def compare_embedding_spaces(workspace_id: str, members=None, reference: int | N
                                         for r, own, theirs, share in stats.disagreements[:top]],
             })
         out.update(compared=True, against_reference=pairs)
+        for i, member in enumerate(loaded):
+            out["members"][i]["model_accuracy"] = ec.member_accuracy(member)
+            if probe:
+                result = ec.member_probe(member)
+                out["members"][i]["probe_accuracy"] = result.accuracy if result is not None else None
+        if pairwise:
+            pw = ec.pairwise_stats(loaded)
+            out["pairwise"] = {"names": pw.names, "domain_auc": pw.domain_auc.tolist(),
+                               "coverage_row_covers_column": pw.coverage.tolist(),
+                               "crops_per_member": ec.PAIRWISE_POINTS}
+        return _clean(out)
+
+
+def get_class_separability(workspace_id: str, experiment: str, top=DEFAULT_TOP) -> dict:
+    """A linear probe on one experiment's embeddings: how well a linear
+    classifier, cross-validated, recovers the labels -- beside the model's
+    own accuracy on the same crops -- and the classes it separates worst."""
+    from lookin.core.embedding_analysis import linear_probe
+
+    with _lock:
+        entry = _entry(workspace_id)
+        name = _experiment_name(entry, experiment)
+        ensure_embeddings(entry, name)
+        context = build_analysis_context(entry.loaded.state, name)
+        if context is None:
+            raise ValueError(f"Experiment {name!r} has no embeddings attached.")
+        merged = context["merged"]
+        predicted = merged["predicted_label"].to_numpy() if "predicted_label" in merged.columns else None
+        probe = linear_probe(context["embeddings"], context["labels"], predicted=predicted)
+        worst = sorted(probe.per_class, key=lambda c: c.f1)[:_top(top)]
+        out = _context(entry, "embeddings")
+        out.update(experiment=name, probe_accuracy=probe.accuracy, probe_balanced_accuracy=probe.balanced_accuracy,
+                   model_accuracy=probe.model_accuracy, crops=probe.n_points, classes=probe.n_classes,
+                   sampled=probe.sampled, classes_left_out=probe.skipped_classes,
+                   worst_classes=[vars(c) for c in worst],
+                   probe_confusions=[{"true": a, "probe": b, "count": n} for a, b, n in probe.confusions[:_top(top)]])
         return _clean(out)
 
 

@@ -3,3 +3,9 @@
 .ecmp-m { gap: 6px; min-height: 28px; }
 .ecmp-m .ell { min-width: 0; flex: 0 1 auto; }
 .ecmp .kv .info-btn { margin-left: 4px; }
+/* side by side: one interactive map per experiment, as many per row as fit */
+.ecmp-panels { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+.ecmp-panel { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
+.pmap-compact .pm-head { max-width: 40%; margin-right: 4px; }
+.pmap-compact .pm-row { height: auto; min-height: 28px; }
+.pm-k { height: 24px; padding: 0 4px; font-size: 11px; width: auto; }

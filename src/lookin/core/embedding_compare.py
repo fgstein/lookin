@@ -100,9 +100,16 @@ COVERAGE_PERCENTILE = 5.0
 DOMAIN_FOLDS = 5
 # Crops listed as "outside the reference" and "label disagreements".
 TOP_LISTED = 200
+# Every pair of members (pairwise_stats): crops per member, and folds of
+# the domain classifier -- smaller than for the reference, as there are
+# n(n-1)/2 pairs.
+PAIRWISE_POINTS = 1000
+PAIRWISE_FOLDS = 3
+# The linear probe run on each member (member_probe): crops in all.
+MEMBER_PROBE_POINTS = 6000
 
 # Members whose data is kept in memory (other workspaces read from disk).
-MAX_CACHED_MEMBERS = 4
+MAX_CACHED_MEMBERS = 16
 
 
 # ---- references --------------------------------------------------------------
@@ -550,7 +557,8 @@ def neighbours_across(query: Member, query_index: int, target: Member, k: int = 
 
 # ---- measures ------------------------------------------------------------------
 
-def domain_separability(a: np.ndarray, b: np.ndarray, seed: int = 0) -> Optional[float]:
+def domain_separability(a: np.ndarray, b: np.ndarray, seed: int = 0, max_points: int = STATS_MAX_POINTS,
+                        folds: int = DOMAIN_FOLDS) -> Optional[float]:
     """Cross-validated ROC AUC of a logistic regression telling rows of `a`
     from rows of `b`, on equal samples of each. 0.5: the bases are
     indistinguishable to the model; 1: told apart perfectly. None with too
@@ -558,18 +566,20 @@ def domain_separability(a: np.ndarray, b: np.ndarray, seed: int = 0) -> Optional
     from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import roc_auc_score
     from sklearn.model_selection import StratifiedKFold, cross_val_predict
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
 
-    n = min(len(a), len(b), STATS_MAX_POINTS)
-    if n < 2 * DOMAIN_FOLDS:
+    n = min(len(a), len(b), max_points)
+    if n < 2 * folds:
         return None
     rng = np.random.default_rng(seed)
     xa = a[rng.choice(len(a), n, replace=False)]
     xb = b[rng.choice(len(b), n, replace=False)]
     x = np.concatenate([xa, xb]).astype(np.float32)
     y = np.r_[np.zeros(n), np.ones(n)]
-    model = LogisticRegression(max_iter=500, C=1.0)
-    folds = StratifiedKFold(n_splits=DOMAIN_FOLDS, shuffle=True, random_state=seed)
-    scores = cross_val_predict(model, x, y, cv=folds, method="decision_function")
+    model = make_pipeline(StandardScaler(), LogisticRegression(max_iter=500, C=1.0))
+    splits = StratifiedKFold(n_splits=folds, shuffle=True, random_state=seed)
+    scores = cross_val_predict(model, x, y, cv=splits, method="decision_function")
     return float(roc_auc_score(y, scores))
 
 
@@ -870,3 +880,65 @@ def rename_member_everywhere(workspace_id: str, old: str, new: str, root=None) -
         if lib.update_workspace(workspace.path, change) is not None:
             changed += 1
     return changed
+
+
+
+# ---- every member against every other ------------------------------------------
+
+@dataclass
+class Pairwise:
+    names: list
+    domain_auc: np.ndarray     # (n, n) symmetric, NaN on the diagonal
+    coverage: np.ndarray       # (n, n): [i, j] = share of j's crops covered by i
+
+
+def pairwise_stats(members: list, seed: int = 0, progress=None) -> Pairwise:
+    """The domain AUC and the coverage of every pair of members, on small
+    samples (PAIRWISE_POINTS): with many datasets, which ones resemble
+    which. `progress(text)` is called before each member."""
+    n = len(members)
+    rows = [sample_rows(len(m), PAIRWISE_POINTS, seed + i) for i, m in enumerate(members)]
+    vecs = [m.embeddings[r] for m, r in zip(members, rows)]
+    auc = np.full((n, n), np.nan)
+    coverage = np.full((n, n), np.nan)
+    for i in range(n):
+        if progress is not None:
+            progress(f"Every pair: {members[i].name} ({i + 1}/{n})...")
+        self_sims, _ = nearest_k(vecs[i], vecs[i], 1, exclude_self=True)
+        threshold = float(np.percentile(self_sims[:, 0], COVERAGE_PERCENTILE)) if len(self_sims) else 0.0
+        for j in range(n):
+            if i == j:
+                coverage[i, j] = float(np.mean(self_sims[:, 0] >= threshold)) if len(self_sims) else np.nan
+                continue
+            sims, _ = nearest_k(vecs[j], vecs[i], 1)
+            coverage[i, j] = float(np.mean(sims[:, 0] >= threshold)) if len(sims) else np.nan
+            if j > i:
+                shared = np.intersect1d(members[i].uuids[rows[i]], members[j].uuids[rows[j]])
+                a = vecs[i][~np.isin(members[i].uuids[rows[i]], shared)]
+                b = vecs[j][~np.isin(members[j].uuids[rows[j]], shared)]
+                value = domain_separability(a, b, seed, max_points=PAIRWISE_POINTS, folds=PAIRWISE_FOLDS)
+                auc[i, j] = auc[j, i] = np.nan if value is None else value
+    return Pairwise(names=[m.name for m in members], domain_auc=auc, coverage=coverage)
+
+
+# ---- each member on its own --------------------------------------------------
+
+def member_accuracy(member: Member) -> Optional[float]:
+    """The model's accuracy on the member's labelled crops."""
+    if member.correct is None:
+        return None
+    values = member.correct[np.isfinite(member.correct)]
+    return float(values.mean()) if len(values) else None
+
+
+def member_probe(member: Member, seed: int = 0):
+    """A linear probe (embedding_analysis.linear_probe) on the member's own
+    crops: how separable its classes are, in this dataset. None when there
+    are not enough labelled crops."""
+    from lookin.core.embedding_analysis import linear_probe
+
+    try:
+        return linear_probe(member.embeddings, member.labels, predicted=member.predicted, seed=seed,
+                            max_points=MEMBER_PROBE_POINTS)
+    except ValueError:
+        return None

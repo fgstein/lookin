@@ -391,6 +391,12 @@ def compare_embedding_spaces(
         "Order of the per-class rows, worst first: coverage, agreement, centroid, accuracy_drop or "
         "support."))] = "coverage",
     top: Top = agent_tools.DEFAULT_TOP,
+    pairwise: Annotated[bool, Field(description=(
+        "Also measure every pair of members (domain AUC and coverage matrices, on 1,000 crops each): with "
+        "many datasets, which resemble which. Slower: n(n-1)/2 classifiers."))] = False,
+    probe: Annotated[bool, Field(description=(
+        "Also train a linear probe on each member's own crops (probe_accuracy: how separable its classes "
+        "are in this dataset). A few seconds per member."))] = False,
 ) -> str:
     """Compare one model's embedding space across several datasets (experiments of possibly different
     workspaces). First checks the members come from the same model -- their imported prototypes must be
@@ -403,7 +409,22 @@ def compare_embedding_spaces(
     datasets were labelled differently), per class (centroid similarity, similarity to the model's
     prototype, accuracy in each dataset, coverage, agreement), and the crops outside the reference and
     the label disagreements, each with a link. Measured on samples of a few thousand crops."""
-    return _run(agent_tools.compare_embedding_spaces, workspace_id, _members(members), reference, sort, top)
+    return _run(agent_tools.compare_embedding_spaces, workspace_id, _members(members), reference, sort, top,
+                pairwise, probe)
+
+
+def get_class_separability(
+    workspace_id: WorkspaceId,
+    experiment: Annotated[str, Field(description="An experiment with embeddings.")],
+    top: Top = agent_tools.DEFAULT_TOP,
+) -> str:
+    """How separable the classes are in an experiment's embedding space, for a linear classifier: a
+    multinomial logistic regression trained on the embeddings alone, scored by 5-fold cross-validation
+    (probe_accuracy), beside the model's own accuracy on the same crops. A probe well below the model
+    means the head relies on more than a linear boundary; a probe well above it means the embeddings
+    hold information the head does not use. Lists the classes the probe separates worst (F1) and its
+    most frequent mistakes. Classes are sampled to 200 crops each."""
+    return _run(agent_tools.get_class_separability, workspace_id, experiment, top)
 
 
 def find_neighbours_across(
@@ -966,7 +987,7 @@ READ_TOOLS = (
     get_confusions, compare_experiments, get_slices, get_calibration, get_confidence, get_examples,
     find_cleaning_candidates, find_similar, get_review, get_snapshot, search_mlflow_runs, list_mlflow_run_files,
     get_mlflow_run_links, plot_chart, make_mosaic, get_notes,
-    compare_embedding_spaces, find_neighbours_across, plot_embedding_comparison,
+    compare_embedding_spaces, find_neighbours_across, plot_embedding_comparison, get_class_separability,
     list_datasets, get_dataset, get_dataset_stats, compare_datasets, find_dataset_issues, get_dataset_rows,
 )
 WRITE_TOOLS = (

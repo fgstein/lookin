@@ -1,9 +1,12 @@
 """Chapter: what the model's feature space looks like."""
 from __future__ import annotations
 
-from lookin.core.embedding_analysis import OVERLAP_MAX_PER_CLASS
+from lookin.core.embedding_analysis import (
+    OVERLAP_MAX_PER_CLASS, PROBE_FOLDS, PROBE_MAX_PER_CLASS, PROBE_MAX_POINTS,
+)
 from lookin.core.embedding_compare import (
-    AGREEMENT_K, COVERAGE_PERCENTILE, DOMAIN_FOLDS, KNN_POOL_MAX, PROTOTYPE_TOLERANCE, STATS_MAX_POINTS,
+    AGREEMENT_K, COVERAGE_PERCENTILE, DOMAIN_FOLDS, KNN_POOL_MAX, PAIRWISE_FOLDS, PAIRWISE_POINTS,
+    PROTOTYPE_TOLERANCE, STATS_MAX_POINTS,
 )
 from lookin.core.manual.model import (
     Bullets, Callout, Equation, Heading, HowToRead, ManualPage, Para, Table,
@@ -379,7 +382,8 @@ PAGES = (
             "\"what else looks like this to the model?\", which is the question that separates a lone "
             "mislabelled crop from a whole pocket of them the model has learned as a cluster."
         ),
-        shown_in="Embeddings tab, Prototypes tab (Neighbor explorer), similarity search from any crop",
+        shown_in=("Embeddings and Compare embeddings tabs (the map's Neighbours tool), Prototypes tab "
+                  "(Neighbor explorer), similarity search from any crop"),
         blocks=(
             Equation(
                 r"\mathcal{N}_k(q) = \mathrm{top}\text{-}k_{\; i \neq q} \; \left( \tilde{u}_q \cdot \tilde{u}_i \right)",
@@ -396,6 +400,12 @@ PAGES = (
                 ("Similarities above 0.98", "near-duplicates; check the split column for leakage"),
                 ("Uniformly low similarities", "an outlier the model has no representation for"),
             )),
+            Para(
+                "On the interactive maps, the Neighbours tool does this search for a clicked point among the "
+                "points of the map, and rings them where they sit. The search is in the embedding space, "
+                "not on the screen: a neighbour drawn far from the point is a place where the projection "
+                "tore apart what the model keeps together."
+            ),
             Callout(CALLOUT_TIP, "The diagnostic gesture", (
                 Para(
                     "Standing in front of a strange error, the useful next move is almost never "
@@ -456,10 +466,12 @@ PAGES = (
                 caption="t-SNE cannot place points it was not fitted on, so it is only offered fitted on all.",
             ),
             Para(
-                "Shown overlaid, each experiment keeps its own marker (the reference's are discs) whatever "
-                "the colours mean; side by side, each panel shows one experiment in colour over the others "
-                "in grey, on the same axes. The stars are the model's prototypes. A projection is still a "
-                "projection: read the measures below the map before concluding that two clouds overlap."
+                "Shown overlaid, the reference's points are discs and the others' squares, whatever the "
+                "colours mean; side by side, every experiment gets an interactive map of the same points, its "
+                "own in colour over the others in grey. The panels move, zoom and select together, so a lasso "
+                "or a point's neighbours show in every one of them. The stars are the model's prototypes. A "
+                "projection is still a projection: read the measures below the map before concluding that "
+                "two clouds overlap."
             ),
             Callout(CALLOUT_TIP, "What is saved", (
                 Para(
@@ -471,7 +483,7 @@ PAGES = (
             )),
         ),
         see_also=("domain-separability", "embedding-coverage", "cross-label-agreement", "class-shift",
-                  "cross-neighbours", "projection-2d", "prototypes"),
+                  "cross-neighbours", "embedding-pairwise", "linear-probe", "projection-2d", "prototypes"),
         keywords=("compare", "dataset", "domain", "shift", "drift", "several", "base", "reference"),
     ),
 
@@ -664,5 +676,90 @@ PAGES = (
         ),
         see_also=("nearest-neighbours", "embedding-comparison", "cross-label-agreement"),
         keywords=("neighbour", "neighbor", "similar", "across", "other dataset", "knn"),
+    ),
+
+    ManualPage(
+        id="linear-probe",
+        title="Linear probe",
+        summary=(
+            "A linear classifier trained on the embeddings alone, to recover the labels. Where the overlap "
+            "matrix says how alike classes are on average, the probe says whether a straight boundary can "
+            "tell them apart -- which is what a classification head on these embeddings has to do."
+        ),
+        shown_in="Embeddings tab (\"How separable the classes are\"), Compare embeddings tab (\"Probe accuracy\")",
+        blocks=(
+            Para(
+                f"A multinomial logistic regression, on standardized embeddings, is trained and scored by "
+                f"{PROBE_FOLDS}-fold stratified cross-validation: every crop is predicted by a probe that never "
+                f"saw it. Classes are sampled to at most {PROBE_MAX_PER_CLASS} crops each and "
+                f"{PROBE_MAX_POINTS:,} in all; a class with fewer than {PROBE_FOLDS} crops is left out."
+            ),
+            Equation(
+                r"\hat{y}(x) = \arg\max_{c} \; w_c \cdot z(x) + b_c",
+                where=(
+                    (r"z(x)", "the crop's embedding, standardized"),
+                    (r"w_c, b_c", "the probe's weights for class $c$, fitted on the other folds"),
+                ),
+            ),
+            HowToRead((
+                ("Probe close to the model", "the embeddings are as separable as the head makes them: what the "
+                 "model gets wrong, it gets wrong in its representation"),
+                ("Probe well above the model", "the embeddings hold what is needed and the head does not use it "
+                 "-- a retrained head, or calibration, could gain"),
+                ("Probe well below the model", "the classes are not linearly separable in this space (the "
+                 "head relies on several prototypes per class, or on a non-linear head)"),
+                ("One class with a low probe F1", "look at its row of the overlap matrix and at its neighbours"),
+            )),
+            Para(
+                "In Compare embeddings, a probe is trained on each experiment's own crops: the same model, "
+                "but a dataset whose classes it represents less separably shows a lower probe accuracy."
+            ),
+            Callout(CALLOUT_PITFALL, "The probe is trained on the evaluated pool", (
+                Para(
+                    "It is cross-validated, so no crop is scored by a probe that saw it -- but it is trained on "
+                    "the same test split the model is evaluated on. It measures the geometry of the "
+                    "embeddings, not a model you could deploy."
+                ),
+            )),
+        ),
+        see_also=("class-overlap", "embedding-space", "domain-separability", "embedding-comparison"),
+        keywords=("probe", "linear", "logistic", "separable", "separability", "classifier"),
+    ),
+
+    ManualPage(
+        id="embedding-pairwise",
+        title="Every pair of datasets",
+        summary=(
+            "With many experiments compared, the two matrices of every pair: how well each pair of datasets "
+            "can be told apart, and how much of each one another covers. They show which datasets resemble "
+            "which -- groups of sites, a sensor that stands apart -- rather than each one against the "
+            "reference only."
+        ),
+        shown_in="Compare embeddings tab (\"Every pair of experiments\")",
+        blocks=(
+            Para(
+                f"The same two measures as against the reference -- see \"Domain separability\" and \"Coverage "
+                f"by the reference\" -- on smaller samples, since there are $n(n-1)/2$ pairs: "
+                f"{PAIRWISE_POINTS:,} crops per experiment, and a {PAIRWISE_FOLDS}-fold cross-validated "
+                f"classifier per pair."
+            ),
+            Table(
+                headers=("Matrix", "Cell (row, column)", "Reads"),
+                rows=(
+                    ("Told apart", "domain AUC of the two datasets", "symmetric; 0.5 = the same to the model"),
+                    ("Covered", "share of the column's crops with a crop of the row about as close as the "
+                     "row's crops are to each other", "not symmetric: a large, varied dataset covers a "
+                     "narrow one, not the other way round"),
+                ),
+                weights=(2, 4, 4),
+            ),
+            HowToRead((
+                ("A block of low AUCs", "those datasets look alike to the model -- one group"),
+                ("A row of high AUCs", "that dataset stands apart from all the others"),
+                ("Row covers column, not the reverse", "the row's dataset contains the column's, and more"),
+            )),
+        ),
+        see_also=("domain-separability", "embedding-coverage", "embedding-comparison"),
+        keywords=("pairwise", "matrix", "every pair", "many", "datasets", "similarity"),
     ),
 )
