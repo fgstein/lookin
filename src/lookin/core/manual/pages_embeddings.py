@@ -8,6 +8,7 @@ from lookin.core.embedding_compare import (
     AGREEMENT_K, COVERAGE_PERCENTILE, DOMAIN_FOLDS, KNN_POOL_MAX, PAIRWISE_FOLDS, PAIRWISE_POINTS,
     PROTOTYPE_TOLERANCE, STATS_MAX_POINTS,
 )
+from lookin.core.projection_plan import DEFAULT_DISPLAY_SIZE, DEFAULT_FIT_SIZE, MAX_DISPLAY_SIZE
 from lookin.core.manual.model import (
     Bullets, Callout, Equation, Heading, HowToRead, ManualPage, Para, Table,
     CALLOUT_EXAMPLE, CALLOUT_PITFALL, CALLOUT_TIP, CALLOUT_WARNING,
@@ -761,5 +762,57 @@ PAGES = (
         ),
         see_also=("domain-separability", "embedding-coverage", "embedding-comparison"),
         keywords=("pairwise", "matrix", "every pair", "many", "datasets", "similarity"),
+    ),
+
+    ManualPage(
+        id="fit-and-shown",
+        title="Crops fitted, crops shown",
+        summary=(
+            "A projection is fitted on some crops and shows others: the fit is the slow part and gains "
+            "little past a few thousand crops, while placing more crops on a fitted map is cheap. So the "
+            "map is fitted on a modest set, then shows many more, each placed where the fit puts it."
+        ),
+        shown_in="Embeddings and Compare embeddings tabs (\"Fit on\", \"Shown\")",
+        blocks=(
+            Table(
+                headers=("Setting", "What it does"),
+                rows=(
+                    ("Fit on: crops as in the data", f"the fit set is drawn at random -- {DEFAULT_FIT_SIZE:,} by "
+                     "default -- so each class keeps its share; the map shows the data as it is"),
+                    ("Fit on: balanced per class", "the same number of crops from every class (all of them for "
+                     "a smaller class): a rare class weighs as much in the layout as a frequent one"),
+                    ("Shown", f"how many crops the map draws -- {DEFAULT_DISPLAY_SIZE:,} by default, at most "
+                     f"{MAX_DISPLAY_SIZE:,}. They always include the fit set; the others are drawn at random "
+                     "and placed onto the fit"),
+                ),
+                weights=(3, 6),
+            ),
+            Table(
+                headers=("Method", "Placing a crop that was not fitted"),
+                rows=(
+                    ("PCA", "exact and nearly free: one matrix product"),
+                    ("UMAP", "an estimate from the fitted crops nearest to it -- fast, though slower than PCA; "
+                     "a crop unlike any fitted one is pulled towards the structure the fit learned"),
+                    ("t-SNE", "impossible: the map shows the fit set only"),
+                ),
+                weights=(2, 7),
+            ),
+            Callout(CALLOUT_TIP, "Balance the fit, not the map", (
+                Para(
+                    "Balancing changes which crops decide the layout, not what is shown: with a balanced fit "
+                    "and a large display, rare classes get room on the map and frequent ones still appear in "
+                    "their real numbers. The choice is saved in the workspace."
+                ),
+            )),
+            Callout(CALLOUT_PITFALL, "Placed crops can look more familiar than they are", (
+                Para(
+                    "With UMAP, a crop placed onto a fit lands next to the fitted crops it resembles most, "
+                    "even when it resembles none of them much. To see where new data really sits, fit on it "
+                    "too -- or read the nearest-neighbour similarities rather than the map."
+                ),
+            )),
+        ),
+        see_also=("projection-2d", "pca", "umap", "tsne", "embedding-comparison"),
+        keywords=("fit", "sample", "shown", "display", "balanced", "transform", "points"),
     ),
 )

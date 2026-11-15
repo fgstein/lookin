@@ -112,7 +112,11 @@ in both, like the PNGs they are exported as.
    logistic regression trained on the embeddings alone, cross-validated --
    says how separable the classes are for a linear boundary, beside the
    model's own accuracy. On the map, the Neighbours tool rings a clicked
-   point's nearest points in embedding space. Simple inferences loaded
+   point's nearest points in embedding space; in gallery mode the mosaic
+   shows that point first, then its neighbours nearest first. A map is
+   fitted on a modest set of crops -- at random, or balanced per class --
+   and shows many more, each placed onto the fit (PCA, UMAP); the choice
+   is saved in the workspace. Simple inferences loaded
    on the Sources tab can be overlaid on the same map -- see below.
    **Compare embeddings** puts several experiments in one embedding space:
    the same model run on different datasets, typically from different

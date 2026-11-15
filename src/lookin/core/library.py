@@ -412,6 +412,9 @@ class Workspace:
     # from that workspace whenever the comparison is drawn. Kept here rather
     # than in the mount, which is rewritten from what is loaded.
     embedding_comparison: dict = field(default_factory=dict)
+    # The Embeddings tab's projection plan (core/projection_plan.py): which
+    # crops the map is fitted on and which it shows.
+    embedding_projection: dict = field(default_factory=dict)
     path: Optional[Path] = None
 
     def label(self) -> str:
@@ -501,6 +504,7 @@ def workspace_to_dict(workspace: Workspace) -> dict:
         "provenance": dict(workspace.provenance),
         "dataset_hash": workspace.dataset_hash,
         **({"embedding_comparison": dict(workspace.embedding_comparison)} if workspace.embedding_comparison else {}),
+        **({"embedding_projection": dict(workspace.embedding_projection)} if workspace.embedding_projection else {}),
     }
 
 
@@ -520,6 +524,8 @@ def workspace_from_dict(raw: dict, path: Optional[Path] = None) -> Workspace:
         dataset_hash=str(raw.get("dataset_hash", "")),
         embedding_comparison=(raw.get("embedding_comparison")
                               if isinstance(raw.get("embedding_comparison"), dict) else {}),
+        embedding_projection=(raw.get("embedding_projection")
+                              if isinstance(raw.get("embedding_projection"), dict) else {}),
         path=Path(path) if path is not None else None,
     )
 

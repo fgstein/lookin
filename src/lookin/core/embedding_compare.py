@@ -136,10 +136,28 @@ def refs_from_json(raw) -> list:
     return out
 
 
-def comparison_to_json(refs: list, reference: int) -> dict:
+def comparison_to_json(refs: list, reference: int, plan=None, mode: str = "") -> dict:
+    """Workspace.embedding_comparison: the members, the reference, and --
+    once a comparison has been run -- its projection plan and mode."""
     if not refs:
         return {}
-    return {"members": [r.to_json() for r in refs], "reference": max(0, min(int(reference), len(refs) - 1))}
+    out = {"members": [r.to_json() for r in refs], "reference": max(0, min(int(reference), len(refs) - 1))}
+    if plan is not None:
+        from lookin.core import projection_plan as pp
+        out["projection"] = pp.plan_to_json(plan)
+    if mode in PROJECTION_MODES:
+        out["mode"] = mode
+    return out
+
+
+def comparison_plan(raw) -> tuple:
+    """(plan or None, mode or "") saved with a comparison."""
+    from lookin.core import projection_plan as pp
+
+    raw = raw if isinstance(raw, dict) else {}
+    plan = pp.plan_from_json(raw["projection"]) if isinstance(raw.get("projection"), dict) else None
+    mode = raw.get("mode") if raw.get("mode") in PROJECTION_MODES else ""
+    return plan, mode
 
 
 def comparison_from_json(raw) -> tuple:
@@ -436,6 +454,8 @@ class ComparisonMap:
     proto_labels: list = field(default_factory=list)
     proto_ks: list = field(default_factory=list)
     notes: list = field(default_factory=list)
+    fit_rows: list = field(default_factory=list)   # per member: the rows the fit saw (none for the others
+                                                   # in PROJ_REFERENCE)
 
 
 def _prototype_vectors(protos: Optional[PrototypeSet], classes: Optional[set]):
@@ -457,11 +477,29 @@ def _prototype_vectors(protos: Optional[PrototypeSet], classes: Optional[set]):
     return np.stack(vecs).astype(np.float32), labels, ks
 
 
+def default_plan(method: str = "pca", per_member: int = DEFAULT_POINTS_PER_MEMBER):
+    """A comparison's plan when none is saved: per experiment, the crops as
+    in the data, fitted and shown alike."""
+    from lookin.core import projection_plan as pp
+
+    return pp.ProjectionPlan(method=method, fit_size=per_member, display_size=per_member)
+
+
 def project_members(members: list, reference: int, mode: str = PROJ_JOINT, method: str = "pca",
-                    per_member: int = DEFAULT_POINTS_PER_MEMBER, seed: int = 0) -> ComparisonMap:
-    """Every member's sample in one 2D space (see the module docstring for
-    the two modes). The prototypes drawn are the reference's -- the same as
-    every member's, once the comparison is allowed."""
+                    per_member: int = DEFAULT_POINTS_PER_MEMBER, seed: int = 0, plan=None,
+                    progress=None) -> ComparisonMap:
+    """Every member in one 2D space (see the module docstring for the two
+    modes). `plan` (core/projection_plan.ProjectionPlan, applied to each
+    member: its fit set and the crops it shows) overrides `method` and
+    `per_member`. The fit sees the fit sets -- every member's (PROJ_JOINT)
+    or the reference's (PROJ_REFERENCE) -- and every other crop shown is
+    placed onto it. The prototypes drawn are the reference's -- the same
+    as every member's, once the comparison is allowed. `progress(text)`
+    reports each step."""
+    from lookin.core import projection_plan as pp
+
+    plan = pp.clamp(plan) if plan is not None else default_plan(method, per_member)
+    method = plan.method
     if mode not in PROJECTION_MODES:
         raise ValueError(f"Unknown projection mode {mode!r}: {', '.join(PROJECTION_MODES)}.")
     if method not in METHODS:
@@ -469,39 +507,46 @@ def project_members(members: list, reference: int, mode: str = PROJ_JOINT, metho
     if mode == PROJ_REFERENCE and method not in TRANSFORM_METHODS:
         raise ValueError("t-SNE cannot place points it was not fitted on, so it cannot project onto a "
                          "reference: use PCA or UMAP, or the joint projection.")
-    per_member = max(10, min(int(per_member), MAX_POINTS_PER_MEMBER))
-    rows = [sample_rows(len(m), per_member, seed + i) for i, m in enumerate(members)]
+    chosen = [pp.choose_rows(m.labels, pp.ProjectionPlan(**{**vars(plan), "seed": plan.seed + i}))
+              for i, m in enumerate(members)]
+    rows = [c.display for c in chosen]
+    fit_sets = [c.fit if mode == PROJ_JOINT or i == reference else np.zeros(0, dtype=np.int64)
+                for i, c in enumerate(chosen)]
     classes = set().union(*({str(x) for x in m.labels[r] if x} for m, r in zip(members, rows)))
     proto_vecs, proto_labels, proto_ks = _prototype_vectors(members[reference].prototypes, classes)
-    notes = []
+    notes = sorted({n for c in chosen for n in c.notes})
     if members[reference].prototypes is not None and proto_vecs is None:
         notes.append(f"Prototypes not drawn: more than {MAX_MAP_PROTOTYPES} of them.")
-    if mode == PROJ_JOINT:
-        sizes = {len(r) for r in rows}
-        if len(sizes) > 1:
-            notes.append(f"Unequal samples: {', '.join(f'{len(r):,}' for r in rows)} crops -- a base with fewer "
-                         f"crops than the sample size gives all it has.")
-        combined = np.concatenate([m.embeddings[r] for m, r in zip(members, rows)], axis=0)
-        fit = fit_projection(combined, method=method, proto_vectors=proto_vecs, seed=seed)
-        bounds = np.cumsum([0] + [len(r) for r in rows])
-        points = [fit.points[bounds[i]:bounds[i + 1]] for i in range(len(members))]
-        proto_points = fit.proto_points
-    else:
-        ref_rows = rows[reference]
-        fit = fit_projection(members[reference].embeddings[ref_rows], method=method, proto_vectors=proto_vecs,
-                             seed=seed)
-        points = []
-        for i, (m, r) in enumerate(zip(members, rows)):
-            if i == reference:
-                points.append(fit.points)
-                continue
+    sizes = [len(f) for f in fit_sets if len(f)]
+    if mode == PROJ_JOINT and len(set(sizes)) > 1:
+        notes.append(f"Unequal fit sets: {', '.join(f'{n:,}' for n in sizes)} crops -- a base with fewer crops "
+                     f"than asked gives all it has.")
+    fit_input = np.concatenate([m.embeddings[f] for m, f in zip(members, fit_sets)], axis=0)
+    if progress is not None:
+        progress(f"Fitting {method} on {len(fit_input):,} crops...")
+    fit = fit_projection(fit_input, method=method, proto_vectors=proto_vecs, seed=seed)
+    bounds = np.cumsum([0] + [len(f) for f in fit_sets])
+    points = []
+    total_placed = sum(len(r) - int(np.isin(r, f).sum()) for r, f in zip(rows, fit_sets))
+    placed = 0
+    for i, (m, r, f) in enumerate(zip(members, rows, fit_sets)):
+        coords = np.zeros((len(r), 2), dtype=float)
+        in_fit = np.isin(r, f)
+        coords[in_fit] = fit.points[bounds[i]:bounds[i + 1]][np.searchsorted(f, r[in_fit])]
+        others = r[~in_fit]
+        if len(others):
+            def step(done, total, base=placed):
+                if progress is not None:
+                    progress(f"Placing {total_placed:,} more crops on the map... "
+                             f"{100 * (base + done) // max(total_placed, 1)}%")
             try:
-                points.append(fit.transform(m.embeddings[r]))
+                coords[~in_fit] = pp.place(fit, m.embeddings[others], step)
             except OutOfSampleUnsupported as ex:
                 raise ValueError(str(ex)) from ex
-        proto_points = fit.proto_points
-    return ComparisonMap(mode=mode, method=method, rows=rows, points=points, proto_points=proto_points,
-                         proto_labels=proto_labels, proto_ks=proto_ks, notes=notes)
+            placed += len(others)
+        points.append(coords)
+    return ComparisonMap(mode=mode, method=method, rows=rows, points=points, proto_points=fit.proto_points,
+                         proto_labels=proto_labels, proto_ks=proto_ks, notes=notes, fit_rows=fit_sets)
 
 
 # ---- neighbours ----------------------------------------------------------------
@@ -874,7 +919,8 @@ def rename_member_everywhere(workspace_id: str, old: str, new: str, root=None) -
             renamed = [MemberRef(r.workspace_id, new) if r == MemberRef(workspace_id, old) else r for r in fresh_refs]
             if renamed == fresh_refs:
                 return False
-            fresh.embedding_comparison = comparison_to_json(renamed, fresh_reference)
+            plan, mode = comparison_plan(fresh.embedding_comparison)
+            fresh.embedding_comparison = comparison_to_json(renamed, fresh_reference, plan, mode)
             return True
 
         if lib.update_workspace(workspace.path, change) is not None:

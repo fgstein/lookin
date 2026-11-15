@@ -427,7 +427,8 @@ def generate_report(workspace_id: str, experiments: list | None = None, format: 
 def plot_embedding_comparison(workspace_id: str, members: list | None = None, reference: int | None = None,
                               mode: str = "joint", method: str = "pca", color_by: str = "experiment",
                               display: str = "overlay", max_points: int = DEFAULT_PROJECTION_POINTS,
-                              save_to: str = "") -> tuple:
+                              save_to: str = "", sampling: str = "real", fit_points: int = 0,
+                              per_class: int = 0) -> tuple:
     """(answer, png): the Compare embeddings tab's map, drawn as the tab
     draws it -- overlaid, or one panel per experiment."""
     from lookin.core import embedding_compare as ec
@@ -447,8 +448,14 @@ def plot_embedding_comparison(workspace_id: str, members: list | None = None, re
         problem = ec.comparison_problem(loaded, reference)
         if problem:
             raise ValueError(f"Not compared: {problem}")
-        cmap = ec.project_members(loaded, reference, mode=mode, method=method,
-                                  per_member=min(int(max_points), ec.MAX_POINTS_PER_MEMBER))
+        from lookin.core import projection_plan as pp
+
+        if sampling not in pp.SAMPLINGS:
+            raise ValueError(f"sampling must be one of {', '.join(pp.SAMPLINGS)}; got {sampling!r}.")
+        plan = pp.plan_from_json({"method": method, "sampling": sampling, "display_size": max_points,
+                                  "fit_size": fit_points or max_points,
+                                  "per_class": per_class or pp.DEFAULT_PER_CLASS})
+        cmap = ec.project_members(loaded, reference, mode=mode, plan=plan)
         names = [m.name for m in loaded]
         colors = ec.group_colors(loaded, cmap, color_by, {n: color_for_experiment(n, names) for n in names})
         title = f"{method.upper()} -- {'fitted on all' if mode == ec.PROJ_JOINT else 'fitted on the reference'}"
@@ -456,7 +463,8 @@ def plot_embedding_comparison(workspace_id: str, members: list | None = None, re
         fig = draw(loaded, cmap, color_by, colors, title)
         png = charts.figure_png(fig)
     answer = {"workspace_id": workspace.id, "title": title, "reference": loaded[reference].name,
-              "members": names, "points_per_member": [len(r) for r in cmap.rows], "notes": cmap.notes,
+              "members": names, "points_per_member": [len(r) for r in cmap.rows],
+              "fitted_per_member": [len(f) for f in cmap.fit_rows], "notes": cmap.notes,
               "warnings": [w for m in loaded for w in m.warnings],
               "open_url": links.link(workspace.id, tab="embcompare")}
     if save_to:

@@ -29,6 +29,7 @@ from lookin.core import class_focus as cf
 from lookin.core import embedding_analysis as ea
 from lookin.core import point_coloring as pc
 from lookin.core import point_filters as pf
+from lookin.core import projection_plan as pp
 from lookin.core.chart_style import short_name, subplots
 from lookin.core.class_focus import FOCUS_MAX
 from lookin.core.data_manager import DATASET_SOURCE_GROUP
@@ -225,6 +226,11 @@ class _RunResult:
     # ticking a set on costs a transform rather than a projection.
     overlay_proj: dict = field(default_factory=dict)
     overlay_rows: dict = field(default_factory=dict)
+    # The plan the run followed (core/projection_plan.py): `idx` are the
+    # crops shown, the first `n_fit` of what the fit saw were its fit set.
+    plan: object = None
+    n_fit: int = 0
+    plan_note: str = ""
 
 
 @dataclass
@@ -272,7 +278,11 @@ class EmbeddingsView(StaleTracking, View):
 
         self.experiment = None
         self.method = "pca"
-        self.sample_value = "1500"
+        # Which crops the projection is fitted on, and which it shows
+        # (core/projection_plan.py) -- saved in the workspace on each run.
+        self.plan = pp.ProjectionPlan()
+        self.sample_value = str(self.plan.fit_size)
+        self._plan_for = None           # the workspace the plan was read from
         self.color_key = CLASS_COLOR_KEY
         self._color_column_map: dict = {CLASS_COLOR_KEY: None}
         self._color_options: list = [(CLASS_COLOR_KEY, "Class (true label)")]
@@ -327,9 +337,40 @@ class EmbeddingsView(StaleTracking, View):
     # ---- lifecycle ----
 
     def on_shown(self) -> None:
+        workspace = getattr(self.s, "current_workspace", None)
+        key = workspace.id if workspace is not None else None
+        if key != self._plan_for:
+            self._plan_for = key
+            saved = getattr(workspace, "embedding_projection", None) if workspace is not None else None
+            if saved:
+                self.plan = pp.plan_from_json(saved, self.method)
+                self.method = self.plan.method if self.plan.method in dict(METHOD_OPTIONS) else self.method
+                self.sample_value = str(self.plan.fit_size)
         if not self.built:
             self.built = True
             self.refresh_controls()
+
+    def _save_plan(self) -> None:
+        """The plan, in the workspace's manifest: it is part of what the
+        workspace is (Workspace.embedding_projection)."""
+        from lookin.core import library as lib
+
+        workspace = getattr(self.s, "current_workspace", None)
+        if workspace is None or not workspace.exists():
+            return
+        value = pp.plan_to_json(self.plan)
+
+        def change(fresh) -> bool:
+            if fresh.embedding_projection == value:
+                return False
+            fresh.embedding_projection = value
+            return True
+
+        try:
+            if lib.update_workspace(workspace.path, change) is not None:
+                workspace.embedding_projection = value
+        except Exception:  # noqa: BLE001 -- the map is drawn all the same
+            traceback.print_exc()
 
     def on_data_change(self) -> None:
         if self.built:
@@ -799,7 +840,9 @@ class EmbeddingsView(StaleTracking, View):
         self._projection_generation += 1
         generation = self._projection_generation
         method = self.method
-        n_sample = self._sample_size()
+        self.plan = pp.clamp(pp.with_method(self.plan, method))
+        plan = self.plan
+        self._save_plan()
         if not self._computing:
             self._results_before = self.results_html
         self.cancelled = False
@@ -820,13 +863,17 @@ class EmbeddingsView(StaleTracking, View):
                     return
                 checkpoint()
                 proto_source = self._proto_source_for(exp_name, sorted(set(ctx["labels"].tolist())))
-                self._run_projection(ctx, exp_name, method, n_sample, generation, class_filter, epoch,
+                self._run_projection(ctx, exp_name, method, plan, generation, class_filter, epoch,
                                      overlays, refit, proto_filter, proto_source)
                 self.dirty = False
             finally:
                 self.refresh()                # a Cancel included
 
         self.s.job("Projection").run(work, on_error=lambda ex: self._fail(ex, generation))
+
+    def _progress(self, text: str) -> None:
+        self.results_html = h.spinner(text)
+        self.refresh()
 
     def _fail(self, ex, generation) -> None:
         traceback.print_exc()
@@ -835,11 +882,10 @@ class EmbeddingsView(StaleTracking, View):
             self.results_html = h.banner(f"Error: {ex}", "error")
         self.refresh()
 
-    def _run_projection(self, ctx, exp_name, method, n_sample, generation, class_filter, epoch,
+    def _run_projection(self, ctx, exp_name, method, plan, generation, class_filter, epoch,
                         overlay_names=None, refit_with_overlay=False, proto_filter=None,
                         proto_source=PROTO_FROM_MODEL) -> None:
         try:
-            rng = np.random.default_rng(0)
             all_classes = sorted(set(ctx["labels"].tolist()))
             pool = np.arange(len(ctx["embeddings"]))
             if class_filter:
@@ -847,8 +893,10 @@ class EmbeddingsView(StaleTracking, View):
             if not len(pool):
                 self.results_html = h.banner("No rows in the selected classes.", "warn")
                 return
-            idx = rng.choice(pool, size=min(n_sample, len(pool)), replace=False)
-            embs = ctx["embeddings"][idx]
+            plan_rows = pp.choose_rows(ctx["labels"], plan, pool)
+            idx = plan_rows.display
+            fit_rows = plan_rows.fit
+            embs = ctx["embeddings"][fit_rows]
             labels = ctx["labels"][idx]
             proto_vecs = np.zeros((0, embs.shape[1]))
             proto_labels: list = []
@@ -898,11 +946,24 @@ class EmbeddingsView(StaleTracking, View):
                 fit_input = np.concatenate(parts, axis=0)
             checkpoint()                  # a Cancel lands here, or once the fit is done
             t0 = time.monotonic()
+            self._progress(f"Fitting {method} on {len(fit_input):,} crops...")
             fit = ea.fit_projection(fit_input, method=method, proto_vectors=proto_vecs if len(proto_vecs) else None)
             _log(f"projection ({method}) for '{exp_name}' computed in {time.monotonic() - t0:.1f}s "
                  f"over {len(fit_input):,} vectors")
             checkpoint()
-            proj, proto_proj = fit.points[: len(embs)], fit.proto_points
+            proto_proj = fit.proto_points
+            # The crops shown: those of the fit set where the fit put them,
+            # the others placed onto it, in batches (a Cancel stops there).
+            proj = np.zeros((len(idx), 2), dtype=float)
+            in_fit = np.isin(idx, fit_rows)
+            proj[in_fit] = fit.points[: len(embs)][np.searchsorted(fit_rows, idx[in_fit])]
+            others = idx[~in_fit]
+            if len(others):
+                def step(done, total):
+                    self._progress(f"Placing {total:,} more crops on the map... {100 * done // max(total, 1)}%")
+                    checkpoint()
+                proj[~in_fit] = pp.place(fit, ctx["embeddings"][others], step)
+                _log(f"placed {len(others):,} more crops on the {method} map")
             overlay_proj: dict = {}
             cursor = len(embs)
             for name in overlay_rows:
@@ -915,7 +976,8 @@ class EmbeddingsView(StaleTracking, View):
                 proto_filter=None if proto_filter is None else list(proto_filter),
                 proto_proj=proto_proj, proto_labels=proto_labels, proto_ks=proto_ks,
                 n_subcenters=n_subcenters, source_key=source_key, source_color=source_color,
-                source_note=source_note, n_sample=n_sample, sample_uuids=ctx["uuids"][idx],
+                source_note=source_note, n_sample=len(idx), sample_uuids=ctx["uuids"][idx],
+                plan=plan, n_fit=len(fit_rows), plan_note=pp.describe(plan_rows, plan) + "".join(" " + n for n in plan_rows.notes),
                 run_generation=generation, fit=fit,
                 overlay_names=list(overlay_rows) if refit_with_overlay else [],
                 refit_with_overlay=bool(refit_with_overlay and overlay_rows),
@@ -1077,7 +1139,9 @@ class EmbeddingsView(StaleTracking, View):
                     f"{kept:,} of {total:,} points shown — {n_hidden:,} hidden by the display "
                     f"filters. The projection is unchanged: what is left is where it always was.", "info",
                     icon_name="filter"))
-            fit_note = self._fit_note(result, layers, len(result.idx))
+            fit_note = self._fit_note(result, layers, result.n_fit or len(result.idx))
+            if result.plan_note:
+                notes_above.append(f'<div class="muted small">{h.e(result.plan_note)}</div>')
             if fit_note:
                 notes_above.append(h.banner(fit_note, "info"))
             self.notes_html = "".join(notes_above)
@@ -1440,7 +1504,16 @@ class EmbeddingsView(StaleTracking, View):
         controls = [
             h.select([(n, n) for n in names], self.experiment or "", change=self.c("experiment"), label="Experiment"),
             h.select(METHOD_OPTIONS, self.method, change=self.c("method"), label="Projection"),
-            h.text_input(self.sample_value, label="Sample size", width=70, change=self.c("sample"), extra=' data-force="1"'),
+            h.select(SAMPLING_OPTIONS, self.plan.sampling, change=self.c("sampling"), label="Fit on",
+                     title="Which crops the projection is fitted on"),
+            (h.text_input(str(self.plan.fit_size), label="Crops", width=70, change=self.c("fit_size"),
+                          extra=' data-force="1"')
+             if self.plan.sampling == pp.SAMPLING_REAL else
+             h.text_input(str(self.plan.per_class), label="Per class", width=60, change=self.c("per_class"),
+                          extra=' data-force="1"')),
+            h.text_input(str(self.plan.display_size), label="Shown", width=80, change=self.c("display_size"),
+                         extra=' data-force="1"' + (" disabled" if self.method not in pp.TRANSFORM_METHODS else "")),
+            h.info_btn("fit-and-shown"),
             h.select(self._color_options, self.color_key, change=self.c("color"), label="Color by"),
         ]
         scale = self._color_scale_kind()
@@ -1599,7 +1672,9 @@ class EmbeddingsView(StaleTracking, View):
             restored = self._rebind(self._runs.get(value), ctx) if ctx is not None else None
             if restored is not None:
                 self.method = restored.method
-                self.sample_value = str(restored.n_sample)
+                if restored.plan is not None:
+                    self.plan = restored.plan
+                    self.sample_value = str(self.plan.fit_size)
                 self._class_filter = list(restored.class_filter)
                 self._proto_filter = None if restored.proto_filter is None else list(restored.proto_filter)
                 self._proto_filter_chosen = True
@@ -1624,7 +1699,21 @@ class EmbeddingsView(StaleTracking, View):
             self.on_run()
 
     def on_sample(self, value: str = "", **_):
-        self.sample_value = str(value or "")
+        self.on_fit_size(value)
+
+    def on_sampling(self, value: str = "", **_):
+        if value in pp.SAMPLINGS:
+            self.plan = pp.ProjectionPlan(**{**vars(self.plan), "sampling": value})
+
+    def on_fit_size(self, value: str = "", **_):
+        self.plan = pp.clamp(pp.ProjectionPlan(**{**vars(self.plan), "fit_size": value}))
+        self.sample_value = str(self.plan.fit_size)
+
+    def on_per_class(self, value: str = "", **_):
+        self.plan = pp.clamp(pp.ProjectionPlan(**{**vars(self.plan), "per_class": value}))
+
+    def on_display_size(self, value: str = "", **_):
+        self.plan = pp.clamp(pp.ProjectionPlan(**{**vars(self.plan), "display_size": value}))
 
     def on_color(self, value: str = "", **_):
         if value not in self._color_column_map:
@@ -1767,6 +1856,7 @@ class EmbeddingsView(StaleTracking, View):
             "experiment": self.experiment or "",
             "method": self.method or "pca",
             "sample": str(self.sample_value or ""),
+            "plan": pp.plan_to_json(self.plan),
             "color_column": self._color_column_map.get(self.color_key or CLASS_COLOR_KEY) or "",
             "column_kind": dict(self._column_kind),
             "class_filter": [str(c) for c in self._class_filter],
@@ -1791,8 +1881,14 @@ class EmbeddingsView(StaleTracking, View):
             self.method = method
         elif method:
             warnings.append(f"Embeddings: unknown projection method '{method}'.")
-        if state.get("sample"):
+        if isinstance(state.get("plan"), dict):
+            self.plan = pp.plan_from_json(state["plan"], self.method)
+            self.sample_value = str(self.plan.fit_size)
+        elif state.get("sample"):
+            # A snapshot from before the plan: its sample size was both sets.
             self.sample_value = str(state["sample"])
+            self.plan = pp.clamp(pp.ProjectionPlan(method=self.method, fit_size=self.sample_value,
+                                                   display_size=self.sample_value))
         kinds = state.get("column_kind")
         if isinstance(kinds, dict):
             self._column_kind = {str(c): k for c, k in kinds.items() if k in (pc.KIND_CATEGORICAL, pc.KIND_NUMERIC)}
@@ -1824,8 +1920,17 @@ class EmbeddingsView(StaleTracking, View):
         return warnings
 
 
-# How many neighbours the map's Neighbours tool asks for, as offered.
-NEIGHBOUR_COUNTS = (10, 20, 50, 100)
+# The fit set's sampling (keys: core/projection_plan.SAMPLINGS).
+SAMPLING_OPTIONS = [(pp.SAMPLING_REAL, "Crops as in the data"), (pp.SAMPLING_BALANCED, "Balanced per class")]
+
+# How many neighbours the map's Neighbours tool asks for, as offered; 0 is
+# "Fill": as many as the gallery's mosaic has tiles for (projection.js).
+NEIGHBOUR_COUNTS = (0, 10, 20, 50, 100)
+
+
+def _neighbour_options() -> str:
+    return "".join(f'<option value="{n}"{" selected" if n == 0 else ""}>{"Fill" if n == 0 else n}</option>'
+                   for n in NEIGHBOUR_COUNTS)
 
 
 def map_widget(session, target: str, data: dict, resolve, describe, static_html: str, dkey: str = "",
@@ -1888,7 +1993,7 @@ def map_widget(session, target: str, data: dict, resolve, describe, static_html:
                 + icon_btn("", "search", "Neighbours: click a point to ring its nearest points of the map, in "
                            "the embedding space (not on the screen)", label="Neighbours", attr='data-pm-mode="nn"')
                 + '<select class="sel pm-k" data-pm-k="1" title="How many neighbours">'
-                + "".join(f'<option value="{n}"{" selected" if n == 20 else ""}>{n}</option>' for n in NEIGHBOUR_COUNTS)
+                + _neighbour_options()
                 + '</select>'
                 + '<b class="pm-seltext small"></b>'
                 + icon_btn("show", "external", "Open the selected points in the carousel", hidden=True)
@@ -1917,8 +2022,7 @@ def map_widget(session, target: str, data: dict, resolve, describe, static_html:
                         + icon_btn("", "search", "Neighbours: click a point to ring its nearest points of the map, "
                                    "in the embedding space", attr='data-pm-mode="nn"')
                         + '<select class="sel pm-k" data-pm-k="1" title="How many neighbours">'
-                        + "".join(f'<option value="{n}"{" selected" if n == 20 else ""}>{n}</option>'
-                                  for n in NEIGHBOUR_COUNTS)
+                        + _neighbour_options()
                         + '</select>'
                         + '<b class="pm-seltext small"></b>'
                         + icon_btn("show", "external", "Open the selected points in the carousel", hidden=True)

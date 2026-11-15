@@ -463,3 +463,85 @@ def test_the_mcp_probe_and_every_pair(bases):
     out = tools.compare_embedding_spaces(a.id, members, pairwise=True, probe=True)
     json.dumps(out)
     assert len(out["pairwise"]["domain_auc"]) == 2 and out["members"][1]["probe_accuracy"] is not None
+
+
+# ---- which crops a projection is fitted on, and which it shows -------------------
+
+def test_the_fit_set_keeps_the_real_distribution_or_balances_it():
+    from lookin.core import projection_plan as pp
+
+    labels = np.asarray(["big"] * 900 + ["small"] * 100, dtype=object)
+    real = pp.choose_rows(labels, pp.ProjectionPlan(fit_size=200, display_size=600))
+    assert len(real.fit) == 200 and 140 < real.fit_by_class["big"] < 200
+    assert len(real.display) == 600 and set(real.fit) <= set(real.display)
+    balanced = pp.choose_rows(labels, pp.ProjectionPlan(sampling=pp.SAMPLING_BALANCED, per_class=150,
+                                                        display_size=1000))
+    assert balanced.fit_by_class == {"big": 150, "small": 100}
+    assert "fewer than 150" in balanced.notes[0]
+    assert len(balanced.display) == 1000
+    tsne = pp.choose_rows(labels, pp.ProjectionPlan(method="tsne", fit_size=100, display_size=1000))
+    assert np.array_equal(tsne.fit, tsne.display) and "t-SNE" in tsne.notes[0]
+
+
+def test_crops_placed_onto_a_fit_land_where_the_fit_would_put_them():
+    from lookin.core import projection_plan as pp
+
+    rng = np.random.default_rng(1)
+    x = rng.normal(size=(500, 12)).astype(np.float32)
+    labels = np.asarray(["a"] * 500, dtype=object)
+    rows = pp.choose_rows(labels, pp.ProjectionPlan(fit_size=100, display_size=500))
+    coords, _, fit = pp.project(x, rows, "pca")
+    assert coords.shape == (500, 2)
+    assert np.allclose(coords, fit.transform(x[rows.display]), atol=1e-5)
+
+
+def test_plans_round_trip_and_are_clamped():
+    from lookin.core import projection_plan as pp
+
+    plan = pp.plan_from_json({"method": "umap", "sampling": "balanced", "per_class": "50", "display_size": 10**9})
+    assert plan.per_class == 50 and plan.display_size == pp.MAX_DISPLAY_SIZE
+    assert pp.plan_from_json(pp.plan_to_json(plan)) == plan
+    assert pp.plan_from_json({"sampling": "nonsense"}).sampling == pp.SAMPLING_REAL
+
+
+def test_a_comparison_follows_its_plan_and_saves_it(bases):
+    from lookin.core import projection_plan as pp
+
+    a, b = bases
+    members, _ = ec.load_members([ec.MemberRef(a.id, "cnn"), ec.MemberRef(b.id, "cnn")])
+    plan = pp.ProjectionPlan(sampling=pp.SAMPLING_BALANCED, per_class=5, display_size=400)
+    cmap = ec.project_members(members, 0, mode=ec.PROJ_REFERENCE, plan=plan)
+    assert len(cmap.fit_rows[0]) == 50 and len(cmap.fit_rows[1]) == 0
+    assert [len(r) for r in cmap.rows] == [400, 199]
+    s = _tab_session(a)
+    view = s.view("embcompare")
+    view.on_shown()
+    view.on_choose(value=f"{b.id}/cnn")
+    view.on_add()
+    view.on_sampling(value=pp.SAMPLING_BALANCED)
+    view.on_per_class(value="7")
+    view._compute()
+    saved_plan, _ = ec.comparison_plan(lib.load_workspace(a.path).embedding_comparison)
+    assert saved_plan.sampling == pp.SAMPLING_BALANCED and saved_plan.per_class == 7
+    assert "Fitted on 140 crops" in view.cmap.notes[0]
+
+
+def test_the_embeddings_tab_saves_its_plan_in_the_workspace(bases):
+    from lookin.core import projection_plan as pp
+
+    a, _ = bases
+    s = _tab_session(a)
+    s.tab = "embeddings"
+    view = s.view("embeddings")
+    view.on_shown()
+    view.on_sampling(value=pp.SAMPLING_BALANCED)
+    view.on_per_class(value="12")
+    view.plan = pp.clamp(pp.with_method(view.plan, view.method))
+    view._save_plan()
+    saved = pp.plan_from_json(lib.load_workspace(a.path).embedding_projection)
+    assert saved.sampling == pp.SAMPLING_BALANCED and saved.per_class == 12
+    # Another session on the same workspace starts from it.
+    t = _tab_session(lib.load_workspace(a.path))
+    other = t.view("embeddings")
+    other.on_shown()
+    assert other.plan.per_class == 12

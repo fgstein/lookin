@@ -808,6 +808,11 @@ def set_embedding_comparison(workspace_id: str, members: list | None = None, ref
         value = ec.comparison_to_json(refs, int(reference))
 
     def change(fresh: lib.Workspace) -> bool:
+        nonlocal value
+        if value:
+            # The members change; the projection plan saved with them stays.
+            plan, mode = ec.comparison_plan(fresh.embedding_comparison)
+            value = ec.comparison_to_json(ec.refs_from_json(value["members"]), value["reference"], plan, mode)
         if fresh.embedding_comparison == value:
             return False
         fresh.embedding_comparison = value

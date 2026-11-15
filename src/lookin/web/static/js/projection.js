@@ -35,7 +35,9 @@
  * point's k nearest points of the map in embedding space (not on the
  * screen); the answer comes back as a "lookin:map-neighbours" event and
  * they become the selection -- ringed and linked to the point, the rest of
- * the cloud dimmed, the gallery filled with them nearest first.
+ * the cloud dimmed. In gallery mode the mosaic shows the clicked point
+ * first, marked "Query", then its neighbours nearest first; "Fill" asks
+ * for as many as the mosaic has room for.
  *
  * Linked maps (data-link): maps of the same points in the same order --
  * the side-by-side panels of Compare embeddings -- move together (pan,
@@ -391,7 +393,9 @@
         hint.style.top = "0px";
         hint.style.width = ((cols - m) * cell) + "px";
         hint.style.height = (m * cell) + "px";
-        hint.textContent = "Draw a lasso on the map: the crops it holds fill this space.";
+        hint.textContent = this.mode === "nn"
+          ? "Click a point on the map: it comes first here, then its nearest points, nearest first."
+          : "Draw a lasso on the map: the crops it holds fill this space.";
         this.gal.appendChild(hint);
         this.syncToolbar();
         return;
@@ -407,7 +411,8 @@
         }
         this.sample = pool.slice(0, n);
       }
-      const pool = this.sample;
+      // neighbours: the query first, then its neighbours in their order
+      const pool = this.nn ? [this.nn.query].concat(this.nn.idx) : this.sample;
       const take = Math.min(slots.length, pool.length);
       const frag = document.createDocumentFragment();
       for (let k = 0; k < take; k++) {
@@ -415,7 +420,8 @@
         const img = document.createElement("img");
         img.alt = "";
         img.src = this.imgUrl(i);
-        const label = this.d.hl[this.d.hi[i]] || "";
+        let label = this.d.hl[this.d.hi[i]] || "";
+        if (this.nn) label += k === 0 ? " -- the query" : " -- neighbour " + k + ", similarity " + this.nn.sims[k - 1].toFixed(3);
         img.title = label;
         img.dataset.i = i;
         // a click opens the full-size view (app.js), with < > through the
@@ -429,6 +435,15 @@
         img.style.top = (r * cell) + "px";
         img.style.width = img.style.height = cell + "px";
         frag.appendChild(img);
+        if (this.nn) {
+          const tag = document.createElement("span");
+          tag.className = "pmap-rank" + (k === 0 ? " q" : "");
+          tag.textContent = k === 0 ? "Query" : String(k);
+          tag.style.left = (c * cell + 3) + "px";
+          tag.style.top = (r * cell + 3) + "px";
+          frag.appendChild(tag);
+          if (k === 0) img.classList.add("pmap-q");
+        }
       }
       this.gal.appendChild(frag);
       this.nShown = take;
@@ -438,7 +453,7 @@
     setGallery(on) {
       this.gallery = on;
       // the gallery is driven by the lasso: switch to it straight away
-      if (on) this.mode = "lasso";
+      if (on && this.mode !== "nn") this.mode = "lasso";
       this.hideHover();
       this.layout();
     }
@@ -554,6 +569,17 @@
       g.drawImage(s.c, qx - s.d / 2, qy - s.d / 2, s.d, s.d);
       g.strokeStyle = MARKER_COLOR; g.lineWidth = 2.4;
       g.beginPath(); g.arc(qx, qy, POINT_DIAMETER * 1.7, 0, Math.PI * 2); g.stroke();
+    }
+
+    // How many neighbours to ask for: the selector's number, or "Fill"
+    // (0): as many as the mosaic has tiles for, the query's tile apart.
+    neighbourCount() {
+      if (this.nnK) return this.nnK;
+      if (this.gallery && this.cols) {
+        const free = this.cols * this.rows - this.mapCells * this.mapCells;
+        return Math.max(1, free - 1);
+      }
+      return 20;
     }
 
     // The server's answer to a click in the Neighbours tool.
@@ -858,6 +884,7 @@
       }, { passive: false });
       this.root.querySelectorAll("[data-pm-mode]").forEach((b) => b.addEventListener("click", () => {
         this.mode = b.getAttribute("data-pm-mode"); this.syncToolbar();
+        if (this.gallery && !this.selected.length) this.fillGallery(false);    // the hint names the tool
         for (const p of this.peers()) { p.mode = this.mode; p.syncToolbar(); }    // one tool for every panel
       }));
       const on = (sel, fn) => { const b = this.root.querySelector(sel); if (b) b.addEventListener("click", fn); };
@@ -870,9 +897,9 @@
         this.fillGallery(true); this.requestRedraw(); this.shareSelection();
       });
       const k = this.root.querySelector("[data-pm-k]");
-      this.nnK = k ? +k.value || 20 : 20;
+      this.nnK = k ? +k.value : 20;
       if (k) k.addEventListener("change", () => {
-        this.nnK = +k.value || 20;
+        this.nnK = +k.value;
         for (const p of this.peers()) {
           p.nnK = this.nnK;
           const pk = p.root.querySelector("[data-pm-k]");
@@ -932,7 +959,7 @@
       const i = this.pick(px, py);
       if (i === null) return;
       if (this.mode === "nn") {
-        window.lookinAct(this.target, "neighbours", { i: i, k: this.nnK, map: this.root.getAttribute("data-map") });
+        window.lookinAct(this.target, "neighbours", { i: i, k: this.neighbourCount(), map: this.root.getAttribute("data-map") });
         return;
       }
       window.lookinAct(this.target, "point", { i: i });

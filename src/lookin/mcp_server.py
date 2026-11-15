@@ -532,12 +532,20 @@ def plot_embedding_comparison(
     max_points: Annotated[int, Field(description="Crops drawn per member (sampled beyond).", ge=10,
                                      le=outputs.MAX_PROJECTION_POINTS)] = outputs.DEFAULT_PROJECTION_POINTS,
     save_to: SaveTo = "",
+    sampling: Annotated[Literal["real", "balanced"], Field(description=(
+        "How each member's fit set is drawn: real (at random, classes in their real proportions) or "
+        "balanced (per_class crops from every class). Every other crop drawn is placed onto that fit "
+        "(pca, umap; tsne draws its fit set only)."))] = "real",
+    fit_points: Annotated[int, Field(description=(
+        "sampling=real: crops per member the projection is fitted on; 0 for max_points."), ge=0)] = 0,
+    per_class: Annotated[int, Field(description="sampling=balanced: crops per class and member; 0 for 100.",
+                                    ge=0)] = 0,
 ) -> list:
     """The Compare embeddings map as a PNG: several experiments of one model (different datasets) projected
     into one 2D space, the model's prototypes as stars. Refused for experiments of different models."""
     _no_save_in_read_only(save_to)
     return _run_picture(outputs.plot_embedding_comparison, workspace_id, _members(members), reference, mode, method,
-                        color_by, display, max_points, save_to)
+                        color_by, display, max_points, save_to, sampling, fit_points, per_class)
 
 
 def generate_report(

@@ -36,12 +36,13 @@ import numpy as np
 
 from lookin.core import embedding_compare as ec
 from lookin.core import library as lib
+from lookin.core import projection_plan as pp
 from lookin.core.chart_style import blues_color, color_for_experiment
 from lookin.core.images import crop_display
 from lookin.web import html as h
 from lookin.web.views.base import NO_RENDER, Dialog, RebuildView
 from lookin.web.views.carousel import Carousel, CarouselDialog
-from lookin.web.views.embeddings import METHOD_OPTIONS, legend_card, map_widget
+from lookin.web.views.embeddings import METHOD_OPTIONS, SAMPLING_OPTIONS, legend_card, map_widget
 from lookin.web.views.media import crop_img, fig_html
 
 DISPLAY_OVERLAY = "overlay"
@@ -117,7 +118,10 @@ class EmbeddingCompareView(RebuildView):
         self.add_choice = ""
         self.mode = ec.PROJ_JOINT
         self.method = "pca"
-        self.sample_value = str(ec.DEFAULT_POINTS_PER_MEMBER)
+        # Per experiment: which crops the projection is fitted on and which
+        # it shows (core/projection_plan.py), saved with the comparison.
+        self.plan = ec.default_plan()
+        self.sample_value = str(self.plan.fit_size)
         self.color_by = ec.COLOR_MEMBER
         self.display = DISPLAY_OVERLAY
         self.class_sort = "coverage"
@@ -173,6 +177,13 @@ class EmbeddingCompareView(RebuildView):
             # the reference the others are added to.
             refs, reference = [ec.MemberRef(local, self._local_experiments()[0])], 0
         self.refs, self.reference = refs, reference
+        plan, mode = ec.comparison_plan(workspace.embedding_comparison if workspace else {})
+        if plan is not None:
+            self.plan = plan
+            self.method = plan.method if plan.method in ec.METHODS else self.method
+            self.sample_value = str(plan.fit_size)
+        if mode:
+            self.mode = mode
         self._clear_results()
 
     def _save(self) -> None:
@@ -180,7 +191,8 @@ class EmbeddingCompareView(RebuildView):
         if workspace is None:
             self.save_note = "Not saved: this session is not a workspace of the library."
             return
-        value = ec.comparison_to_json(self.refs, self.reference) if len(self.refs) > 1 else {}
+        value = (ec.comparison_to_json(self.refs, self.reference, pp.with_method(self.plan, self.method), self.mode)
+                 if len(self.refs) > 1 else {})
 
         def change(fresh) -> bool:
             if fresh.embedding_comparison == value:
@@ -320,13 +332,24 @@ class EmbeddingCompareView(RebuildView):
             self.method = value
 
     def on_sample(self, value: str = "", **_):
-        self.sample_value = str(value)
+        self.on_fit_size(value)
 
-    def _per_member(self) -> int:
-        try:
-            return max(10, min(int(float(self.sample_value)), ec.MAX_POINTS_PER_MEMBER))
-        except (TypeError, ValueError):
-            return ec.DEFAULT_POINTS_PER_MEMBER
+    def _set_plan(self, **change) -> None:
+        self.plan = pp.clamp(pp.ProjectionPlan(**{**vars(self.plan), **change}))
+        self.sample_value = str(self.plan.fit_size)
+
+    def on_sampling(self, value: str = "", **_):
+        if value in pp.SAMPLINGS:
+            self._set_plan(sampling=value)
+
+    def on_fit_size(self, value: str = "", **_):
+        self._set_plan(fit_size=value)
+
+    def on_per_class(self, value: str = "", **_):
+        self._set_plan(per_class=value)
+
+    def on_display_size(self, value: str = "", **_):
+        self._set_plan(display_size=value)
 
     def on_color(self, value: str = "", **_):
         if value in ec.COLOR_MODES and value != self.color_by:
@@ -389,8 +412,17 @@ class EmbeddingCompareView(RebuildView):
                             "model, which their prototypes show.")
             return
         self.set_progress("Projecting...")
-        self.cmap = ec.project_members(members, reference, mode=self.mode, method=self.method,
-                                       per_member=self._per_member())
+        self.plan = pp.clamp(pp.with_method(self.plan, self.method))
+        self._save()            # the plan the comparison was run with is part of it
+        self.cmap = ec.project_members(members, reference, mode=self.mode, plan=self.plan,
+                                       progress=self.set_progress)
+        how = ("as in the data" if self.plan.sampling == pp.SAMPLING_REAL
+               else f"balanced, up to {self.plan.per_class:,} per class")
+        fitted = sum(len(f) for f in self.cmap.fit_rows)
+        shown = sum(len(r) for r in self.cmap.rows)
+        self.cmap.notes.insert(0, f"Fitted on {fitted:,} crops ({how}; "
+                               f"{'every experiment' if self.mode == ec.PROJ_JOINT else 'the reference only'}); "
+                               f"{shown:,} shown.")
         for i, member in enumerate(members):
             self.accuracies[i] = ec.member_accuracy(member)
             if i != reference:
@@ -687,8 +719,17 @@ class EmbeddingCompareView(RebuildView):
         controls = [
             h.select(MODE_OPTIONS, self.mode, change=self.c("mode"), label="Projection"),
             h.select(METHOD_OPTIONS, self.method, change=self.c("method"), label="Method"),
-            h.text_input(self.sample_value, label="Crops per experiment", width=70, change=self.c("sample"),
-                         extra=' data-force="1"'),
+            h.select(SAMPLING_OPTIONS, self.plan.sampling, change=self.c("sampling"), label="Fit on",
+                     title="Which crops of each experiment the projection is fitted on"),
+            (h.text_input(str(self.plan.fit_size), label="Crops per experiment", width=70,
+                          change=self.c("fit_size"), extra=' data-force="1"')
+             if self.plan.sampling == pp.SAMPLING_REAL else
+             h.text_input(str(self.plan.per_class), label="Per class and experiment", width=60,
+                          change=self.c("per_class"), extra=' data-force="1"')),
+            h.text_input(str(self.plan.display_size), label="Shown per experiment", width=80,
+                         change=self.c("display_size"),
+                         extra=' data-force="1"' + (" disabled" if self.method not in pp.TRANSFORM_METHODS else "")),
+            h.info_btn("fit-and-shown"),
             h.button("Compare", act_attr=self.a("run"), kind="primary", icon_name="play",
                      disabled=len(self.refs) < 2),
         ]
@@ -862,7 +903,7 @@ class EmbeddingCompareView(RebuildView):
             # what is in memory follows.
             workspace = self._workspace()
             if workspace is not None:
-                workspace.embedding_comparison = (ec.comparison_to_json(self.refs, self.reference)
+                workspace.embedding_comparison = (ec.comparison_to_json(self.refs, self.reference, self.plan, self.mode)
                                                   if len(self.refs) > 1 else {})
             self._clear_results()
 
