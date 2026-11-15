@@ -1000,6 +1000,25 @@ def compare_embedding_spaces(workspace_id: str, members=None, reference: int | N
         return _clean(out)
 
 
+def list_saved_views(workspace_id: str, tab: str = "") -> dict:
+    """The views saved in a workspace's Embeddings and Compare embeddings
+    tabs (core/view_catalogue.py): what each shows, when it was computed,
+    and whether the data changed since."""
+    from lookin.core import view_catalogue as vc
+
+    if tab and tab not in vc.TABS:
+        raise ValueError(f"tab must be one of {', '.join(vc.TABS)}, or empty for both.")
+    w = find_workspace(workspace_id)
+    views = []
+    for v in vc.list_views(w, tab):
+        changed = vc.changed_files(v)
+        views.append({"id": v.id, "tab": v.tab, "name": v.name, "created_at": v.created_at, "summary": v.summary,
+                      "settings": v.settings, "out_of_date": bool(changed), "changed_files": changed,
+                      "positions_only": not v.has_model, "open_url": links.link(w.id, tab=v.tab)})
+    return _clean({"workspace_id": w.id, "workspace": w.label(), "count": len(views), "views": views,
+                   "warnings": []})
+
+
 def get_class_separability(workspace_id: str, experiment: str, top=DEFAULT_TOP) -> dict:
     """A linear probe on one experiment's embeddings: how well a linear
     classifier, cross-validated, recovers the labels -- beside the model's

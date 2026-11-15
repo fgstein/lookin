@@ -645,3 +645,150 @@ def test_a_snapshot_restores_the_compare_tab_without_rewriting_the_workspace(bas
     # ... and restoring the snapshot did not write its members back.
     assert lib.load_workspace(a.path).embedding_comparison == {}
     assert render.tab_index(t) == vs.SNAPSHOT_TABS.index("embcompare")
+
+
+# ---- the catalogue of views ------------------------------------------------------------
+
+def _wait(session, job: str, timeout: float = 60.0) -> None:
+    import time
+    end = time.monotonic() + timeout
+    time.sleep(0.05)
+    while session.job(job).busy and time.monotonic() < end:
+        time.sleep(0.05)
+    assert not session.job(job).busy, f"{job} still running"
+
+
+def test_saved_views_round_trip_in_the_workspace(bases, tmp_path):
+    from lookin.core import view_catalogue as vc
+
+    a, _ = bases
+    view = vc.make_view(vc.TAB_EMBEDDINGS, "first", {"method": "pca"},
+                        {"uuids": np.asarray(["x", "y"]), "points": np.zeros((2, 2), dtype=np.float32)},
+                        vc.file_stamp([a.mount.dataset_path]))
+    vc.save_view(a, view)
+    listed = vc.list_views(a, vc.TAB_EMBEDDINGS)
+    assert [v.name for v in listed] == ["first"] and listed[0].saved and not listed[0].has_model
+    assert list(vc.load_arrays(a, listed[0])["uuids"]) == ["x", "y"]
+    assert vc.changed_files(listed[0]) == []
+    Path(a.mount.dataset_path).write_text(Path(a.mount.dataset_path).read_text() + "\n")
+    assert vc.changed_files(vc.list_views(a)[0]) == [a.mount.dataset_path]
+    vc.rename_view(a, view.id, "renamed")
+    assert vc.find_view(a, view.id).name == "renamed"
+    vc.delete_view(a, view.id)
+    assert vc.list_views(a) == [] and not (vc.views_dir(a) / f"{view.id}.npz").exists()
+
+
+def test_a_saved_pca_still_places_crops():
+    from lookin.core import view_catalogue as vc
+    from lookin.core.embedding_analysis import fit_projection
+
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=(200, 16)).astype(np.float32)
+    fit = fit_projection(x[:100], method="pca")
+    arrays = vc.model_arrays(fit)
+    again = vc.fit_from_arrays("pca", fit.points, arrays)
+    assert again.supports_transform()
+    assert np.allclose(again.transform(x[100:]), fit.transform(x[100:]), atol=1e-4)
+    umap_like = vc.fit_from_arrays("umap", fit.points, {})
+    assert not umap_like.supports_transform()
+
+
+def test_the_embeddings_tab_keeps_its_runs_and_reopens_a_saved_view_without_computing(bases):
+    from lookin.core import view_catalogue as vc
+    from lookin.core import projection_plan as pp
+    from lookin.web import render
+    from lookin.web.session import RequestScope
+
+    a, _ = bases
+    s = _tab_session(a)
+    s.tab = "embeddings"
+    view = s.view("embeddings")
+    view.on_shown()
+    view.experiment = "cnn"
+    ctx = view._analysis_context("cnn")
+    plan = pp.ProjectionPlan(method="pca", fit_size=200, display_size=500)
+    view._projection_generation += 1
+    view._run_projection(ctx, "cnn", "pca", plan, view._projection_generation, [], view._runs_epoch)
+    assert len(view.catalogue.history) == 1 and view.catalogue.history[0].has_model
+    first = view._last_result
+    view.catalogue.handle("name", {"value": "my PCA"})
+    view.catalogue.handle("save", {})
+    saved = vc.list_views(a, vc.TAB_EMBEDDINGS)
+    assert [v.name for v in saved] == ["my PCA"]
+    with RequestScope(s):
+        html = render.render_view(s, "embeddings")
+    assert "my PCA" in html and "Recent runs" not in html      # the run was saved, so it left the history
+
+    # Another session on the same workspace opens it: the same positions, no fit.
+    t = _tab_session(lib.load_workspace(a.path))
+    t.tab = "embeddings"
+    other = t.view("embeddings")
+    other.on_shown()
+    import lookin.core.embedding_analysis as ea
+    calls = []
+    original = ea.fit_projection
+    ea.fit_projection = lambda *args, **kw: calls.append(1) or original(*args, **kw)
+    try:
+        other.catalogue.handle("open", {"id": saved[0].id})
+        _wait(t, "Embeddings controls")
+    finally:
+        ea.fit_projection = original
+    assert calls == []
+    result = other._last_result
+    assert result is not None and np.allclose(result.proj, first.proj, atol=1e-5)
+    assert list(result.sample_uuids) == list(first.sample_uuids)
+    assert result.fit.supports_transform()
+
+
+def test_the_compare_tab_reopens_a_saved_comparison_with_its_measures(bases):
+    from lookin.core import view_catalogue as vc
+
+    a, b = bases
+    s = _tab_session(a)
+    view = s.view("embcompare")
+    view.on_shown()
+    view.on_choose(value=f"{b.id}/cnn")
+    view.on_add()
+    view._compute()
+    view.pairwise = ec.pairwise_stats(view.members)
+    view.catalogue.handle("save", {})
+    saved = vc.list_views(a, vc.TAB_COMPARE)
+    assert len(saved) == 1
+    stats = view.stats[1]
+
+    t = _tab_session(lib.load_workspace(a.path))
+    other = t.view("embcompare")
+    other.on_shown()
+    calls = []
+    original_stats, original_project = ec.pair_stats, ec.project_members
+    ec.pair_stats = lambda *x, **k: calls.append("stats") or original_stats(*x, **k)
+    ec.project_members = lambda *x, **k: calls.append("project") or original_project(*x, **k)
+    try:
+        other.catalogue.handle("open", {"id": saved[0].id})
+        _wait(t, other.stale_job)
+    finally:
+        ec.pair_stats, ec.project_members = original_stats, original_project
+    assert calls == []
+    assert other.refs == view.refs and set(other.stats) == {1}
+    assert other.stats[1].coverage == stats.coverage and other.stats[1].outside == stats.outside
+    assert other.pairwise is not None and other.pairwise.domain_auc.shape == (2, 2)
+    assert [len(r) for r in other.cmap.rows] == [len(r) for r in view.cmap.rows]
+    assert other.map_html
+
+
+def test_the_mcp_lists_renames_and_deletes_saved_views(bases):
+    from lookin.core import agent_actions as actions
+    from lookin.core import agent_tools as tools
+    from lookin.core import view_catalogue as vc
+
+    a, _ = bases
+    view = vc.save_view(a, vc.make_view(vc.TAB_COMPARE, "pair", {"members": []}, {"x": np.zeros(1)}, []))
+    out = tools.list_saved_views(a.id)
+    json.dumps(out)
+    assert out["count"] == 1 and out["views"][0]["positions_only"] and "tab=embcompare" in out["views"][0]["open_url"]
+    actions.rename_saved_view(a.id, view.id, "renamed")
+    assert tools.list_saved_views(a.id, "embcompare")["views"][0]["name"] == "renamed"
+    with pytest.raises(ValueError, match="second time"):
+        actions.delete_saved_view(a.id, view.id, "")
+    actions.delete_saved_view(a.id, view.id, view.id)
+    assert tools.list_saved_views(a.id)["count"] == 0

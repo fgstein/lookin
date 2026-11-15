@@ -37,6 +37,7 @@ import numpy as np
 from lookin.core import embedding_compare as ec
 from lookin.core import library as lib
 from lookin.core import projection_plan as pp
+from lookin.core import view_catalogue as vc
 from lookin.core.chart_style import blues_color, color_for_experiment
 from lookin.core.images import crop_display
 from lookin.web import html as h
@@ -140,6 +141,9 @@ class EmbeddingCompareView(RebuildView):
         self.pairwise = None            # ec.Pairwise, on demand
         self.pairwise_busy = False
         self._vectors = None            # the embedding of every point of the map, in its order
+        from lookin.web.views.catalogue_panel import CataloguePanel
+        self.catalogue = CataloguePanel(self, vc.TAB_COMPARE)
+        self._last_view = None          # the SavedView of what is on screen
         self.map_html = ""
         self.legend_html = ""
         self.panels_html = ""
@@ -448,6 +452,11 @@ class EmbeddingCompareView(RebuildView):
             self.probes[i] = ec.member_probe(member)
         self.stats_other = next(iter(self.stats), 0)
         self._draw()
+        try:
+            self._last_view = self._view_of_current()
+            self.catalogue.add_run(self._last_view)
+        except Exception:  # noqa: BLE001 -- the comparison is shown all the same
+            traceback.print_exc()
 
     def _redraw(self) -> None:
         if self.cmap is not None:
@@ -556,6 +565,108 @@ class EmbeddingCompareView(RebuildView):
                               "k": [int(k) for k in cmap.proto_ks], "label": list(cmap.proto_labels)}
         owner = np.asarray([m for m, _ in points], dtype=int)
         return data, points, owner
+
+    # ---- the catalogue of views (core/view_catalogue.py) ----
+
+    def on_cat(self, op: str = "", **args):
+        return self.catalogue.handle(op, args)
+
+    def _stamp_paths(self) -> list:
+        paths = []
+        for member in self.members:
+            ref = member.ref
+            try:
+                workspace = next((w for w in lib.list_workspaces() if w.id == ref.workspace_id), None)
+            except Exception:  # noqa: BLE001
+                workspace = None
+            if workspace is not None:
+                paths.append(workspace.mount.dataset_path)
+                for e in workspace.mount.experiments:
+                    if e.name == ref.experiment:
+                        paths += [e.path, e.embeddings_path, e.prototypes_path]
+        return [p for p in paths if p]
+
+    def _view_of_current(self, view_id: str = ""):
+        """What is on screen as a SavedView: the tab's settings, every
+        member's crops and positions, the measures (crops by uuid)."""
+        import json
+
+        measures = {
+            "stats": {str(i): ec.stats_to_json(st, self.members[i]) for i, st in self.stats.items()},
+            "probes": {str(i): ec.probe_to_json(pr) for i, pr in self.probes.items()},
+            "accuracies": {str(i): a for i, a in self.accuracies.items()},
+            "pairwise": None if self.pairwise is None else {
+                "names": self.pairwise.names, "domain_auc": np.where(np.isfinite(self.pairwise.domain_auc),
+                                                                     self.pairwise.domain_auc, -1).tolist(),
+                "coverage": np.where(np.isfinite(self.pairwise.coverage), self.pairwise.coverage, -1).tolist()},
+            "notes": list(self.cmap.notes),
+        }
+        arrays = ec.map_to_arrays(self.members, self.cmap)
+        arrays["measures"] = np.asarray(json.dumps(measures))
+        shown = sum(len(r) for r in self.cmap.rows)
+        name = (f"{len(self.members)} experiments - {self.method.upper()} - "
+                f"{'fitted on all' if self.cmap.mode == ec.PROJ_JOINT else 'fitted on the reference'} - {shown:,} crops")
+        view = vc.make_view(vc.TAB_COMPARE, name, self.view_state(), arrays, vc.file_stamp(self._stamp_paths()),
+                            " ".join(self.cmap.notes[:1]) or name)
+        if view_id:
+            view.id = view_id
+        return view
+
+    def catalogue_current(self, peek: bool = False):
+        if self.running or self.cmap is None or self._last_view is None:
+            return False if peek else None
+        if peek:
+            return True
+        # The measures as they are now -- "Every pair" may have been run since.
+        fresh = self._view_of_current(self._last_view.id)
+        fresh.name = self._last_view.name
+        return fresh
+
+    def catalogue_open(self, view, arrays) -> None:
+        """Show a saved comparison again: the experiments are read, nothing
+        is projected or measured."""
+        import json
+
+        self.restore_view_state(view.settings)
+
+        def work():
+            self.set_progress("Reading the experiments...")
+            members, problems = ec.load_members(self.refs, local=self._local())
+            if problems:
+                self.problems = problems
+                self.refusal = "Some experiments of this view could not be read."
+                return
+            self.members = members
+            reference = self.reference if self.reference < len(members) else 0
+            self.checks = ec.check_members(members, reference)
+            self.cmap, missing = ec.map_from_arrays(members, arrays, self.mode, self.plan.method)
+            measures = json.loads(str(arrays.get("measures", "{}")))
+            self.stats = {int(i): ec.stats_from_json(raw, members[int(i)]) for i, raw in measures.get("stats", {}).items()
+                          if int(i) < len(members)}
+            self.probes = {int(i): ec.probe_from_json(raw) for i, raw in measures.get("probes", {}).items()}
+            self.accuracies = {int(i): a for i, a in measures.get("accuracies", {}).items()}
+            pw = measures.get("pairwise")
+            if isinstance(pw, dict):
+                self.pairwise = ec.Pairwise(names=pw["names"],
+                                            domain_auc=np.where(np.asarray(pw["domain_auc"]) < 0, np.nan, pw["domain_auc"]),
+                                            coverage=np.where(np.asarray(pw["coverage"]) < 0, np.nan, pw["coverage"]))
+            notes = list(measures.get("notes", []))
+            changed = vc.changed_files(view)
+            if changed or missing:
+                notes.append(f"Saved on {view.created_at[:16].replace('T', ' ')}; "
+                             + (f"{missing:,} of its crops are no longer in the data; " if missing else "")
+                             + ("the data changed since -- positions and measures are those computed then."
+                                if changed else "positions and measures are those computed then."))
+            if not self.cmap.fit.supports_transform():
+                notes.append("Saved view: positions only (UMAP or t-SNE) -- showing more crops means running the "
+                             "comparison again.")
+            self.cmap.notes = notes
+            if self.stats_other not in self.stats:
+                self.stats_other = next(iter(self.stats), 0)
+            self._draw()
+            self._last_view = view
+
+        self.rebuild(work, clear_stale=False)
 
     # ---- the map's Neighbours tool ----
 
@@ -703,7 +814,7 @@ class EmbeddingCompareView(RebuildView):
     def render(self) -> str:
         self.on_shown()
         left = [f'<div class="sec-t"><h2>One model, several datasets</h2>{h.info_btn(MANUAL_OVERVIEW)}</div>',
-                self._members_card(), self._settings_card()]
+                self._members_card(), self._settings_card(), self.catalogue.render()]
         left.append(self.legend_html)
         has_map = bool(self.map_html or self.panels_html)
         split = ('<div class="emb-split" title="Drag to resize the map; drag it to the left edge, or double-click, '

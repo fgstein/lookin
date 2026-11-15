@@ -30,6 +30,7 @@ from lookin.core import embedding_analysis as ea
 from lookin.core import point_coloring as pc
 from lookin.core import point_filters as pf
 from lookin.core import projection_plan as pp
+from lookin.core import view_catalogue as vc
 from lookin.core.chart_style import short_name, subplots
 from lookin.core.class_focus import FOCUS_MAX
 from lookin.core.data_manager import DATASET_SOURCE_GROUP
@@ -283,6 +284,9 @@ class EmbeddingsView(StaleTracking, View):
         self.plan = pp.ProjectionPlan()
         self.sample_value = str(self.plan.fit_size)
         self.find_uuid = ""
+        from lookin.web.views.catalogue_panel import CataloguePanel
+        self.catalogue = CataloguePanel(self, vc.TAB_EMBEDDINGS)
+        self._last_view = None          # the SavedView of what is on screen
         self._plan_for = None           # the workspace the plan was read from
         self.color_key = CLASS_COLOR_KEY
         self._color_column_map: dict = {CLASS_COLOR_KEY: None}
@@ -1000,6 +1004,11 @@ class EmbeddingsView(StaleTracking, View):
             return
         self._last_result = result
         self._render_projection(result, generation)
+        try:
+            self._last_view = self._view_of(result)
+            self.catalogue.add_run(self._last_view)
+        except Exception:  # noqa: BLE001 -- the map is shown all the same
+            traceback.print_exc()
 
     def _redraw_current(self, message: str) -> None:
         if self._computing or self._last_result is None:
@@ -1553,6 +1562,7 @@ class EmbeddingsView(StaleTracking, View):
         body.append(self.notes_html)
         body.append(self.status_html)
         left.append(f'<section class="card"><div class="card-b stack">{"".join(b for b in body if b)}</div></section>')
+        left.append(self.catalogue.render())
         left.append(self._filters_card())
         left.append(self._overlay_card())
         left.append(self.legend_html)
@@ -1701,6 +1711,121 @@ class EmbeddingsView(StaleTracking, View):
         if value in dict(METHOD_OPTIONS):
             self.method = value
             self.on_run()
+
+    # ---- the catalogue of views (core/view_catalogue.py) ----
+
+    def on_cat(self, op: str = "", **args):
+        return self.catalogue.handle(op, args)
+
+    def _stamp_paths(self, exp_name: str) -> list:
+        state = self.state
+        exp = state.experiments.get(exp_name)
+        paths = [getattr(state.dataset, "csv_path", None) if state.dataset else None]
+        if exp is not None:
+            paths += [exp.embeddings_path, exp.model_prototypes_path]
+        workspace = getattr(self.s, "current_workspace", None)
+        if workspace is not None:
+            paths += [e.path for e in workspace.mount.experiments if e.name == exp_name]
+        return [str(p) for p in paths if p]
+
+    def _view_of(self, result):
+        """A run as a SavedView: its settings, the uuids and positions of the
+        crops drawn, the prototypes, and the PCA when it is one."""
+        plan = result.plan or pp.with_method(self.plan, result.method)
+        settings = {
+            "experiment": result.exp_name, "method": result.method, "plan": pp.plan_to_json(plan),
+            "class_filter": [str(c) for c in result.class_filter],
+            "proto_filter": None if result.proto_filter is None else [str(c) for c in result.proto_filter],
+            "proto_source": result.source_key or "", "n_fit": int(result.n_fit), "plan_note": result.plan_note,
+            "color_column": self._color_column_map.get(self.color_key or CLASS_COLOR_KEY) or "",
+        }
+        arrays = {"uuids": np.asarray(result.sample_uuids).astype(str),
+                  "points": np.asarray(result.proj, dtype=np.float32)}
+        if result.proto_proj is not None and len(result.proto_proj):
+            arrays.update(proto_points=np.asarray(result.proto_proj, dtype=np.float32),
+                          proto_labels=np.asarray(result.proto_labels, dtype=str),
+                          proto_ks=np.asarray(result.proto_ks, dtype=np.int64))
+        arrays.update(vc.model_arrays(result.fit))
+        how = "balanced" if plan.sampling == pp.SAMPLING_BALANCED else "as in the data"
+        name = f"{result.exp_name} - {result.method.upper()} - {len(result.idx):,} crops ({how})"
+        summary = result.plan_note or name
+        return vc.make_view(vc.TAB_EMBEDDINGS, name, settings, arrays, vc.file_stamp(self._stamp_paths(result.exp_name)),
+                            summary)
+
+    def catalogue_current(self, peek: bool = False):
+        # Not while a run is computing: what is on screen is about to be
+        # replaced, and saving it under the new run's name would mislabel it.
+        if self._computing or self._last_result is None or self._last_view is None:
+            return None if not peek else False
+        return True if peek else self._last_view
+
+    def catalogue_open(self, view, arrays) -> None:
+        """Show a saved view again: its positions, against the data as it is
+        now -- nothing is computed."""
+        settings = view.settings
+        exp_name = settings.get("experiment", "")
+        if exp_name not in experiments_with_embeddings(self.state):
+            self.catalogue.message = (f"'{exp_name}' is not loaded with its embeddings, so this view cannot be "
+                                      f"shown.", "error")
+            return
+        self._projection_generation += 1
+        generation = self._projection_generation
+        self.experiment = exp_name
+        self.results_html = h.spinner("Opening the saved view...")
+
+        def work():
+            ctx = self._analysis_context(exp_name)
+            if ctx is None:
+                self.results_html = h.banner(f"'{exp_name}' has no embeddings attached.", "info")
+                return
+            position = {u: i for i, u in enumerate(ctx["uuids"].tolist())}
+            uuids = arrays.get("uuids", np.zeros(0, dtype=str))
+            found = np.asarray([str(u) in position for u in uuids], dtype=bool)
+            idx = np.asarray([position[str(u)] for u, ok in zip(uuids, found) if ok], dtype=np.int64)
+            points = np.asarray(arrays.get("points", np.zeros((0, 2))), dtype=float)[found]
+            labels = ctx["labels"]
+            all_classes = sorted(set(labels.tolist()))
+            class_filter = [c for c in settings.get("class_filter") or [] if isinstance(c, str)]
+            plan = pp.plan_from_json(settings.get("plan"), settings.get("method", "pca"))
+            proto_points = arrays.get("proto_points")
+            fit = vc.fit_from_arrays(settings.get("method", "pca"), points, arrays, proto_points)
+            notes = [settings.get("plan_note", "")]
+            missing = int((~found).sum())
+            changed = vc.changed_files(view)
+            if changed or missing:
+                notes.append(f"Saved on {view.created_at[:16].replace('T', ' ')}; "
+                             + (f"{missing:,} of its crops are no longer in the data; " if missing else "")
+                             + ("the data changed since -- positions are those computed then." if changed
+                                else "positions are those computed then."))
+            if not fit.supports_transform():
+                notes.append("Saved view: positions only -- placing more crops (an inference, a larger display) "
+                             "means running the projection again.")
+            pool_size = int(np.isin(labels, class_filter).sum()) if class_filter else len(labels)
+            result = _RunResult(
+                ctx=ctx, exp_name=exp_name, method=settings.get("method", "pca"), idx=idx, proj=points,
+                labels=labels[idx], all_classes=all_classes, class_filter=class_filter, pool_size=pool_size,
+                proto_proj=proto_points, proto_labels=[str(x) for x in arrays.get("proto_labels", [])],
+                proto_ks=[int(x) for x in arrays.get("proto_ks", [])],
+                n_subcenters=(max([int(x) for x in arrays.get("proto_ks", [])]) + 1) if len(arrays.get("proto_ks", [])) else 0,
+                source_key=settings.get("proto_source") or None,
+                source_color=MODEL_COLOR if settings.get("proto_source") == PROTO_FROM_MODEL else KMEANS_COLOR,
+                proto_filter=settings.get("proto_filter"), n_sample=len(idx), sample_uuids=ctx["uuids"][idx],
+                run_generation=generation, fit=fit, plan=plan, n_fit=int(settings.get("n_fit", 0)),
+                plan_note=" ".join(n for n in notes if n))
+            self.method = result.method
+            self.plan = plan
+            self.sample_value = str(plan.fit_size)
+            self._class_filter = list(class_filter)
+            self._pending_color_column = settings.get("color_column", "")
+            self._render(ctx)
+            self._last_result = result
+            self._last_view = view
+            self._runs[exp_name] = replace(result, ctx=None)
+            if generation == self._projection_generation:
+                self._render_projection(result, generation)
+
+        self.s.job("Embeddings controls").run(lambda: (work(), self.refresh()),
+                                              on_error=lambda ex: (traceback.print_exc(), self._fail(ex, generation)))
 
     def on_find_uuid(self, value: str = "", **_):
         self.find_uuid = str(value or "").strip()

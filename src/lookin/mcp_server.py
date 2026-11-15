@@ -413,6 +413,36 @@ def compare_embedding_spaces(
                 pairwise, probe)
 
 
+def list_saved_views(
+    workspace_id: WorkspaceId,
+    tab: Annotated[str, Field(description="embeddings or embcompare; empty for both.")] = "",
+) -> str:
+    """The views saved in a workspace's Embeddings and Compare embeddings tabs: computed projections (and
+    comparisons, with their measures) kept so that they reopen at once. Each with its settings, when it
+    was computed, whether its data changed since (out_of_date) and whether it keeps positions only (a
+    UMAP or t-SNE view: showing more crops needs a new run). Views are saved from the tabs."""
+    return _run(agent_tools.list_saved_views, workspace_id, tab)
+
+
+def rename_saved_view(
+    workspace_id: WorkspaceId,
+    view_id: Annotated[str, Field(description="A saved view's id (lv-...), as list_saved_views gives it.")],
+    name: str,
+) -> str:
+    """Rename a saved view of the Embeddings or Compare embeddings tab."""
+    return _run(actions.rename_saved_view, workspace_id, view_id, name)
+
+
+def delete_saved_view(
+    workspace_id: WorkspaceId,
+    view_id: Annotated[str, Field(description="A saved view's id (lv-...).")],
+    confirm: Confirm,
+) -> str:
+    """Delete a saved view of the Embeddings or Compare embeddings tab (the data it was computed from is
+    not touched)."""
+    return _run(actions.delete_saved_view, workspace_id, view_id, confirm)
+
+
 def get_class_separability(
     workspace_id: WorkspaceId,
     experiment: Annotated[str, Field(description="An experiment with embeddings.")],
@@ -996,6 +1026,7 @@ READ_TOOLS = (
     find_cleaning_candidates, find_similar, get_review, get_snapshot, search_mlflow_runs, list_mlflow_run_files,
     get_mlflow_run_links, plot_chart, make_mosaic, get_notes,
     compare_embedding_spaces, find_neighbours_across, plot_embedding_comparison, get_class_separability,
+    list_saved_views,
     list_datasets, get_dataset, get_dataset_stats, compare_datasets, find_dataset_issues, get_dataset_rows,
 )
 WRITE_TOOLS = (
@@ -1006,9 +1037,10 @@ WRITE_TOOLS = (
     download_workspace, set_dataset_filter, create_snapshot, update_snapshot, delete_snapshot,
     export_workspace, import_workspace, record_review_decisions, undo_review_batch, create_review_version,
     export_reviewed_dataset, write_notes, regenerate_notes_recap, set_embedding_comparison,
+    rename_saved_view, delete_saved_view,
 )
 TOOLS = READ_TOOLS + WRITE_TOOLS
-DESTRUCTIVE_TOOLS = (delete_workspace, delete_snapshot, remove_experiment, undo_review_batch)
+DESTRUCTIVE_TOOLS = (delete_workspace, delete_snapshot, remove_experiment, undo_review_batch, delete_saved_view)
 # The tools that reach outside Lookin, to the MLflow and TrainHub servers the user configured.
 OPEN_WORLD_TOOLS = (search_mlflow_runs, list_mlflow_run_files, get_mlflow_run_links, add_mlflow_run,
                     download_workspace)

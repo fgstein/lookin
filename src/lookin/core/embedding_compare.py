@@ -456,6 +456,7 @@ class ComparisonMap:
     notes: list = field(default_factory=list)
     fit_rows: list = field(default_factory=list)   # per member: the rows the fit saw (none for the others
                                                    # in PROJ_REFERENCE)
+    fit: object = None                             # the ProjectionFit (its model places more crops)
 
 
 def _prototype_vectors(protos: Optional[PrototypeSet], classes: Optional[set]):
@@ -546,7 +547,7 @@ def project_members(members: list, reference: int, mode: str = PROJ_JOINT, metho
             placed += len(others)
         points.append(coords)
     return ComparisonMap(mode=mode, method=method, rows=rows, points=points, proto_points=fit.proto_points,
-                         proto_labels=proto_labels, proto_ks=proto_ks, notes=notes, fit_rows=fit_sets)
+                         proto_labels=proto_labels, proto_ks=proto_ks, notes=notes, fit_rows=fit_sets, fit=fit)
 
 
 # ---- neighbours ----------------------------------------------------------------
@@ -988,3 +989,94 @@ def member_probe(member: Member, seed: int = 0):
                             max_points=MEMBER_PROBE_POINTS)
     except ValueError:
         return None
+
+
+
+# ---- results as data (core/view_catalogue.py keeps them) ---------------------------
+# Crops are referred to by uuid, never by row: a saved view is read back
+# against members loaded again, whose rows need not be in the same order.
+
+def _uuid_rows(member: Member, uuids) -> tuple:
+    """(rows of `member` for `uuids`, which of `uuids` were found)."""
+    position = {u: i for i, u in enumerate(member.uuids.tolist())}
+    found = np.asarray([str(u) in position for u in uuids], dtype=bool)
+    rows = np.asarray([position[str(u)] for u, ok in zip(uuids, found) if ok], dtype=np.int64)
+    return rows, found
+
+
+def stats_to_json(stats: PairStats, member: Member) -> dict:
+    out = {k: v for k, v in vars(stats).items() if k not in ("per_class", "outside", "disagreements")}
+    out["per_class"] = [vars(c) for c in stats.per_class]
+    out["outside"] = [[str(member.uuids[r]), sim] for r, sim in stats.outside]
+    out["disagreements"] = [[str(member.uuids[r]), own, theirs, share] for r, own, theirs, share in stats.disagreements]
+    return out
+
+
+def stats_from_json(raw: dict, member: Member) -> PairStats:
+    fields = {k: v for k, v in raw.items() if k not in ("per_class", "outside", "disagreements")}
+    stats = PairStats(**fields)
+    stats.per_class = [ClassShift(**c) for c in raw.get("per_class", [])]
+    position = {u: i for i, u in enumerate(member.uuids.tolist())}
+    stats.outside = [(position[u], sim) for u, sim in raw.get("outside", []) if u in position]
+    stats.disagreements = [(position[u], own, theirs, share) for u, own, theirs, share in raw.get("disagreements", [])
+                           if u in position]
+    return stats
+
+
+def probe_to_json(probe) -> Optional[dict]:
+    if probe is None:
+        return None
+    out = dict(vars(probe))
+    out["per_class"] = [vars(c) for c in probe.per_class]
+    out["confusions"] = [list(c) for c in probe.confusions]
+    return out
+
+
+def probe_from_json(raw):
+    from lookin.core.embedding_analysis import LinearProbe, ProbeClass
+
+    if not isinstance(raw, dict):
+        return None
+    probe = LinearProbe(**{k: v for k, v in raw.items() if k not in ("per_class", "confusions")})
+    probe.per_class = [ProbeClass(**c) for c in raw.get("per_class", [])]
+    probe.confusions = [tuple(c) for c in raw.get("confusions", [])]
+    return probe
+
+
+def map_to_arrays(members: list, cmap: ComparisonMap) -> dict:
+    """A comparison map as arrays: per member, the uuids drawn and their
+    positions, the uuids of its fit set; the prototypes."""
+    from lookin.core.view_catalogue import model_arrays
+
+    out = {}
+    for i, (m, rows, pts, fit_rows) in enumerate(zip(members, cmap.rows, cmap.points, cmap.fit_rows)):
+        out[f"uuids_{i}"] = m.uuids[rows].astype(str)
+        out[f"points_{i}"] = np.asarray(pts, dtype=np.float32)
+        out[f"fit_uuids_{i}"] = m.uuids[fit_rows].astype(str)
+    if cmap.proto_points is not None:
+        out["proto_points"] = np.asarray(cmap.proto_points, dtype=np.float32)
+        out["proto_labels"] = np.asarray(cmap.proto_labels, dtype=str)
+        out["proto_ks"] = np.asarray(cmap.proto_ks, dtype=np.int64)
+    out.update(model_arrays(cmap.fit))
+    return out
+
+
+def map_from_arrays(members: list, arrays: dict, mode: str, method: str) -> tuple:
+    """(ComparisonMap, crops no longer found) from map_to_arrays' arrays,
+    against members loaded again."""
+    from lookin.core.view_catalogue import fit_from_arrays
+
+    rows, points, fit_rows, missing = [], [], [], 0
+    for i, m in enumerate(members):
+        uuids = arrays.get(f"uuids_{i}", np.zeros(0, dtype=str))
+        found_rows, found = _uuid_rows(m, uuids)
+        missing += int((~found).sum())
+        rows.append(found_rows)
+        points.append(np.asarray(arrays.get(f"points_{i}", np.zeros((0, 2))), dtype=float)[found])
+        fit_rows.append(_uuid_rows(m, arrays.get(f"fit_uuids_{i}", np.zeros(0, dtype=str)))[0])
+    proto_points = arrays.get("proto_points")
+    fit = fit_from_arrays(method, np.zeros((0, 2)), arrays, proto_points)
+    cmap = ComparisonMap(mode=mode, method=method, rows=rows, points=points, proto_points=proto_points,
+                         proto_labels=[str(x) for x in arrays.get("proto_labels", [])],
+                         proto_ks=[int(x) for x in arrays.get("proto_ks", [])], fit_rows=fit_rows, fit=fit)
+    return cmap, missing

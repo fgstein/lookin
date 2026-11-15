@@ -572,3 +572,9 @@ img.img-wait { filter: brightness(0); }
 .nn-pair { display: flex; align-items: flex-end; gap: 14px; margin: 6px 0 10px; flex-wrap: wrap; }
 .nn-side { display: flex; flex-direction: column; gap: 3px; max-width: 220px; }
 .nn-sim { display: flex; flex-direction: column; align-items: center; padding-bottom: 60px; font-size: 18px; }
+/* saved views of the Embeddings and Compare embeddings tabs */
+.vcat-row { gap: 6px; }
+.vcat-open { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; flex: 0 1 auto; max-width: 70%; text-align: left; background: none; border: 1px solid transparent; border-radius: 6px; padding: 3px 6px; cursor: pointer; color: var(--ink); }
+.vcat-open:hover { border-color: var(--line-2); background: var(--surface-2); }
+.vcat-open.on { border-color: var(--acc); background: var(--acc-soft); }
+.vcat-open .ell { max-width: 100%; }

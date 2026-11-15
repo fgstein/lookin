@@ -821,4 +821,45 @@ PAGES = (
         see_also=("projection-2d", "pca", "umap", "tsne", "embedding-comparison"),
         keywords=("fit", "sample", "shown", "display", "balanced", "transform", "points"),
     ),
+
+    ManualPage(
+        id="saved-views",
+        title="Saved views",
+        summary=(
+            "A projection takes seconds to minutes; looking at it again should not. A view keeps what a run "
+            "computed -- the position of every crop, the prototypes, and for a comparison its measures -- so "
+            "that it reopens at once, and switching between several is instant."
+        ),
+        shown_in="Embeddings and Compare embeddings tabs (\"Views\")",
+        blocks=(
+            Bullets((
+                "Every run of the session is kept in \"Recent runs\" (the last ten), one click from being saved.",
+                "\"Save this view\" keeps what is on screen in the workspace, under a name: it is there after a "
+                "restart, and for anyone who opens the workspace.",
+                "Opening a view redraws it without computing anything; it can then be recolored, filtered and "
+                "explored like a fresh run.",
+            )),
+            Heading("What is kept, and what is read again"),
+            Para(
+                "Only what was computed is kept: positions and measures, each crop known by its uuid. Labels, "
+                "predictions, colors and filters are read from the data as it is now, so a relabel since shows "
+                "on a saved view. When a file the view was computed on has changed, the view is marked out of "
+                "date, and crops that are no longer in the data are left off the map."
+            ),
+            Callout(CALLOUT_WARNING, "UMAP and t-SNE views keep positions only", (
+                Para(
+                    "A PCA is kept with its view (a few numbers), so crops can still be placed onto a saved PCA "
+                    "view -- an inference overlay, say. A UMAP model holds its whole training set and is not "
+                    "kept, and t-SNE has none: placing more crops on such a view means running the projection "
+                    "again. The view says so, with a \"positions only\" badge."
+                ),
+            )),
+            Para(
+                "Snapshots are another thing: they keep the settings of every tab, and reopening one computes "
+                "again. A view keeps one tab's results."
+            ),
+        ),
+        see_also=("fit-and-shown", "embedding-comparison", "projection-2d"),
+        keywords=("view", "saved", "catalogue", "history", "recent", "reopen", "cache"),
+    ),
 )

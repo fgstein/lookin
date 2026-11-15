@@ -116,7 +116,10 @@ in both, like the PNGs they are exported as.
    shows that point first, then its neighbours nearest first. A map is
    fitted on a modest set of crops -- at random, or balanced per class --
    and shows many more, each placed onto the fit (PCA, UMAP); the choice
-   is saved in the workspace. Simple inferences loaded
+   is saved in the workspace. Every run is kept for the session, and any
+   view -- here or in Compare embeddings -- can be saved in the workspace
+   under a name and reopened at once, without computing anything again
+   (a UMAP or t-SNE view keeps positions only). Simple inferences loaded
    on the Sources tab can be overlaid on the same map -- see below.
    **Compare embeddings** puts several experiments in one embedding space:
    the same model run on different datasets, typically from different
@@ -595,6 +598,7 @@ The model needs to support tool calling (and images, for the pictures).
 | `get_mlflow_run_links` | for MLflow run ids: the workspaces made from them, where TrainHub shows them, the link to a new workspace |
 | `get_notes` | the workspace's notes, as Markdown |
 | `compare_embedding_spaces`, `find_neighbours_across` | one model on several datasets: refused unless the prototypes match; how far apart the datasets sit (against the reference, or every pair), per class, the crops outside the reference; nearest crops in the other dataset |
+| `list_saved_views` | the views saved in the Embeddings and Compare embeddings tabs, and whether their data changed since |
 | `get_class_separability` | a linear probe on an experiment's embeddings: cross-validated accuracy beside the model's, the classes it separates worst |
 | `list_datasets` | every dataset CSV of the shared folders: derivatives, MLflow link, rows, classes, health |
 | `get_dataset` | one dataset's file, content hash, MLflow run (and how sure the link is), derivatives, workspaces |
@@ -620,7 +624,8 @@ guessed as on the Sources tab), `update_workspace` (and its Home group),
 `delete_snapshot`; `export_workspace`, `import_workspace`;
 `record_review_decisions`, `undo_review_batch`, `create_review_version`,
 `export_reviewed_dataset`; `write_notes`, `regenerate_notes_recap` (the
-Notes tab); `set_embedding_comparison` (the Compare embeddings tab). Each does what the matching button does, through
+Notes tab); `set_embedding_comparison` (the Compare embeddings tab);
+`rename_saved_view`, `delete_saved_view`. Each does what the matching button does, through
 the same code, so a tab with that workspace open picks the change up within
 seconds. Deleting asks for the id a second time, and those tools are marked
 destructive so a client can ask its user first.

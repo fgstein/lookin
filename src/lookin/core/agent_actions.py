@@ -821,3 +821,25 @@ def set_embedding_comparison(workspace_id: str, members: list | None = None, ref
     fresh = _update(workspace, change)
     return _workspace_out(fresh, embedding_comparison=value or None,
                           open_url=links.link(fresh.id, tab="embcompare"))
+
+
+
+# ---- saved views of the Embeddings and Compare embeddings tabs ---------------
+
+def rename_saved_view(workspace_id: str, view_id: str, name: str) -> dict:
+    from lookin.core import view_catalogue as vc
+
+    workspace = find_workspace(workspace_id)
+    view = vc.rename_view(workspace, view_id, name)
+    return _workspace_out(workspace, view={"id": view.id, "name": view.name, "tab": view.tab},
+                          open_url=links.link(workspace.id, tab=view.tab))
+
+
+def delete_saved_view(workspace_id: str, view_id: str, confirm: str = "") -> dict:
+    from lookin.core import view_catalogue as vc
+
+    if confirm != view_id:
+        raise ValueError("Give the view's id a second time as `confirm` to delete it.")
+    workspace = find_workspace(workspace_id)
+    vc.delete_view(workspace, view_id)
+    return _workspace_out(workspace, deleted_view=view_id)
