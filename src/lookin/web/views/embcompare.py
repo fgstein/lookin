@@ -41,9 +41,9 @@ from lookin.core.chart_style import blues_color, color_for_experiment
 from lookin.core.images import crop_display
 from lookin.web import html as h
 from lookin.web.views.base import NO_RENDER, Dialog, RebuildView
-from lookin.web.views.carousel import Carousel, CarouselDialog
+from lookin.web.views.carousel import PAIR_SIZE, Carousel, CarouselDialog, _describe, nearest_pair_html
 from lookin.web.views.embeddings import METHOD_OPTIONS, SAMPLING_OPTIONS, legend_card, map_widget
-from lookin.web.views.media import crop_img, fig_html
+from lookin.web.views.media import fig_html
 
 DISPLAY_OVERLAY = "overlay"
 DISPLAY_PANELS = "panels"
@@ -74,6 +74,7 @@ NN_ALL = "all"
 NN_SAME = "same"
 NN_OTHER = "other"
 NN_REFERENCE = "reference"
+NN_MEMBER = "m"     # + an experiment's position: that experiment only
 NN_OPTIONS = [(NN_ALL, "Every experiment"), (NN_SAME, "Its own experiment"), (NN_OTHER, "The other experiments"),
               (NN_REFERENCE, "The reference")]
 # Side by side: the other experiments' points, under the panel's own.
@@ -361,8 +362,20 @@ class EmbeddingCompareView(RebuildView):
             self.display = value
             self._redraw()
 
+    def _nn_options(self) -> list:
+        """The fixed scopes, then each experiment on its own -- keyed by
+        position ("m0", "m1", ...), as the members are."""
+        names = [m.name for m in self.members] or [self._member_label(r) for r in self.refs]
+        return NN_OPTIONS + [(f"{NN_MEMBER}{i}", f"Only {name}") for i, name in enumerate(names)]
+
+    def _nn_member(self):
+        """The experiment the Neighbours tool is restricted to, or None."""
+        if self.nn_scope.startswith(NN_MEMBER) and self.nn_scope[len(NN_MEMBER):].isdigit():
+            return int(self.nn_scope[len(NN_MEMBER):])
+        return None
+
     def on_nn_scope(self, value: str = "", **_):
-        if value in dict(NN_OPTIONS):
+        if value in dict(self._nn_options()):
             self.nn_scope = value
 
     def on_class_sort(self, value: str = "", **_):
@@ -563,6 +576,8 @@ class EmbeddingCompareView(RebuildView):
             among = owner != owner[i]
         elif self.nn_scope == NN_REFERENCE:
             among = owner == self.reference
+        elif self._nn_member() is not None:
+            among = owner == self._nn_member()
         rows, sims = nearest_rows(vectors, i, max(1, min(int(k), 500)), among=among)
         self.s.cmd(event="map-neighbours", detail={"map": str(map), "query": i, "idx": rows.tolist(),
                                                     "sims": [round(float(x), 4) for x in sims]})
@@ -597,7 +612,36 @@ class EmbeddingCompareView(RebuildView):
         if not 0 <= i < len(self._map_points) or not self.members:
             return
         m, row = self._map_points[i]
-        self.s.open_dialog(CrossNeighboursDialog(self.s, self.members, m, row, self.reference))
+        self._open_neighbours(m, row)
+
+    def _open_neighbours(self, m: int, row: int) -> None:
+        """A crop's nearest crops, searched in the experiment the
+        "Neighbours searched in" setting names when it names one, else in
+        the reference (another experiment, for a crop of the reference)."""
+        target = self._nn_member()
+        if target is None or not 0 <= target < len(self.members):
+            target = self.reference
+        self.s.open_dialog(CrossNeighboursDialog(self.s, self.members, m, row, self.reference, searched=target))
+
+    # ---- a crop given by its uuid ----
+
+    def on_find_uuid(self, value: str = "", **_):
+        self.find_uuid = str(value or "").strip()
+
+    def on_find(self, **_):
+        uuid = getattr(self, "find_uuid", "")
+        if not uuid:
+            return
+        if not self.members:
+            self.error = "Run the comparison first: the crop is searched in the experiments it loads."
+            return
+        for m, member in enumerate(self.members):
+            found = np.flatnonzero(member.uuids == uuid)
+            if len(found):
+                self.error = ""
+                self._open_neighbours(m, int(found[0]))
+                return
+        self.error = f"No crop {uuid} with an embedding in the compared experiments."
 
     def on_select(self, idx=None, **_):
         picked = [self._map_points[int(i)] for i in (idx or []) if 0 <= int(i) < len(self._map_points)]
@@ -733,10 +777,12 @@ class EmbeddingCompareView(RebuildView):
             h.button("Compare", act_attr=self.a("run"), kind="primary", icon_name="play",
                      disabled=len(self.refs) < 2),
         ]
+        find = (f'<div class="row-nw">{h.text_input(getattr(self, "find_uuid", ""), label="Crop (uuid)", width=220, change=self.c("find_uuid"), extra=" data-force=1", placeholder="Paste a crop uuid")}'
+                f'{h.button("Find its nearest crops", act_attr=self.a("find"), small=True, icon_name="search", disabled=not self.members, title="In the experiment Neighbours searched in names, else the reference")}</div>')
         redraw = [
             h.select(COLOR_OPTIONS, self.color_by, change=self.c("color"), label="Color by"),
             h.select(DISPLAY_OPTIONS, self.display, change=self.c("display"), label="Show"),
-            h.select(NN_OPTIONS, self.nn_scope, change=self.c("nn_scope"), label="Neighbours searched in",
+            h.select(self._nn_options(), self.nn_scope, change=self.c("nn_scope"), label="Neighbours searched in",
                      title="Where the map's Neighbours tool looks for a point's nearest points"),
         ]
         note = ""
@@ -745,7 +791,7 @@ class EmbeddingCompareView(RebuildView):
         notes = "".join(f'<div class="muted small">{h.e(n)}</div>' for n in (self.cmap.notes if self.cmap else []))
         err = h.banner(self.error, "error") if self.error and not self.progress_text else ""
         body = (f'<div class="row-wrap">{"".join(controls)}</div>{note}'
-                f'<div class="row-wrap">{"".join(redraw)}</div>{notes}{err}')
+                f'<div class="row-wrap">{"".join(redraw)}</div>{find}{notes}{err}')
         return f'<section class="card"><div class="card-b stack">{body}</div></section>'
 
     def _refusal_html(self) -> str:
@@ -912,7 +958,7 @@ class CrossNeighboursDialog(Dialog):
     """A crop of one compared experiment, and its nearest crops in another
     (or the same) -- exact, over the whole of that experiment."""
 
-    def __init__(self, session, members: list, member: int, row: int, reference: int):
+    def __init__(self, session, members: list, member: int, row: int, reference: int, searched=None):
         query = members[member]
         super().__init__(f"Nearest crops of {query.uuids[row]}", width=4000)
         self.s = session
@@ -920,6 +966,9 @@ class CrossNeighboursDialog(Dialog):
         self.member, self.row = member, row
         others = [i for i in range(len(members)) if i != member]
         self.searched = reference if reference != member else (others[0] if others else member)
+        if searched is not None and 0 <= searched < len(members) and (searched != member or len(members) == 1):
+            self.searched = searched
+        self.pair_html = ""
         self.k = DEFAULT_NEIGHBOURS
         self.carousel = None
         self.summary = ""
@@ -939,8 +988,15 @@ class CrossNeighboursDialog(Dialog):
                         + (f"; {same}/{len(found)} share this crop's label ({own})" if own else "")
                         + (f"; similarity {found[0].similarity:.3f} down to {found[-1].similarity:.3f}." if found else "."))
         labels = {r.get("label") for r in records} | {own}
+        qrec = query.record(self.row)
+        self.pair_html = nearest_pair_html(
+            self.s, {"path": query.crop_path(self.row), "record": qrec, "title": str(query.uuids[self.row]),
+                     "lines": _describe(qrec, "label", query.name)},
+            {"path": records[0]["path"], "record": records[0], "title": records[0]["uuid"],
+             "lines": _describe(records[0], "label", target.name)} if records else None,
+            found[0].similarity if found else None)
         self.carousel = Carousel(self, self.s, _Crops(labels), len(records), lambda a, b: records[a:b], "path",
-                                 "uuid", highlight_uuid=None, label_col="label", chrome_height=150,
+                                 "uuid", highlight_uuid=None, label_col="label", chrome_height=150 + PAIR_SIZE + 90,
                                  outcome_borders=True, foreign=True)
 
     def body(self) -> str:
@@ -949,16 +1005,14 @@ class CrossNeighboursDialog(Dialog):
         caption = " -- ".join(str(x) for x in (query.name, rec.get("label") or "no label",
                                                  f"predicted {rec['predicted_label']}" if rec.get("predicted_label") else "")
                               if x)
-        img = crop_img(self.s, query.crop_path(self.row), rec, size=96, alt=str(query.uuids[self.row]), zoom=True)
         options = [(str(i), m.name + (" (the same experiment)" if i == self.member else ""))
                    for i, m in enumerate(self.members)]
         controls = (h.select(options, str(self.searched), change=self.c("target"), label="Search in")
                     + h.select([(str(k), str(k)) for k in (12, 24, 48, 96)], str(self.k), change=self.c("k"),
                                label="Neighbours"))
-        head = (f'<div class="row-nw">{img}<div class="stack"><div class="small">{h.e(caption)}'
-                f'{h.info_btn(MANUAL_NEIGHBOURS)}</div>'
-                f'<div class="row-wrap">{controls}</div><div class="muted small">{h.e(self.summary)}</div></div></div>')
-        return f'<div class="car-head">{head}</div>' + self.carousel.render()
+        head = (f'<div class="stack"><div class="small">{h.e(caption)}{h.info_btn(MANUAL_NEIGHBOURS)}</div>'
+                f'<div class="row-wrap">{controls}</div><div class="muted small">{h.e(self.summary)}</div></div>')
+        return f'<div class="car-head">{head}</div>' + self.pair_html + self.carousel.render()
 
     def on_target(self, value: str = "", **_):
         try:

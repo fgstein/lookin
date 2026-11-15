@@ -545,3 +545,67 @@ def test_the_embeddings_tab_saves_its_plan_in_the_workspace(bases):
     other = t.view("embeddings")
     other.on_shown()
     assert other.plan.per_class == 12
+
+
+# ---- the nearest crop in a chosen experiment, from anywhere ------------------------
+
+def test_find_similar_searches_another_workspace_of_the_same_model(bases):
+    from lookin.web.session import RequestScope
+    from lookin.web.views.carousel import LIBRARY_PREFIX, SimilarityDialog
+
+    a, b = bases
+    s = _tab_session(a)
+    uuid = str(ec.load_member(ec.MemberRef(a.id, "cnn")).uuids[0])
+    with RequestScope(s):
+        dialog = SimilarityDialog(s, uuid, "cnn")
+        targets = dict(dialog._targets())
+        # This workspace's experiment, the other workspace's same model -- not its other model.
+        assert "local:cnn" in targets and f"{LIBRARY_PREFIX}{b.id}/cnn" in targets
+        assert f"{LIBRARY_PREFIX}{b.id}/resnet" not in targets
+        dialog.on_target(value=f"{LIBRARY_PREFIX}{b.id}/cnn")
+        body = dialog.body()
+    other = set(ec.load_member(ec.MemberRef(b.id, "cnn")).uuids.tolist())
+    assert dialog.carousel is not None and dialog.carousel.foreign
+    first = dialog.carousel.page_provider(0, 1)[0]
+    assert first["uuid"] in other and "similarity" in first
+    assert "Its nearest crop" in body and "another workspace" in dialog.summary
+
+
+def test_the_details_panel_offers_find_similar(bases):
+    from lookin.web.session import RequestScope
+    from lookin.web.views.details import details_html
+
+    a, _ = bases
+    s = _tab_session(a)
+    uuid = str(ec.load_member(ec.MemberRef(a.id, "cnn")).uuids[0])
+    with RequestScope(s):
+        html = details_html(s, uid=uuid)
+    assert "Find similar" in html and "app:similar" in html
+
+
+def test_compare_searches_one_chosen_experiment_and_finds_a_crop_by_uuid(bases):
+    from lookin.web.session import RequestScope
+
+    a, b = bases
+    s = _tab_session(a)
+    view = s.view("embcompare")
+    view.on_shown()
+    view.on_choose(value=f"{b.id}/cnn")
+    view.on_add()
+    view._compute()
+    assert ("m1", "Only Degraded base / cnn") in view._nn_options()
+    view.on_nn_scope(value="m1")
+    with RequestScope(s):
+        view.on_neighbours(i=0, k=5, map="m")
+        detail = s._pending_cmds[-1]["detail"]
+    assert all(view._map_points[j][0] == 1 for j in detail["idx"])
+    uuid = str(view.members[0].uuids[3])
+    view.on_find_uuid(value=uuid)
+    with RequestScope(s):
+        view.on_find()
+        dialog = s.dialogs[-1]
+        body = dialog.body()
+    assert dialog.searched == 1 and dialog.member == 0 and "Its nearest crop" in body
+    view.on_find_uuid(value="no-such-crop")
+    view.on_find()
+    assert "No crop no-such-crop" in view.error

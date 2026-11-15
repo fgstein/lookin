@@ -82,6 +82,11 @@ def details_html(session, uid: Optional[str] = None, crop: Optional[str] = None)
                                           ("On", decision.timestamp)) if v]
         parts.append(f'<div class="zi-sec"><div class="zi-t">Review</div>{h.kv_grid(rows)}</div>')
 
+    if info["uuid"]:
+        from lookin.web.views.carousel import similarity_available
+        if similarity_available(session):
+            parts.append(f'<div class="zi-sec">{h.button("Find similar", act_attr=h.act("app", "similar", uid=str(info["uuid"])), icon_name="search", small=True, title="Its nearest crops -- in this workspace, or in another one of the same model")}</div>')
+
     meta = h.kv_grid([(k, _value(v)) for k, v in info["metadata"]])
     parts.append(f'<div class="zi-sec"><div class="zi-t">Metadata</div>{meta}</div>')
     return "".join(parts)

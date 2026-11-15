@@ -402,6 +402,12 @@ PAGES = (
                 ("Uniformly low similarities", "an outlier the model has no representation for"),
             )),
             Para(
+                "\"Find similar\" -- on a crop of the carousel, in the details of the full-size view, or from a "
+                "uuid typed in the Embeddings tab -- can also search another workspace's experiment, when it "
+                "comes from the same model (the same prototypes): \"given this crop, what is closest to it in "
+                "that dataset?\". The nearest crop is shown beside the query, large, with its similarity."
+            ),
+            Para(
                 "On the interactive maps, the Neighbours tool does this search for a clicked point among the "
                 "points of the map, and rings them where they sit. The search is in the embedding space, "
                 "not on the screen: a neighbour drawn far from the point is a place where the projection "
@@ -662,7 +668,7 @@ PAGES = (
             "experiment -- the same search as \"Find similar\", across datasets. It shows what the "
             "reference contains that the model considers alike, and what it was labelled there."
         ),
-        shown_in="Compare embeddings tab (a click on the map)",
+        shown_in="Compare embeddings tab (a click on the map, or a crop's uuid); Find similar on any crop",
         blocks=(
             Equation(
                 r"\mathcal{N}^{B}_k(q) = \mathrm{top}\text{-}k_{\; b \in B} \; \left( \tilde{u}_q \cdot \tilde{u}_b \right)",

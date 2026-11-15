@@ -129,8 +129,10 @@ in both, like the PNGs they are exported as.
    told apart from the reference, how much of it the reference covers,
    whether its labels agree with the reference's nearest crops, a linear
    probe on its own crops; then every pair of experiments on demand, per
-   class, and the crops outside the reference. Clicking a crop lists its nearest crops in the
-   other base. What is compared is saved in the workspace as references to
+   class, and the crops outside the reference. Clicking a crop -- or typing its
+   uuid -- lists its nearest crops in the experiment chosen, the nearest
+   one shown beside it. "Find similar", on any crop, can also search another
+   workspace's experiment of the same model. What is compared is saved in the workspace as references to
    the other workspaces' experiments, never as copies.
 9. **Cleaning tab** -- find the crops worth a human look, decide on them,
    and export a versioned dataset you can train on. See below.

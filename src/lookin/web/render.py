@@ -510,6 +510,14 @@ class AppActions(Handler):
         self.s.mode = "analysis"
         self.s.mark("page")
 
+    def on_similar(self, uid: str = "", **_):
+        """"Find similar" from the full-size view's details panel: the crop's
+        nearest crops, in an experiment of this workspace or of another one
+        of the same model (views/carousel.SimilarityDialog)."""
+        from lookin.web.views.carousel import open_similarity
+        self.s.cmd(close_zoom=True)
+        open_similarity(self.s, str(uid))
+
     def on_manual(self, page: str = "", **_):
         from lookin.web.views.manual import open_manual
         open_manual(self.s, page or None)

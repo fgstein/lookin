@@ -282,6 +282,7 @@ class EmbeddingsView(StaleTracking, View):
         # (core/projection_plan.py) -- saved in the workspace on each run.
         self.plan = pp.ProjectionPlan()
         self.sample_value = str(self.plan.fit_size)
+        self.find_uuid = ""
         self._plan_for = None           # the workspace the plan was read from
         self.color_key = CLASS_COLOR_KEY
         self._color_column_map: dict = {CLASS_COLOR_KEY: None}
@@ -1527,7 +1528,9 @@ class EmbeddingsView(StaleTracking, View):
             controls.append(menu(items, icon_name="filter", label="Restrict to classes", right=False,
                                  title="Restrict to classes: only their crops are projected (recomputes the map)"))
         controls.append(h.button("Run projection", act_attr=self.a("run"), kind="primary", icon_name="play"))
-        body = [f'<div class="row-wrap">{"".join(controls)}</div>']
+        body = [f'<div class="row-wrap">{"".join(controls)}</div>',
+                f'<div class="row-nw">{h.text_input(self.find_uuid, label="Crop (uuid)", width=220, change=self.c("find_uuid"), extra=" data-force=1", placeholder="Paste a crop uuid")}'
+                f'{h.button("Find similar", act_attr=self.a("find"), small=True, icon_name="search", title="Its nearest crops -- in this workspace, or in another one of the same model")}</div>']
         if self._score_note:
             body.append(f'<div class="muted small"><i>{h.e(self._score_note)}</i></div>')
         if self._many_classes:
@@ -1697,6 +1700,18 @@ class EmbeddingsView(StaleTracking, View):
         if value in dict(METHOD_OPTIONS):
             self.method = value
             self.on_run()
+
+    def on_find_uuid(self, value: str = "", **_):
+        self.find_uuid = str(value or "").strip()
+
+    def on_find(self, **_):
+        """A crop given by its uuid (it need not be on the map): its nearest
+        crops, through the same search as "Find similar"."""
+        from lookin.web.views.carousel import open_similarity
+        if self.find_uuid:
+            if self.experiment:
+                self.s._similarity_experiment = self.experiment
+            open_similarity(self.s, self.find_uuid)
 
     def on_sample(self, value: str = "", **_):
         self.on_fit_size(value)

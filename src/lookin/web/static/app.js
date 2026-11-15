@@ -189,6 +189,7 @@
       const sp = el ? scrollParent(el) : null;
       if (sp) sp.scrollTop = 0; else window.scrollTo(0, 0);
     }
+    if (c.close_zoom) closeZoom();
     if (c.event) document.dispatchEvent(new CustomEvent("lookin:" + c.event, { detail: c.detail }));
   }
 
