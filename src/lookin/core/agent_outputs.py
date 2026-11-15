@@ -27,6 +27,7 @@ from lookin.core import class_focus as cf
 from lookin.core import links
 from lookin.core import mosaic
 from lookin.core.chart_style import HEAVY_WORK_LOCK, color_for_experiment
+from lookin.core.export_names import export_name
 from lookin.core.images import LUT_NONE, LUT_OPTIONS, quarter_turns_for_roll
 from lookin.core.metrics import MACRO_AVERAGE, compute_curves
 
@@ -182,7 +183,8 @@ def plot_chart(workspace_id: str, chart: str, experiments: list | None = None, m
     if notes:
         out["notes"] = notes
     if save_to:
-        out["saved"] = _save_png(png, save_to, f"{chart}.png")
+        out["saved"] = _save_png(png, save_to, export_name(entry.loaded.workspace.label(), tab, chart,
+                                                            metric or target or column))
     return tools._clean(out), png
 
 
@@ -364,7 +366,8 @@ def make_mosaic(workspace_id: str, experiment: str = "", uuids: list | None = No
         if name and frames:
             out["frames"] = "green: predicted right, red: predicted wrong"
     if save_to:
-        out["saved"] = _save_png(png, save_to, "mosaic.png")
+        out["saved"] = _save_png(png, save_to, export_name(entry.loaded.workspace.label(), "Gallery", "mosaic",
+                                                            name or ""))
     return tools._clean(out), png
 
 
@@ -414,7 +417,7 @@ def generate_report(workspace_id: str, experiments: list | None = None, format: 
                               comparison_pair=pair, snapshot_id=snapshot_id, report_cls=writer,
                               include_per_class_charts=per_class_charts,
                               notes=(nt.read(entry.loaded.workspace) or "") if notes else "")
-        path = destination(dest, default_report_name(state, extension=format))
+        path = destination(dest, default_report_name(state, extension=format, workspace=entry.loaded.workspace))
         report.write(path)
     out = file_answer(path, experiments=names, format=format)
     if snapshot_id:
@@ -468,5 +471,6 @@ def plot_embedding_comparison(workspace_id: str, members: list | None = None, re
               "warnings": [w for m in loaded for w in m.warnings],
               "open_url": links.link(workspace.id, tab="embcompare")}
     if save_to:
-        answer["saved"] = _save_png(png, save_to, "embedding_comparison.png")
+        answer["saved"] = _save_png(png, save_to, export_name(workspace.label(), "Compare embeddings", method, mode,
+                                                               f"by-{color_by}"))
     return tools._clean(answer), png

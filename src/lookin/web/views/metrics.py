@@ -662,7 +662,7 @@ class MetricsView(GroupActions, RebuildView):
     def _prepare_report_fields(self) -> None:
         state = self.state
         if not self.report_name and state.dataset is not None:
-            self.report_name = default_report_name(state)
+            self.report_name = default_report_name(state, workspace=self.s.current_workspace)
         if not self.report_dir and state.dataset is not None and state.dataset.csv_path:
             self.report_dir = str(Path(state.dataset.csv_path).parent)
 
@@ -761,7 +761,7 @@ class MetricsView(GroupActions, RebuildView):
     def _report_file_name(self, extension: str) -> str:
         typed = (self.report_name or "").strip()
         if not typed:
-            return default_report_name(self.state, extension)
+            return default_report_name(self.state, extension, workspace=self.s.current_workspace)
         for known in tuple(f".{w.extension}" for w in REPORT_WRITERS.values()):
             if typed.lower().endswith(known):
                 typed = typed[:-len(known)]

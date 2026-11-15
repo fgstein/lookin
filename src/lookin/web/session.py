@@ -44,7 +44,7 @@ DOWNLOAD_CACHE_MAX = 40
 UNDELIVERED_MAX = 50
 # The views whose state a snapshot holds, in the order they restore (the
 # filter first: it changes which rows the others restore against).
-SNAPSHOT_VIEWS = ("filter", "gallery", "metrics", "calibration", "compare", "embeddings", "cleaning")
+SNAPSHOT_VIEWS = ("filter", "gallery", "metrics", "calibration", "compare", "embeddings", "embcompare", "cleaning")
 
 _local = threading.local()
 

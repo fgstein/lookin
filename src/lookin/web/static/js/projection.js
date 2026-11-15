@@ -1090,10 +1090,13 @@
       return out;
     }
 
+    // lookin_<workspace>_<tab>_<experiment>_<method>_<color>[_gallery]_<date>.png:
+    // the stem is the server's (data-export, see map_widget)
     fileName() {
-      const d = new Date(), p = (n) => String(n).padStart(2, "0");
-      return "lookin_embeddings" + (this.gallery ? "_gallery" : "") + "_" + d.getFullYear() + p(d.getMonth() + 1) +
-        p(d.getDate()) + "_" + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) + ".png";
+      const stem = this.root.getAttribute("data-export") || "";
+      const name = window.lookinExportName ? window.lookinExportName(stem, this.gallery ? "gallery" : "", "png")
+        : "lookin_embeddings.png";
+      return name;
     }
 
     canCopy() {

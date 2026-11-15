@@ -609,3 +609,39 @@ def test_compare_searches_one_chosen_experiment_and_finds_a_crop_by_uuid(bases):
     view.on_find_uuid(value="no-such-crop")
     view.on_find()
     assert "No crop no-such-crop" in view.error
+
+
+def test_a_snapshot_restores_the_compare_tab_without_rewriting_the_workspace(bases):
+    from lookin.core import projection_plan as pp
+    from lookin.core import view_state as vs
+    from lookin.web import render
+
+    a, b = bases
+    s = _tab_session(a)
+    view = s.view("embcompare")
+    view.on_shown()
+    view.on_choose(value=f"{b.id}/cnn")
+    view.on_add()
+    view.on_mode(value=ec.PROJ_REFERENCE)
+    view.on_sampling(value=pp.SAMPLING_BALANCED)
+    view.on_color(value=ec.COLOR_CLASS)
+    view.display = "panels"
+    view.on_nn_scope(value="m1")
+    captured = s.view_state.capture()
+    assert captured[vs.APP][vs.TAB] == vs.SNAPSHOT_TABS.index("embcompare")
+    saved = captured[vs.VIEWS][vs.EMBEDDING_COMPARE]
+    # The workspace now compares only its own experiment...
+    lib.update_workspace(a.path, lambda fresh: setattr(fresh, "embedding_comparison", {}) or True)
+    t = _tab_session(lib.load_workspace(a.path))
+    assert t.view_state.restore(captured) == []
+    restored = t.view("embcompare")
+    assert t.tab == "embcompare"
+    assert restored.refs == [ec.MemberRef(a.id, "cnn"), ec.MemberRef(b.id, "cnn")]
+    assert (restored.mode, restored.color_by, restored.display, restored.nn_scope) == (
+        ec.PROJ_REFERENCE, ec.COLOR_CLASS, "panels", "m1")
+    assert restored.view_state() == saved
+    restored._compute(save=False)
+    assert restored.cmap is not None and restored.panels_html
+    # ... and restoring the snapshot did not write its members back.
+    assert lib.load_workspace(a.path).embedding_comparison == {}
+    assert render.tab_index(t) == vs.SNAPSHOT_TABS.index("embcompare")

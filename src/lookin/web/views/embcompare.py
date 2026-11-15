@@ -408,7 +408,9 @@ class EmbeddingCompareView(RebuildView):
     def on_update(self, **_):
         self.rebuild(self._compute)
 
-    def _compute(self) -> None:
+    def _compute(self, save: bool = True) -> None:
+        """`save=False`: a snapshot being restored -- what it compares is
+        shown, not written over the workspace's own comparison."""
         self._clear_results()
         self.set_progress("Reading the experiments...")
         members, problems = ec.load_members(self.refs, local=self._local())
@@ -426,7 +428,8 @@ class EmbeddingCompareView(RebuildView):
             return
         self.set_progress("Projecting...")
         self.plan = pp.clamp(pp.with_method(self.plan, self.method))
-        self._save()            # the plan the comparison was run with is part of it
+        if save:
+            self._save()        # the plan the comparison was run with is part of it
         self.cmap = ec.project_members(members, reference, mode=self.mode, plan=self.plan,
                                        progress=self.set_progress)
         how = ("as in the data" if self.plan.sampling == pp.SAMPLING_REAL
@@ -491,7 +494,8 @@ class EmbeddingCompareView(RebuildView):
                              c=[pindex[data["palette"][c]] if own[i] else pindex[grey] for i, c in enumerate(data["c"])],
                              z=own.astype(int).tolist(), k=None)
                 html_, key = map_widget(self.s, self.name, panel, resolve, None, "", compact=True, link=link,
-                                        min_size=PANEL_MIN_SIZE, heading=member.name)
+                                        min_size=PANEL_MIN_SIZE, heading=member.name,
+                                        export=(member.name, self.method, cmap.mode, f"by-{self.color_by}"))
                 first_key = first_key or key
                 panels.append(f'<div class="ecmp-panel">{html_}</div>')
             self.panels_html = f'<div class="ecmp-panels">{"".join(panels)}</div>'
@@ -502,7 +506,9 @@ class EmbeddingCompareView(RebuildView):
                      f"{'fitted on all' if cmap.mode == ec.PROJ_JOINT else 'fitted on the reference'}")
         fig = charts.embedding_comparison_overlay(members, cmap, self.color_by, colors, title_fig)
         static_html = fig_html(self.s, fig, "Compared embeddings")
-        self.map_html, dkey = map_widget(self.s, self.name, data, resolve, None, static_html)
+        self.map_html, dkey = map_widget(self.s, self.name, data, resolve, None, static_html,
+                                         export=(f"{len(members)}-experiments", self.method, cmap.mode,
+                                                 f"by-{self.color_by}"))
         self.legend_html = legend_card(legend, names, dkey, title)
         self.panels_html = ""
 
@@ -929,13 +935,68 @@ class EmbeddingCompareView(RebuildView):
         return h.section("Per class", f'<div class="row-wrap">{"".join(controls)}</div>{table}', manual=MANUAL_CLASS,
                          sub=f"reference -> {member.name}")
 
-    # ---- snapshots: what is compared lives in the workspace ----
+    # ---- snapshots ----
+    # What is compared lives in the workspace; a snapshot holds it too, with
+    # every setting of the tab, so that it shows the same thing later even
+    # if the workspace's comparison changed since. Restoring it does not
+    # write it back to the workspace: only a change made in the tab does.
 
     def view_state(self) -> dict:
-        return {}
+        return {
+            "members": [r.to_json() for r in self.refs],
+            "reference": int(self.reference),
+            "mode": self.mode,
+            "plan": pp.plan_to_json(pp.with_method(self.plan, self.method)),
+            "color_by": self.color_by,
+            "display": self.display,
+            "nn_scope": self.nn_scope,
+            "class_sort": self.class_sort,
+            "stats_other": int(self.stats_other),
+        }
 
     def restore_view_state(self, state) -> list:
-        return []
+        warnings = []
+        refs = ec.refs_from_json(state.get("members"))
+        if refs:
+            self.refs = refs
+            try:
+                reference = int(state.get("reference", 0))
+            except (TypeError, ValueError):
+                reference = 0
+            self.reference = reference if 0 <= reference < len(refs) else 0
+            # on_shown must not replace them with the workspace's comparison.
+            self.loaded_for = self._local_id()
+        if state.get("mode") in ec.PROJECTION_MODES:
+            self.mode = state["mode"]
+        if isinstance(state.get("plan"), dict):
+            self.plan = pp.plan_from_json(state["plan"])
+            if self.plan.method in ec.METHODS:
+                self.method = self.plan.method
+            elif self.plan.method:
+                warnings.append(f"Compare embeddings: unknown projection method '{self.plan.method}'.")
+            self.sample_value = str(self.plan.fit_size)
+        if state.get("color_by") in ec.COLOR_MODES:
+            self.color_by = state["color_by"]
+        if state.get("display") in (DISPLAY_OVERLAY, DISPLAY_PANELS):
+            self.display = state["display"]
+        scope = state.get("nn_scope")
+        if isinstance(scope, str) and scope in dict(self._nn_options()):
+            self.nn_scope = scope
+        if state.get("class_sort") in ec.CLASS_SORTS:
+            self.class_sort = state["class_sort"]
+        try:
+            self.stats_other = int(state.get("stats_other", 0))
+        except (TypeError, ValueError):
+            self.stats_other = 0
+        self._clear_results()
+        self.refresh()
+        return warnings
+
+    def recompute_after_restore(self) -> None:
+        if len(self.refs) >= 2:
+            keep = self.stats_other
+            self.rebuild(lambda: (self._compute(save=False), setattr(self, "stats_other",
+                                                                      keep if keep in self.stats else self.stats_other)))
 
     def rename_experiment(self, old_name: str, new_name: str) -> None:
         local = self._local_id()

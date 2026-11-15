@@ -1300,7 +1300,8 @@ class EmbeddingsView(StaleTracking, View):
             missing = uid is None or uid != uid or str(uid) == ""     # None, NaN or empty
             return (None if missing else str(uid)), records[i].get(crop_col)
 
-        map_html, dkey = map_widget(self.s, self.name, data, resolve, describe, static_html, dkey=dkey)
+        map_html, dkey = map_widget(self.s, self.name, data, resolve, describe, static_html, dkey=dkey,
+                                    export=(result.exp_name, result.method, f"by-{mapping.column}"))
         legend_html = self._legend_html(mapping, names, dkey)
         return map_html, legend_html
 
@@ -1949,7 +1950,8 @@ def _neighbour_options() -> str:
 
 
 def map_widget(session, target: str, data: dict, resolve, describe, static_html: str, dkey: str = "",
-               compact: bool = False, link: str = "", min_size: int = 0, heading: str = "") -> tuple:
+               compact: bool = False, link: str = "", min_size: int = 0, heading: str = "",
+               export: tuple = ()) -> tuple:
     """The interactive map of a projection (static/js/projection.js) and
     the HTML that hosts it: (map_html, dkey). `data` is the map's JSON (x,
     y, c, palette, g, groups, k, hl, hi, protos -- see
@@ -1961,7 +1963,9 @@ def map_widget(session, target: str, data: dict, resolve, describe, static_html:
     `compact`: one of several panels -- the view and selection tools only.
     `link`: maps with the same link move and select together (they must
     hold the same points in the same order). `min_size`: the smallest side
-    the map is drawn at. `heading`: a title over the map."""
+    the map is drawn at. `heading`: a title over the map. `export`: what
+    names a saved picture of the map, after the workspace and the tab
+    (core/export_names.py)."""
     if not dkey:
         dkey = session.put_download(json.dumps(data).encode("utf-8"), "map.json", "application/json")
     mkey = session.put_point_map(resolve, describe)
@@ -2044,7 +2048,10 @@ def map_widget(session, target: str, data: dict, resolve, describe, static_html:
                         + icon_btn("clear", "x", "Clear the selection", hidden=True))
                 + '</span>')
     toolbar = f'<div class="pm-row">{view}</div>'
+    from lookin.web.views.common import session_stem
+
     extra = (f' data-link="{h.e(link)}"' if link else "") + (f' data-min="{int(min_size)}"' if min_size else "")
+    extra += f' data-export="{h.e(session_stem(session, *export))}"' 
     map_html = (f'<div class="pmap{" pmap-compact" if compact else ""}" data-map="{dkey}" data-src="{h.e(src)}" data-pimg="{h.e(pimg)}" '
                 f'data-pinfo="{h.e(pinfo)}" data-target="{target}"{extra} '
                 f'data-static="{dkey}" title="">'

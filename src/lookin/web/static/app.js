@@ -732,6 +732,23 @@
   // the middle of the bar, and the arrow keys: they
   // step through the crops of that list, loading its next page when the
   // last loaded crop is reached.
+  // The name of a file the page saves: lookin_<workspace>_<tab>_<what>_<date>
+  // (core/export_names.py). `stem` is the server's, from data-export, else
+  // the page's (#export-stem, the workspace and the tab); `what` is added.
+  function exportPart(text) {
+    return String(text || "").replace(/[^A-Za-z0-9.-]+/g, "_").replace(/^[._-]+|[._-]+$/g, "").slice(0, 40);
+  }
+  function exportName(stem, what, ext) {
+    const page = document.getElementById("export-stem");
+    let name = stem || (page && page.getAttribute("data-stem")) || "lookin";
+    const extra = exportPart(what);
+    if (extra && !name.toLowerCase().endsWith("_" + extra.toLowerCase())) name += "_" + extra;
+    const d = new Date(), p = (n) => String(n).padStart(2, "0");
+    const stamp = d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + "-" + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+    return name.slice(0, 180) + "_" + stamp + "." + (ext || "png");
+  }
+  window.lookinExportName = exportName;
+
   let zoomState = null;
   let zoomInfoOpen = false;
   const INFO_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
@@ -743,7 +760,8 @@
     const info = img.getAttribute("data-info") || "";
     const list = img.closest(".car-list[data-gen], [data-zoom-list]");
     const z = document.getElementById("zoom");
-    const fname = "lookin_" + title.replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 60) + ".png";
+    // a chart carries its own stem (workspace, tab, title); a crop is named by its title (its uuid)
+    const fname = exportName(img.getAttribute("data-export") || "", img.getAttribute("data-export") ? "" : title, "png");
     z.innerHTML =
       '<div class="zoom-back"><div class="zoom-bar">' +
       (info ? '<button type="button" class="btn btn-sm btn-icon zoom-info-b" title="Details: metadata and predictions (i)">' + INFO_ICON + '</button>' : '') +
