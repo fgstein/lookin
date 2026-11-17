@@ -507,7 +507,10 @@ class EmbeddingCompareView(RebuildView):
                                         export=(member.name, self.method, cmap.mode, f"by-{self.color_by}"))
                 first_key = first_key or key
                 panels.append(f'<div class="ecmp-panel">{html_}</div>')
-            self.panels_html = f'<div class="ecmp-panels">{"".join(panels)}</div>'
+            size_bar = ('<div class="ecmp-pbar"><span class="small muted">Panel size</span>'
+                        f'<button type="button" class="btn btn-sm" data-ecmp-size="-1" title="Smaller panels: one more per row">{h.icon("minus", 13)}</button>'
+                        f'<button type="button" class="btn btn-sm" data-ecmp-size="1" title="Larger panels: one fewer per row">{h.icon("plus", 13)}</button></div>')
+            self.panels_html = f'{size_bar}<div class="ecmp-panels">{"".join(panels)}</div>'
             self.legend_html = legend_card(legend, names, first_key, title)
             self.map_html = ""
             return

@@ -2177,7 +2177,11 @@ def map_widget(session, target: str, data: dict, resolve, describe, static_html:
 
     extra = (f' data-link="{h.e(link)}"' if link else "") + (f' data-min="{int(min_size)}"' if min_size else "")
     extra += f' data-export="{h.e(session_stem(session, *export))}"' 
-    map_html = (f'<div class="pmap{" pmap-compact" if compact else ""}" data-map="{dkey}" data-src="{h.e(src)}" data-pimg="{h.e(pimg)}" '
+    # data-key: a re-render that swaps one map for another (the overlay for
+    # the side-by-side panels, a new projection) builds the new map afresh
+    # instead of morphing the old one's elements into it, which left the old
+    # map's canvas, sizes and observers inside the new one (app.js morph).
+    map_html = (f'<div class="pmap{" pmap-compact" if compact else ""}" data-key="pmap-{dkey}" data-map="{dkey}" data-src="{h.e(src)}" data-pimg="{h.e(pimg)}" '
                 f'data-pinfo="{h.e(pinfo)}" data-target="{target}"{extra} '
                 f'data-static="{dkey}" title="">'
                 f'<div class="pm-bar">{toolbar}</div>'

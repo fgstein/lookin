@@ -302,7 +302,8 @@
     }
 
     resize() {
-      if (!document.contains(this.box)) {      // the tab was redrawn without this map
+      // the tab was redrawn without this map, or another map took its place
+      if (!document.contains(this.box) || !this.root.contains(this.box) || maps.get(this.root) !== this) {
         this.ro.disconnect();
         window.removeEventListener("resize", this.onWinResize);
         return;
@@ -705,10 +706,15 @@
     }
 
     // ---- picking ----
+    // Only a point of the map's own: in a side-by-side panel the grey points
+    // of the other experiments (d.z = 0) are context, never hovered or
+    // clicked -- the crop shown is always one of the panel's experiment.
     pick(px, py) {
       let best = -1, bestD = PICK_RADIUS * PICK_RADIUS, bestRank = -1;
       const useRank = this.front.length > 0;
+      const z = this.d.z;
       for (let i = 0; i < this.n; i++) {
+        if (z && !z[i]) continue;
         const dx = this.sx[i] - px, dy = this.sy[i] - py;
         const d2 = dx * dx + dy * dy;
         if (d2 > PICK_RADIUS * PICK_RADIUS || !this.shown(i)) continue;
@@ -1218,6 +1224,44 @@
 
   document.addEventListener("lookin:display-changed", () => {
     for (const map of latest.values()) if (document.contains(map.root)) map.displayChanged();
+  });
+
+  // ---- the size of the side-by-side panels (Compare embeddings) -------------
+  // How many panels per row: + makes them larger (one fewer per row), -
+  // smaller (one more, as long as each keeps PANEL_MIN_PX). Kept on <html>
+  // as a CSS variable, like the splitter below, and remembered in this
+  // browser only; unset, the grid fits as many as it can.
+  const PANEL_KEY = "lookin.ecmpCols";
+  const PANEL_MIN_PX = 280;            // PANEL_MIN_SIZE in web/views/embcompare.py
+  const PANEL_GAP_PX = 10;             // .ecmp-panels gap
+  let panelCols = 0;
+  try { panelCols = parseInt(localStorage.getItem(PANEL_KEY) || "0", 10) || 0; } catch (e) { /* private mode */ }
+  function panelGrid() {
+    const grid = document.querySelector(".ecmp-panels");
+    if (!grid) return null;
+    const shown = getComputedStyle(grid).gridTemplateColumns.split(" ").filter(Boolean).length || 1;
+    const fit = Math.max(1, Math.floor((grid.clientWidth + PANEL_GAP_PX) / (PANEL_MIN_PX + PANEL_GAP_PX)));
+    return { shown: shown, fit: fit, count: grid.children.length };
+  }
+  function applyPanelCols() {
+    if (panelCols > 0) document.documentElement.style.setProperty("--ecmp-cols", String(panelCols));
+    else document.documentElement.style.removeProperty("--ecmp-cols");
+    const g = panelGrid();
+    if (!g) return;
+    document.querySelectorAll("[data-ecmp-size]").forEach((b) => {
+      b.disabled = +b.getAttribute("data-ecmp-size") > 0 ? g.shown <= 1 : g.shown >= Math.min(g.fit, g.count);
+    });
+  }
+  applyPanelCols();
+  window.lookinInit(() => applyPanelCols());
+  window.addEventListener("resize", () => applyPanelCols());
+  document.addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-ecmp-size]");
+    const g = b && panelGrid();
+    if (!g) return;
+    panelCols = Math.max(1, Math.min(g.fit, g.count, g.shown - (+b.getAttribute("data-ecmp-size"))));
+    try { localStorage.setItem(PANEL_KEY, String(panelCols)); } catch (e) { /* private mode */ }
+    applyPanelCols();
   });
 
   // ---- the splitter between the settings column and the map ----------------
