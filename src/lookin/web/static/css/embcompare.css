@@ -4,7 +4,13 @@
 .ecmp-m .ell { min-width: 0; flex: 0 1 auto; }
 .ecmp .kv .info-btn { margin-left: 4px; }
 /* side by side: one interactive map per experiment, as many per row as fit */
-.ecmp-panels { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+/* --ecmp-cols: the panels per row asked for with the Panel size buttons
+   (projection.js) -- each panel then takes that share of the row, never
+   less than 280px; unset, as many 280px panels as fit */
+.ecmp-panels { --ecmp-share: calc((100% - (var(--ecmp-cols, 99) - 1) * 10px) / var(--ecmp-cols, 99) - 0.5px);
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, max(280px, var(--ecmp-share))), 1fr)); gap: 10px; }
+.ecmp-pbar { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; }
+.ecmp-pbar .btn { height: 24px; width: 24px; padding: 0; justify-content: center; }
 .ecmp-panel { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
 .pmap-compact .pm-head { max-width: 40%; margin-right: 4px; }
 .pmap-compact .pm-row { height: auto; min-height: 28px; }
