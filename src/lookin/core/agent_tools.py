@@ -70,6 +70,7 @@ MAX_RUNS = 200
 SUMMARY_FIELDS = (
     "accuracy", "balanced_accuracy", "macro_f1", "weighted_f1", "mcc", "cohen_kappa",
     "macro_roc_auc", "weighted_roc_auc", "macro_avg_precision", "weighted_avg_precision",
+    "macro_f1_max", "weighted_f1_max",
     "log_loss", "brier_score", "ece", "mce",
 )
 

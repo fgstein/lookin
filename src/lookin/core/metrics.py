@@ -41,7 +41,7 @@ MACRO_AVERAGE = "macro-average (all classes)"
 ECE_BINS = 15
 
 PER_CLASS_COLUMNS = [
-    "label", "precision", "recall", "specificity", "f1", "support", "roc_auc", "average_precision",
+    "label", "precision", "recall", "specificity", "f1", "support", "roc_auc", "average_precision", "f1_max",
 ]
 
 # How far a row of scores may stray from summing to 1.0 before the columns
@@ -165,6 +165,10 @@ class ExperimentMetrics:
     weighted_roc_auc: float
     macro_avg_precision: float
     weighted_avg_precision: float
+    # Best F1 any threshold on a class's own score reaches (one-vs-rest, the
+    # top of its precision-recall curve), averaged over the classes.
+    macro_f1_max: float
+    weighted_f1_max: float
     # -- probabilistic level (proper scoring rules + calibration) --
     log_loss: float
     brier_score: float
@@ -293,11 +297,12 @@ def _positive_thresholds(ordered: np.ndarray, pos: np.ndarray) -> tuple:
 
 
 def ovr_ranking(scores: np.ndarray, positives: list, workers: int | None = None) -> tuple:
-    """One-vs-rest ROC-AUC and average precision for many classes at once.
+    """One-vs-rest ROC-AUC, average precision and F1-max for many classes
+    at once.
 
     `positives[j]` is None to skip column j, else the row indices whose
-    true class column j scores. Returns (auc, ap), NaN where skipped (see
-    _each_sorted_column).
+    true class column j scores. Returns (auc, ap, f1_max), NaN where
+    skipped (see _each_sorted_column).
 
     Exactly sklearn's roc_auc_score and average_precision_score, ties
     included, from one sort of each column: ROC-AUC is the Mann-Whitney
@@ -307,10 +312,16 @@ def ovr_ranking(scores: np.ndarray, positives: list, workers: int | None = None)
     which needs only how many rows score at least that much. sklearn
     builds both full curves per class instead, twice, which at two thousand
     classes is the better part of two minutes.
+
+    F1-max is the highest F1 on that same precision-recall curve, i.e. over
+    every threshold "predict c when its score is at least t". Only the
+    thresholds at a positive's score matter: lowering t past a score held
+    by negatives alone adds false positives and no true one.
     """
     n, k = scores.shape
     auc_out = np.full(k, np.nan)
     ap_out = np.full(k, np.nan)
+    f1_max_out = np.full(k, np.nan)
 
     def visit(j, ordered, pos):
         n_pos = len(pos)
@@ -320,9 +331,11 @@ def ovr_ranking(scores: np.ndarray, positives: list, workers: int | None = None)
         auc_out[j] = (rank_sum - n_pos * (n_pos + 1) / 2.0) / (n_pos * (n - n_pos))
         counts, tp, at_least, _above = _positive_thresholds(ordered, pos)
         ap_out[j] = float((counts / n_pos * tp / at_least).sum())
+        # F1 = 2 TP / (TP + FP + TP + FN) = 2 TP / (predicted + positives).
+        f1_max_out[j] = float((2 * tp / (at_least + n_pos)).max())
 
     _each_sorted_column(scores, positives, visit, workers)
-    return auc_out, ap_out
+    return auc_out, ap_out, f1_max_out
 
 
 def ovr_curves(scores: np.ndarray, positives: list, workers: int | None = None) -> dict:
@@ -451,6 +464,7 @@ def compute_metrics(name: str, merged: pd.DataFrame, label_col: str, score_cols:
             macro_f1=nan, macro_roc_auc=nan,
             balanced_accuracy=nan, weighted_f1=nan, mcc=nan, cohen_kappa=nan,
             weighted_roc_auc=nan, macro_avg_precision=nan, weighted_avg_precision=nan,
+            macro_f1_max=nan, weighted_f1_max=nan,
             log_loss=nan, brier_score=nan, brier_reliability=nan, brier_resolution=nan, brier_uncertainty=nan,
             ece=nan, mce=nan,
             score_diagnostics=ScoreDiagnostics(
@@ -522,9 +536,10 @@ def compute_metrics(name: str, merged: pd.DataFrame, label_col: str, score_cols:
         if j is None or label in constant_labels:
             continue
         positives[j] = order[bounds[j]:bounds[j + 1]]
-    col_auc, col_ap = ovr_ranking(scores, positives)
+    col_auc, col_ap, col_f1_max = ovr_ranking(scores, positives)
     roc_aucs = [float(col_auc[first_col[l]]) if l in first_col else float("nan") for l in present_labels]
     avg_precisions = [float(col_ap[first_col[l]]) if l in first_col else float("nan") for l in present_labels]
+    f1_maxes = [float(col_f1_max[first_col[l]]) if l in first_col else float("nan") for l in present_labels]
 
     per_class = pd.DataFrame({
         "label": present_labels,
@@ -535,6 +550,7 @@ def compute_metrics(name: str, merged: pd.DataFrame, label_col: str, score_cols:
         "support": support,
         "roc_auc": roc_aucs,
         "average_precision": avg_precisions,
+        "f1_max": f1_maxes,
     })
 
     macro_f1 = float(np.nanmean(f1)) if len(f1) else float("nan")
@@ -542,6 +558,8 @@ def compute_metrics(name: str, merged: pd.DataFrame, label_col: str, score_cols:
     weighted_roc_auc = _weighted_nanmean(roc_aucs, support)
     macro_avg_precision = float(np.nanmean(avg_precisions)) if avg_precisions and not np.all(np.isnan(avg_precisions)) else float("nan")
     weighted_avg_precision = _weighted_nanmean(avg_precisions, support)
+    macro_f1_max = float(np.nanmean(f1_maxes)) if f1_maxes and not np.all(np.isnan(f1_maxes)) else float("nan")
+    weighted_f1_max = _weighted_nanmean(f1_maxes, support)
 
     balanced_accuracy = float(np.nanmean(recall)) if len(recall) else float("nan")
     weighted_f1 = _weighted_nanmean(f1, support)
@@ -588,6 +606,8 @@ def compute_metrics(name: str, merged: pd.DataFrame, label_col: str, score_cols:
         weighted_roc_auc=weighted_roc_auc,
         macro_avg_precision=macro_avg_precision,
         weighted_avg_precision=weighted_avg_precision,
+        macro_f1_max=macro_f1_max,
+        weighted_f1_max=weighted_f1_max,
         log_loss=ll,
         brier_score=brier,
         brier_reliability=reliability,

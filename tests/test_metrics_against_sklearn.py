@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 from sklearn.metrics import (
     average_precision_score, cohen_kappa_score, log_loss, matthews_corrcoef,
-    precision_recall_fscore_support, roc_auc_score,
+    precision_recall_curve, precision_recall_fscore_support, roc_auc_score,
 )
 
 from lookin.core.metrics import compute_metrics, ovr_ranking
@@ -42,19 +42,42 @@ def test_ovr_ranking_is_sklearn(seed, ties):
     scores = df[labels].to_numpy()
     y = df["label"].to_numpy()
     positives = [np.flatnonzero(y == l) for l in labels]
-    auc, ap = ovr_ranking(scores, positives, workers=2)
+    auc, ap, f1_max = ovr_ranking(scores, positives, workers=2)
     for j, label in enumerate(labels):
         y_bin = (y == label).astype(int)
         assert auc[j] == pytest.approx(roc_auc_score(y_bin, scores[:, j].astype(float)), abs=1e-12)
         assert ap[j] == pytest.approx(average_precision_score(y_bin, scores[:, j].astype(float)), abs=1e-12)
+        assert f1_max[j] == pytest.approx(_sklearn_f1_max(y_bin, scores[:, j].astype(float)), abs=1e-12)
+
+
+def _sklearn_f1_max(y_bin, column):
+    """The highest F1 over every point of sklearn's precision-recall curve."""
+    precision, recall, _ = precision_recall_curve(y_bin, column)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        f1 = np.where(precision + recall > 0, 2 * precision * recall / (precision + recall), 0.0)
+    return float(f1.max())
 
 
 def test_ovr_ranking_skips_what_sklearn_refuses():
     df, labels = _frame(0, 200, 4, nan_col=True, absent=True)
     y = df["label"].to_numpy()
-    auc, ap = ovr_ranking(df[labels].to_numpy(), [np.flatnonzero(y == l) for l in labels])
-    assert np.isnan(auc[1]) and np.isnan(ap[1]), "a column holding NaN"
-    assert np.isnan(auc[3]) and np.isnan(ap[3]), "a class with no positive"
+    auc, ap, f1_max = ovr_ranking(df[labels].to_numpy(), [np.flatnonzero(y == l) for l in labels])
+    assert np.isnan(auc[1]) and np.isnan(ap[1]) and np.isnan(f1_max[1]), "a column holding NaN"
+    assert np.isnan(auc[3]) and np.isnan(ap[3]) and np.isnan(f1_max[3]), "a class with no positive"
+
+
+def test_f1_max_in_per_class_and_summary():
+    df, labels = _frame(5, 600, 6, ties=True)
+    m = compute_metrics("x", df, "label", labels, labels)
+    y = df["label"].to_numpy()
+    per_class = m.per_class.set_index("label")
+    expected = {l: _sklearn_f1_max((y == l).astype(int), df[l].to_numpy(dtype=float)) for l in labels}
+    for label, value in expected.items():
+        assert per_class.loc[label, "f1_max"] == pytest.approx(value, abs=1e-12)
+    assert m.macro_f1_max == pytest.approx(np.mean(list(expected.values())), abs=1e-12)
+    support = per_class.loc[labels, "support"].to_numpy(dtype=float)
+    assert m.weighted_f1_max == pytest.approx(
+        np.average([expected[l] for l in labels], weights=support), abs=1e-12)
 
 
 @pytest.mark.parametrize("absent", [False, True])

@@ -173,8 +173,10 @@ def get_column_stats(
 
 def get_metrics(workspace_id: WorkspaceId, experiments: Experiments = None) -> str:
     """Summary metrics of each experiment of a workspace, one row per experiment: accuracy,
-    balanced accuracy, macro and weighted F1, MCC, Cohen's kappa, ROC AUC and average precision
-    (macro and weighted), log loss, Brier score, ECE and MCE. Use it to find the best experiment.
+    balanced accuracy, macro and weighted F1, MCC, Cohen's kappa, ROC AUC, average precision and
+    F1-max (each macro and weighted), log loss, Brier score, ECE and MCE. F1-max is the best F1 a
+    per-class threshold on that class's own score could reach (one-vs-rest), whereas F1 is measured
+    on the argmax prediction. Use it to find the best experiment.
     The first call on a workspace loads its CSVs and can take a while."""
     return _run(agent_tools.get_metrics, workspace_id, experiments)
 
@@ -188,8 +190,11 @@ def get_per_class(
         description="True puts the lowest values first (the worst classes, when sorting by a score).")] = True,
     top: Top = agent_tools.DEFAULT_TOP,
 ) -> str:
-    """Per-class metrics of one experiment: precision, recall, specificity, F1, support, ROC AUC and
-    average precision for each class. By default the classes with the lowest F1 come first."""
+    """Per-class metrics of one experiment: precision, recall, specificity, F1, support, ROC AUC,
+    average precision and F1-max for each class. Precision, recall and F1 are those of the argmax
+    prediction; ROC AUC, average precision and F1-max rank the rows by the class's own score column
+    alone (one-vs-rest), F1-max being the highest F1 over every threshold on that score -- the top of
+    the class's precision-recall curve. By default the classes with the lowest F1 come first."""
     return _run(agent_tools.get_per_class, workspace_id, experiment, sort_by, ascending, top)
 
 
@@ -484,7 +489,8 @@ def plot_chart(
         "slice of a column) or projection (a 2D map of one experiment's embeddings)."))],
     experiments: Experiments = None,
     metric: Annotated[str, Field(description=(
-        "per_class: f1, precision, recall, specificity, roc_auc, average_precision or support (default f1). "
+        "per_class: f1, precision, recall, specificity, roc_auc, average_precision, f1_max or support "
+        "(default f1). "
         "slices: as get_slices (default accuracy)."))] = "",
     target: Annotated[str, Field(description="roc_pr: a class label, or empty for the macro-average.")] = "",
     column: Annotated[str, Field(description="column and slices: the dataset column.")] = "",
