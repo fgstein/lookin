@@ -45,7 +45,7 @@ from lookin.web.views.carousel import open_carousel
 from lookin.web.views.files import menu
 from lookin.web.views.common import short_column_labels
 from lookin.web.views.media import fig_html
-from lookin.web.views.widgets import ClassFocus, ClassPicker
+from lookin.web.views.widgets import ClassFocus, ClassPicker, experiment_options
 
 
 MIN_PLOT_SIZE = 420
@@ -1513,7 +1513,7 @@ class EmbeddingsView(StaleTracking, View):
             return f'<div class="emb"><div class="emb-left stack">{"".join(left)}</div></div>'
         names = experiments_with_embeddings(state)
         controls = [
-            h.select([(n, n) for n in names], self.experiment or "", change=self.c("experiment"), label="Experiment"),
+            h.select(experiment_options(self.state, names), self.experiment or "", change=self.c("experiment"), label="Experiment"),
             h.select(METHOD_OPTIONS, self.method, change=self.c("method"), label="Projection"),
             h.select(SAMPLING_OPTIONS, self.plan.sampling, change=self.c("sampling"), label="Fit on",
                      title="Which crops the projection is fitted on"),

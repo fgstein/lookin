@@ -43,7 +43,6 @@ from typing import Callable, Optional
 import numpy as np
 import pandas as pd
 
-from lookin.core.metrics import ROW_SUM_TOLERANCE as SPACE_TOLERANCE
 
 # Where the biases are tuned -- keys, compared in code.
 POOL_VAL = "val"
@@ -70,6 +69,9 @@ SUBSET_OBJECTIVES = (OBJ_MACRO_F1, OBJ_WEIGHTED_F1)
 # How the scores are put in log space -- keys, compared in code.
 SPACE_LOG_PROB = "log_prob"   # rows sum to 1: log p
 SPACE_LOGIT = "logit"         # raw logits: as they are
+# A row sums to 1 within this: metrics.ROW_SUM_TOLERANCE, repeated here so that
+# this module (imported when a workspace opens) does not import scikit-learn.
+SPACE_TOLERANCE = 1e-3
 
 DEFAULT_MAX_PASSES = 20
 # Row block for the passes over the whole score matrix.
@@ -684,3 +686,122 @@ def apply_to_frame(frame: pd.DataFrame, label_col: str, score_cols: list, labels
     out["predicted_score"] = value
     out["correct"] = out["predicted_label"] == out[label_col]
     return out
+
+
+# ---- the record of an applied rule ---------------------------------------------------
+# What AppState.apply_decision_rule takes and the workspace stores (as JSON,
+# MountExperiment.decision_rule). Its keys are a format: never renamed.
+
+def make_record(score_cols: list, labels_for_cols: list, biases, space: str, tuned_on: str,
+                split_column: str = "", split_value: str = "", n_rows: int = 0, objective: str = "",
+                classes=None, locked=(), max_abs_bias=None, objective_before=None,
+                objective_after=None) -> dict:
+    """The record of a rule: the bias of each score column (keyed by the
+    column, which a relabel does not change) and how it was obtained --
+    what the badge, the workspace and a reader of an export need."""
+    from datetime import datetime, timezone
+
+    biases = np.asarray(biases, dtype=np.float64)
+    labels = list(labels_for_cols[: len(score_cols)])
+
+    def number(value):
+        return None if value is None or value != value else float(value)
+
+    return {
+        "version": 1,
+        "biases": {str(c): float(b) for c, b in zip(score_cols, biases)},
+        "labels": {str(c): str(l) for c, l in zip(score_cols, labels)},
+        "space": space,
+        "tuned_on": tuned_on,
+        "split_column": str(split_column or ""),
+        "split_value": str(split_value or ""),
+        "n_rows": int(n_rows),
+        "objective": str(objective or ""),
+        "classes": None if classes is None else [str(c) for c in classes],
+        "locked": [str(c) for c in locked],
+        "max_abs_bias": number(max_abs_bias),
+        "objective_before": number(objective_before),
+        "objective_after": number(objective_after),
+        "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+def check_record(rule: dict, score_cols: list, raw_scores: np.ndarray) -> np.ndarray:
+    """The bias of each of `score_cols` in `rule`, after checking that the
+    rule fits these scores; raises ValueError, in words for the user,
+    when it does not (a rule saved for another results file)."""
+    if not isinstance(rule, dict) or not isinstance(rule.get("biases"), dict):
+        raise ValueError("the decision rule has no biases")
+    unknown = sorted(set(rule["biases"]) - set(map(str, score_cols)))
+    if unknown:
+        raise ValueError(f"the decision rule names score columns this experiment does not have: "
+                         f"{', '.join(unknown[:5])}")
+    space, reason = score_space(raw_scores)
+    if space is None:
+        raise ValueError(f"no bias can be applied to these scores: {reason}")
+    if rule.get("space") != space:
+        raise ValueError(f"the decision rule was made for scores read as {rule.get('space')!r}, but these "
+                         f"read as {space!r}")
+    try:
+        biases = np.array([float(rule["biases"].get(str(c), 0.0)) for c in score_cols])
+    except (TypeError, ValueError) as ex:
+        raise ValueError(f"the decision rule holds a bias that is not a number: {ex}") from ex
+    if not np.all(np.isfinite(biases)):
+        raise ValueError("the decision rule holds a bias that is not finite")
+    return biases
+
+
+def is_tuned_on_evaluation(rule: Optional[dict]) -> bool:
+    return bool(rule) and rule.get("tuned_on") == POOL_TEST
+
+
+def record_to_text(rule: Optional[dict]) -> str:
+    """A rule as the workspace stores it (MountExperiment.decision_rule);
+    "" for none."""
+    import json
+
+    return json.dumps(rule, sort_keys=True) if rule else ""
+
+
+def restore(state, experiment_name: str, text: str) -> Optional[str]:
+    """Apply the rule a workspace stored for an experiment just loaded.
+    Returns None, or a warning saying why the experiment is shown without
+    it -- never raises: an unreadable rule must not stop a workspace from
+    opening."""
+    import json
+
+    if not text:
+        return None
+    try:
+        state.apply_decision_rule(experiment_name, json.loads(text))
+    except (ValueError, TypeError, KeyError) as ex:
+        return (f"The decision rule saved for experiment {experiment_name!r} was not applied, so it is "
+                f"shown with its scores as read: {ex}")
+    return None
+
+
+# ---- references for one class ------------------------------------------------------
+
+def class_point(problem: Problem, biases, label) -> tuple:
+    """(recall, precision) of `label` under `biases`; NaN where undefined."""
+    c = [str(l) for l in problem.labels].index(str(label))
+    pred = predict(problem.logs, np.asarray(biases, dtype=np.float64))
+    tp = float(((pred == c) & (problem.y == c)).sum())
+    n_pred, n_true = float((pred == c).sum()), float(problem.n_true[c])
+    return (tp / n_true if n_true else float("nan"), tp / n_pred if n_pred else float("nan"))
+
+
+def ovr_curve(frame: pd.DataFrame, label_col: str, score_col: str, label) -> Optional[tuple]:
+    """(recall, precision) of the one-vs-rest precision-recall curve of
+    `label` on its own score column, as the Metrics tab draws it -- the
+    reference no single-label rule can reach. None when it is undefined
+    (no positive, a constant or non-finite column)."""
+    from lookin.core.metrics import ovr_curves
+
+    scores = frame[[score_col]].to_numpy()
+    positives = [np.flatnonzero(frame[label_col].to_numpy() == label)]
+    curves = ovr_curves(scores, positives)
+    if 0 not in curves:
+        return None
+    _fpr, _tpr, recall, precision, _ap = curves[0]
+    return recall, precision

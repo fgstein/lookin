@@ -224,3 +224,77 @@ def test_missing_validation_predictions_are_reported(tmp_path):
     assert pool.frame is None and "Run the model on those rows" in pool.disabled_reason
     assert "no column 'fold'" in dr.read_tuning_pool(state, "exp", split_column="fold").disabled_reason
     assert "no row where" in dr.read_tuning_pool(state, "exp", split_value="dev").disabled_reason
+
+
+def test_an_applied_rule_is_read_everywhere_and_reverted(tmp_path):
+    state = _state(tmp_path, val_predicted=100)
+    exp = state.experiments["exp"]
+    labels = exp.score_cols
+    raw = state.merged("exp")
+    pool = dr.read_tuning_pool(state, "exp")
+    problem = dr.prepare(pool.frame, "label", labels, labels)
+    result = dr.fit_biases(problem, dr.TuningSpec())
+    rule = dr.make_record(labels, labels, result.biases, problem.space, dr.POOL_VAL, "split", "val",
+                          problem.n_rows, dr.OBJ_MACRO_F1, objective_before=result.objective_before,
+                          objective_after=result.objective_after)
+    state.apply_decision_rule("exp", rule)
+    biased = state.merged("exp")
+    expected = dr.apply_to_frame(raw, "label", labels, labels, problem.space, result.biases)
+    assert list(biased["predicted_label"]) == list(expected["predicted_label"])
+    assert np.allclose(biased[labels].to_numpy(), expected[labels].to_numpy(), atol=1e-6)
+    # The tab still reads the scores as they were...
+    assert np.allclose(state.raw_merged("exp")[labels].to_numpy(), raw[labels].to_numpy())
+    # ...and a second rule replaces the first rather than stacking on it.
+    state.apply_decision_rule("exp", rule)
+    assert np.allclose(state.merged("exp")[labels].to_numpy(), expected[labels].to_numpy(), atol=1e-6)
+    assert state.revert_decision_rule("exp")
+    assert exp.decision_rule is None and exp.raw_df is None
+    assert list(state.merged("exp")["predicted_label"]) == list(raw["predicted_label"])
+
+
+def test_a_rule_for_other_scores_is_refused(tmp_path):
+    state = _state(tmp_path, val_predicted=100)
+    labels = state.experiments["exp"].score_cols
+    rule = dr.make_record(labels, labels, [0.0, 0.1, 0.2], dr.SPACE_LOGIT, dr.POOL_VAL)
+    with pytest.raises(ValueError, match="read as"):
+        state.apply_decision_rule("exp", rule)
+    rule = dr.make_record(["nope"], ["nope"], [0.1], dr.SPACE_LOG_PROB, dr.POOL_VAL)
+    with pytest.raises(ValueError, match="does not have"):
+        state.apply_decision_rule("exp", rule)
+    assert state.experiments["exp"].decision_rule is None
+
+
+def test_validation_predictions_are_not_a_mismatch(tmp_path):
+    state = _state(tmp_path, val_predicted=100)
+    overlap = state.uuid_overlap("exp")
+    assert overlap.experiment_only == 0 and overlap.other_split == 100
+
+
+def test_the_tolerance_is_the_metrics_one():
+    from lookin.core.metrics import ROW_SUM_TOLERANCE
+    assert dr.SPACE_TOLERANCE == ROW_SUM_TOLERANCE
+
+
+def test_a_workspace_reopens_with_its_rule(tmp_path):
+    from lookin.core import library as lib
+    from lookin.core.workspace_state import load_workspace_state
+
+    def load_mount_into(_state, mount):
+        return load_workspace_state(lib.Workspace(id="lkw-test", mount=mount))
+
+    state = _state(tmp_path, val_predicted=100)
+    labels = state.experiments["exp"].score_cols
+    rule = dr.make_record(labels, labels, [0.0, 0.4, -0.2], dr.SPACE_LOG_PROB, dr.POOL_TEST)
+    mount = lib.Mount(dataset_path=str(tmp_path / "ds.csv"), uuid_col="uuid", crop_col="crop", label_col="label",
+                      row_filter_col="split", row_filter_value="test",
+                      experiments=[lib.MountExperiment(name="exp", path=str(tmp_path / "res.csv"),
+                                                       decision_rule=dr.record_to_text(rule))])
+    raw = lib.mount_from_dict(lib.mount_to_dict(mount))
+    assert raw.experiments[0].decision_rule == dr.record_to_text(rule)
+    loaded = load_mount_into(None, raw)
+    assert not loaded.warnings
+    assert dr.is_tuned_on_evaluation(loaded.state.experiments["exp"].decision_rule)
+    broken = lib.MountExperiment(name="exp", path=str(tmp_path / "res.csv"), decision_rule='{"biases": {"zz": 1}}')
+    loaded = load_mount_into(None, lib.Mount(dataset_path=str(tmp_path / "ds.csv"), uuid_col="uuid",
+                                              crop_col="crop", label_col="label", experiments=[broken]))
+    assert loaded.state.experiments["exp"].decision_rule is None and "not applied" in loaded.warnings[-1]

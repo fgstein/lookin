@@ -44,7 +44,7 @@ from lookin.web.views.files import FileBrowserDialog
 from lookin.web.views.media import fig_html
 from lookin.web.views.slice_panel import SlicePanel
 from lookin.web.views.widgets import (
-    ClassFocus, GroupActions, class_select, experiment_dot, group_color_menu, groups_switch,
+    ClassFocus, GroupActions, class_select, experiment_dot, group_color_menu, groups_switch, rule_tag,
 )
 
 
@@ -192,7 +192,7 @@ class MetricsView(GroupActions, RebuildView):
                 f'{spacer}{arrows}'
                 f'{experiment_dot(self.target, self.state, name)}'
                 f'{h.checkbox(name, self.checked.get(name, True), change=self.c("check", name=name), cls="grow", ellipsis=True)}'
-                f'</div>')
+                f'{rule_tag(self.state, name)}</div>')
 
     def _group_row(self, group, members: list, first: bool, last: bool) -> str:
         state = self.state
@@ -395,7 +395,7 @@ class MetricsView(GroupActions, RebuildView):
                       m.ece, m.mce]
             cells = "".join(f"<td class=num>{f'{v:.3f}' if v == v else '—'}</td>" for v in values)
             rows.append(f'<tr><td><span class="row-nw">{h.dot(color_for_experiment(name, self.state.color_slots), size=10)}'
-                        f'{h.name(name)}</span></td><td class=num>{m.n_samples:,}</td>{cells}</tr>')
+                        f'{h.name(name)}{rule_tag(self.state, name)}</span></td><td class=num>{m.n_samples:,}</td>{cells}</tr>')
         table = (f'<div class="tbl-wrap"><table class="tbl compact"><thead><tr>{head}</tr></thead>'
                  f'<tbody>{"".join(rows)}</tbody></table></div>')
         return h.section("Summary", table, manual="summary-table")
@@ -540,7 +540,7 @@ class MetricsView(GroupActions, RebuildView):
         hint = ("Click a cell or a pair to preview those images right here"
                 + (f" -- column headers leave out the shared prefix '{dropped_prefix}'" if dropped_prefix else ""))
         return (f'<section class="card cm-card" data-key="cm-{h.e(name)}"><div class="card-h">{h.dot(color, size=10)}'
-                f'<h2 class="ell">{h.name(name)}<span class="nowrap">— accuracy {m.accuracy:.3f}</span></h2></div><div class="card-b">'
+                f'<h2 class="ell">{h.name(name)}{rule_tag(self.state, name)}<span class="nowrap">— accuracy {m.accuracy:.3f}</span></h2></div><div class="card-b">'
                 f'<div class="cm-scroll">{grid_html}</div>'
                 f'<div class="muted small"><i>{h.e(hint)}</i></div>'
                 f'<div class="row-wrap" style="align-items:flex-start;gap:16px">{"".join(extras)}</div></div></section>')

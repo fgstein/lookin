@@ -37,7 +37,7 @@ from lookin.web import html as h
 from lookin.web.views.base import NO_RENDER, Dialog
 from lookin.web.views.details import details_url
 from lookin.web.views.media import crop_url
-from lookin.web.views.widgets import class_select
+from lookin.web.views.widgets import class_select, experiment_options
 
 
 # The zoom ladder, in pixels of tile edge. Steps rather than a slider
@@ -849,7 +849,7 @@ class SimilarityDialog(Dialog):
         targets = self._targets()
         pickers = (f'<div class="row">'
                    f'{h.select(targets, self.search_in, change=self.c("target"), label="Search in", title="The experiment searched: of this workspace, or of another one with the same model (the same prototypes)")}'
-                   + (h.select([(n, n) for n in names], self.source or "", change=self.c("experiment"),
+                   + (h.select(experiment_options(self.session.state, names), self.source or "", change=self.c("experiment"),
                                label="From the space of", title="Which experiment's embedding of this crop is searched with")
                       if self.search_in.startswith(LIBRARY_PREFIX) and len(names) > 1 else "")
                    + f'{h.select([(str(k), f"{k} crops") for k in K_CHOICES], str(self.k), change=self.c("k"), label="How many")}'

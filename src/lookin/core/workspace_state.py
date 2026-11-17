@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from lookin.core import decision_rule
 from lookin.core import experiment_groups
 from lookin.core import library as lib
 from lookin.core import workspace_sources
@@ -111,6 +112,9 @@ def load_workspace_state(workspace: lib.Workspace, only=None) -> LoadedWorkspace
             loaded.warnings.append(f"Experiment {experiment.name!r} could not be read: {ex}")
             continue
         state.set_experiment_color(experiment.name, experiment.color)
+        problem = decision_rule.restore(state, experiment.name, experiment.decision_rule)
+        if problem:
+            loaded.warnings.append(problem)
         overlap = state.uuid_overlap(experiment.name)
         n_rows = len(state.experiments[experiment.name].df)
         if n_rows and overlap.matched < LOW_OVERLAP_SHARE * n_rows:

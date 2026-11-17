@@ -213,6 +213,16 @@ p { margin: 0 0 8px; }
 .sv.ok { color: var(--ink-2); }
 .sv.ok .ic { color: var(--acc); }
 .sv.warn { color: var(--warn); }
+.sv.rule { color: var(--acc-ink); }
+.sv.rule.on-eval { color: var(--err); }
+
+/* ---- the decision-rule badge after an experiment's name ---- */
+.rule-tag {
+  display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 999px; flex: none;
+  border: 1px solid var(--acc); color: var(--acc-ink); background: var(--acc-soft); font-size: 10.5px;
+  font-weight: 600; white-space: nowrap;
+}
+.rule-tag.on-eval { border-color: var(--err-line); color: var(--err); background: var(--err-soft); }
 
 /* ---- buttons and fields ---- */
 .btn {

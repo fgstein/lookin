@@ -32,6 +32,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
+from lookin.core import decision_rule
 from lookin.core import experiment_groups as eg
 from lookin.core import library
 from lookin.core import mlflow_client
@@ -46,7 +47,7 @@ from lookin.web import html as h
 from lookin.web.views.base import PromptDialog, View
 from lookin.web.views.files import FileBrowserDialog
 from lookin.web.views.trainhub import badges as trainhub_badges
-from lookin.web.views.widgets import GroupActions, experiment_dot, group_color_menu, groups_switch
+from lookin.web.views.widgets import GroupActions, experiment_dot, group_color_menu, groups_switch, rule_tag
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_DATASET = PACKAGE_ROOT / "data" / "example" / "dataset.csv"
@@ -486,6 +487,8 @@ class SourcesView(GroupActions, View):
         if original and original != row.name:
             name_input = (f'<div>{name_input}<div class="small muted ell" style="max-width:48ch" '
                           f'title="The name it came in with">was {h.e(original)}</div></div>')
+        if exp is not None and exp.decision_rule:
+            name_input = f'<div class="row-nw">{name_input}{rule_tag(state, row.loaded_name)}</div>'
         if row.loading:
             ids_html = f'<div class="progress-cell">{h.progress(row.status[0], _fraction(row.progress))}</div>'
         elif exp is not None and row.overlap is not None:
@@ -669,6 +672,13 @@ class SourcesView(GroupActions, View):
             f'<div class="row-nw" style="height:20px"><span>{h.e(label)}</span>'
             f'<span class="sp mono" style="font-weight:600;color:{"var(--ok)" if not v else "var(--warn)"}">{v:,}</span></div>'
             for label, v in lines)
+        if ov.other_split:
+            # Not a mismatch: rows of another split of the same CSV (the
+            # validation rows the Decision Rule tab tunes on).
+            rows += (f'<div class="row-nw" style="height:20px" title="Rows of the dataset CSV left out by the '
+                     f'row filter above -- e.g. the validation split. Not used by the other tabs; the Decision '
+                     f'Rule tab can tune on them."><span>Predictions on another split</span>'
+                     f'<span class="sp mono" style="font-weight:600;color:var(--ink-2)">{ov.other_split:,}</span></div>')
         return (f'<div class="subhead" style="margin-top:8px">Id match <span class="muted">dataset ↔ this experiment, '
                 f'{ov.matched:,} matched</span></div>{rows}')
 
@@ -1438,6 +1448,7 @@ class SourcesView(GroupActions, View):
                 prototypes_path=str(exp.model_prototypes_path or ""),
                 color=state.experiment_colors.get(name, ""),
                 group=getattr(state.groups.group_of(name), "id", ""),
+                decision_rule=decision_rule.record_to_text(exp.decision_rule),
             )
             origin = origins.get((name, path))
             if origin is None:
@@ -1446,7 +1457,8 @@ class SourcesView(GroupActions, View):
                 origin = self._origin_of(row, origins) if row is not None else None
             if origin is not None:
                 loaded = replace(origin, name=name, path=path, embeddings_path=loaded.embeddings_path,
-                                 prototypes_path=loaded.prototypes_path, color=loaded.color, group=loaded.group)
+                                 prototypes_path=loaded.prototypes_path, color=loaded.color, group=loaded.group,
+                                 decision_rule=loaded.decision_rule)
             experiments.append(loaded)
         return library.Mount(
             dataset_path=str(state.dataset.csv_path),
@@ -1590,6 +1602,9 @@ class SourcesView(GroupActions, View):
                 print(f"[lookin] library: could not restore experiment {e.name!r} from {e.path}: {message}", flush=True)
                 continue
             self.state.set_experiment_color(e.name, e.color)
+            problem = decision_rule.restore(self.state, e.name, e.decision_rule)
+            if problem:
+                self.s.toast(problem, "warn")
             if e.group and self.state.groups.get(e.group) is not None:
                 self.state.groups.assign(e.name, e.group)
             for path, loader, kind in (

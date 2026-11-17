@@ -27,6 +27,7 @@ TABS = (
     ("gallery", "Gallery", "Data"),
     ("metrics", "Metrics", "Evaluate"),
     ("calibration", "Calibration", "Evaluate"),
+    ("decision", "Decision Rule", "Evaluate"),
     ("confidence", "Confidence", "Evaluate"),
     ("compare", "Compare", "Evaluate"),
     ("embeddings", "Embeddings", "Representations"),
@@ -405,7 +406,7 @@ def _render_top(session) -> str:
                 f'{h.button("Manual", act_attr=h.act("app", "manual", page="dataset-class-balance"), icon_name="book", small=True)}</div>')
     title = TAB_TITLES.get(session.tab, "")
     return (f'<h1>{h.e(title)}</h1>'
-            f'<div class="top-r">{busy_html}{filter_chip(session)}{save_chips(session)}'
+            f'<div class="top-r">{busy_html}{rule_chip(session)}{filter_chip(session)}{save_chips(session)}'
             f'{h.button("Save snapshot", act_attr=h.act("app", "save_snapshot"), small=True, icon_name="bookmark")}'
             f'{theme_button()}</div>')
 
@@ -421,6 +422,26 @@ def filter_badge(session) -> str:
     if not state.dataset.is_filtered():
         return ""
     return f'<span class="nav-badge info">{len(state.dataset.df):,}</span>'
+
+
+def rule_chip(session) -> str:
+    """Shown on every tab while a decision rule is applied to an
+    experiment: its numbers everywhere are the biased rule's. Red when one
+    was tuned on the evaluated rows. Opens the Decision Rule tab."""
+    from lookin.core.decision_rule import is_tuned_on_evaluation
+
+    ruled = [(name, exp.decision_rule) for name, exp in session.state.experiments.items()
+             if getattr(exp, "decision_rule", None)]
+    if not ruled:
+        return ""
+    on_eval = [name for name, rule in ruled if is_tuned_on_evaluation(rule)]
+    tip = "A decision rule (per-class biases) is applied to:\n" + "\n".join(
+        f"{name}{' -- tuned on the evaluated rows: its numbers are optimistic' if name in on_eval else ''}"
+        for name, _ in ruled)
+    label = (f"Biased: {ruled[0][0]}" if len(ruled) == 1 else f"Biased: {len(ruled)} experiments")
+    return (f'<button type="button" class="sv rule{" on-eval" if on_eval else ""}"'
+            f'{h.act("app", "tab", tab="decision")} title="{h.e(tip)}">{h.icon("warn" if on_eval else "check", 13)}'
+            f'{h.e(label)}</button>')
 
 
 def filter_chip(session) -> str:

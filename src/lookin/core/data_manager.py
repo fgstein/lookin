@@ -409,6 +409,10 @@ class Dataset:
     # what the filter is applied *to*, so changing it never re-reads the
     # file. The same frame as `df` while no filter is applied.
     full_df: Optional[pd.DataFrame] = field(default=None, repr=False)
+    # The uuids of the CSV's rows the load-time row filter left out (the
+    # other splits): a results CSV holding predictions on them is expected,
+    # not a mismatch -- see UuidOverlap.other_split.
+    other_split_uuids: frozenset = field(default_factory=frozenset, repr=False)
 
     def __post_init__(self):
         if self.full_df is None:
@@ -624,6 +628,15 @@ class Experiment:
     model_prototypes: Optional[object] = field(default=None, repr=False)
     model_prototypes_path: Optional[str] = None
 
+    # -- decision rule (core/decision_rule.py) --
+    # The record of the per-class biases applied to this experiment, or
+    # None. While one is applied, `df` holds the biased scores -- what the
+    # network would output with those biases on its logits -- so every view
+    # reads the experiment as if it had been trained that way, and
+    # `raw_df` keeps the scores as read from the results CSV.
+    decision_rule: Optional[dict] = None
+    raw_df: Optional[pd.DataFrame] = field(default=None, repr=False)
+
     def n_classes(self) -> int:
         return len(self.score_cols)
 
@@ -706,6 +719,10 @@ class UuidOverlap:
     experiment_only: int
     dataset_dupes: int
     experiment_dupes: int
+    # Predictions on rows of the dataset CSV that the load-time row filter
+    # left out -- another split, such as the validation rows the Decision
+    # Rule tab tunes on. Expected, so not counted in experiment_only.
+    other_split: int = 0
 
 
 @dataclass
@@ -789,6 +806,7 @@ class AppState:
         if columns.has_ids():
             df[columns.uuid_col] = _uuids_as_str(df[columns.uuid_col])
 
+        other_split_uuids = frozenset()
         if row_filter is not None:
             filter_col, filter_value = row_filter
             if filter_col not in df.columns:
@@ -799,7 +817,10 @@ class AppState:
                      f"(available columns: {list(df.columns)})")
             else:
                 before = len(df)
-                df = df[df[filter_col].astype(str) == str(filter_value)].reset_index(drop=True)
+                keep = (df[filter_col].astype(str) == str(filter_value)).to_numpy()
+                if columns.has_ids():
+                    other_split_uuids = frozenset(_uuids_as_str(df.loc[~keep, columns.uuid_col]))
+                df = df[keep].reset_index(drop=True)
                 _log(f"row filter {filter_col}={filter_value!r}: kept {len(df):,}/{before:,} rows")
 
         df[columns.label_col] = _labels_as_str(df[columns.label_col])
@@ -822,7 +843,7 @@ class AppState:
         resolved_root = Path(image_root).expanduser().resolve() if image_root and image_root.strip() else None
         dataset = Dataset(
             df=df, columns=columns, base_dir=Path(csv_path).resolve().parent, image_root=resolved_root,
-            csv_path=Path(csv_path).resolve(), row_filter=row_filter,
+            csv_path=Path(csv_path).resolve(), row_filter=row_filter, other_split_uuids=other_split_uuids,
         )
         self.dataset = dataset
         if self.dataset_filter and self.dataset_filter_csv != dataset.csv_path:
@@ -1278,12 +1299,15 @@ class AppState:
         # row": they have one, it is just out of view.
         known = set(self.dataset.full_df[self.dataset.columns.uuid_col]) if self.dataset.is_filtered() \
             else dataset_set
+        unknown = experiment_set - known
+        other_split = len(unknown & self.dataset.other_split_uuids) if self.dataset.other_split_uuids else 0
         return UuidOverlap(
             matched=len(dataset_set & experiment_set),
             dataset_only=len(dataset_set - experiment_set),
-            experiment_only=len(experiment_set - known),
+            experiment_only=len(unknown) - other_split,
             dataset_dupes=int(dataset_uuids.duplicated().sum()),
             experiment_dupes=int(experiment_uuids.duplicated().sum()),
+            other_split=other_split,
         )
 
     def merged(self, experiment_name: str) -> pd.DataFrame:
@@ -1326,19 +1350,61 @@ class AppState:
             self._merged_cache_stamp = stamp
         return merged
 
-    def merge_rows(self, rows: pd.DataFrame, experiment_name: str) -> pd.DataFrame:
+    def raw_merged(self, experiment_name: str) -> pd.DataFrame:
+        """merged() with the scores as read from the results CSV, whatever
+        decision rule is applied: what the Decision Rule tab tunes and
+        compares against. The same frame as merged() when none is."""
+        experiment = self.experiments[experiment_name]
+        if experiment.raw_df is None:
+            return self.merged(experiment_name)
+        return self._merge_rows(self.dataset.df, experiment_name, raw=True)
+
+    def apply_decision_rule(self, experiment_name: str, rule: dict) -> None:
+        """Make `experiment_name` read as if its network carried the rule's
+        biases (core/decision_rule.biased_scores), in every view. Replaces a
+        rule already applied -- the biases are always applied to the scores
+        as read. Raises ValueError when the rule does not fit the
+        experiment (see decision_rule.check_record)."""
+        from lookin.core import decision_rule as dr
+
+        experiment = self.experiments[experiment_name]
+        raw = experiment.raw_df if experiment.raw_df is not None else experiment.df
+        biases = dr.check_record(rule, experiment.score_cols, raw[experiment.score_cols].to_numpy())
+        biased = raw.copy()
+        biased[experiment.score_cols] = dr.biased_scores(raw[experiment.score_cols].to_numpy(),
+                                                         rule["space"], biases)
+        experiment.raw_df = raw
+        experiment.df = biased
+        experiment.decision_rule = dict(rule)
+        self._invalidate_merged_cache(experiment_name)
+
+    def revert_decision_rule(self, experiment_name: str) -> bool:
+        """Back to the scores as read. Returns whether a rule was applied."""
+        experiment = self.experiments[experiment_name]
+        if experiment.raw_df is None:
+            experiment.decision_rule = None
+            return False
+        experiment.df = experiment.raw_df
+        experiment.raw_df = None
+        experiment.decision_rule = None
+        self._invalidate_merged_cache(experiment_name)
+        return True
+
+    def merge_rows(self, rows: pd.DataFrame, experiment_name: str, raw: bool = False) -> pd.DataFrame:
         """merged() for dataset rows that are not the loaded pool -- e.g. the
         validation rows read by read_dataset_split -- with the same review
         overlay, the same unlabelled-row drop and the same derived columns.
-        `rows` must carry the dataset's uuid and label columns. Not cached."""
+        `rows` must carry the dataset's uuid and label columns. Not cached.
+        `raw`: the scores as read, ignoring an applied decision rule."""
         if self.dataset is None:
             raise ValueError("No dataset loaded.")
         if not self.dataset.columns.has_ids():
             raise ValueError("The dataset has no uuid column, so it cannot be joined with an experiment.")
-        return self._merge_rows(rows, experiment_name)
+        return self._merge_rows(rows, experiment_name, raw=raw)
 
-    def _merge_rows(self, left: pd.DataFrame, experiment_name: str) -> pd.DataFrame:
+    def _merge_rows(self, left: pd.DataFrame, experiment_name: str, raw: bool = False) -> pd.DataFrame:
         experiment = self.experiments[experiment_name]
+        scores_df = experiment.raw_df if raw and experiment.raw_df is not None else experiment.df
         cols = self.dataset.columns
         _check_score_columns(experiment.score_cols, cols)
         # A metadata column sharing a class's name would keep that name in
@@ -1353,7 +1419,7 @@ class AppState:
             left = left.rename(columns={c: f"{c}_dataset" for c in clash})
         t0 = time.monotonic()
         merged = left.merge(
-            experiment.df, left_on=cols.uuid_col, right_on=experiment.uuid_col, how="inner",
+            scores_df, left_on=cols.uuid_col, right_on=experiment.uuid_col, how="inner",
             suffixes=("", "_result"),
         )
         _log(f"merge produced {len(merged):,} rows in {time.monotonic() - t0:.1f}s")

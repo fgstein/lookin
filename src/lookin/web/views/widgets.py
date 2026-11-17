@@ -292,6 +292,42 @@ def group_tag(state, name: str) -> str:
             f'{"" if state.groups.shown else " (groups hidden)"}">· {h.e(group.name)}</span>')
 
 
+def rule_tag(state, name: str) -> str:
+    """A badge after an experiment's name while a decision rule is applied
+    to it (core/decision_rule.py): every number shown for it is then the
+    biased rule's -- in red when the biases were tuned on the evaluated
+    rows, whose numbers are then optimistic."""
+    from lookin.core.decision_rule import is_tuned_on_evaluation
+
+    exp = state.experiments.get(name)
+    rule = getattr(exp, "decision_rule", None)
+    if not rule:
+        return ""
+    on_eval = is_tuned_on_evaluation(rule)
+    tip = ("Decision rule applied: read with per-class biases tuned on the evaluated rows -- its numbers are "
+           "optimistic." if on_eval else
+           "Decision rule applied: read with per-class biases tuned on validation rows.")
+    return (f'<span class="rule-tag{" on-eval" if on_eval else ""}" title="{h.e(tip)}">'
+            f'{"biased · tuned on test" if on_eval else "biased"}</span>')
+
+
+def experiment_label(state, name: str) -> str:
+    """An experiment's name as a dropdown shows it: with a word after it
+    while a decision rule is applied (see rule_tag)."""
+    from lookin.core.decision_rule import is_tuned_on_evaluation
+
+    rule = getattr(state.experiments.get(name), "decision_rule", None)
+    if not rule:
+        return name
+    return f"{name} · biased{' (tuned on test)' if is_tuned_on_evaluation(rule) else ''}"
+
+
+def experiment_options(state, names) -> list:
+    """(key, label) pairs of an experiment dropdown: the name is the key,
+    the label carries the decision-rule badge."""
+    return [(n, experiment_label(state, n)) for n in names]
+
+
 def groups_switch(target: str, state) -> str:
     """The one-click switch that draws the experiment groups in every chart,
     or every experiment on its own; nothing when there is no group. Runs
