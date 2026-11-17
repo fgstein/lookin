@@ -230,6 +230,35 @@ def _labels_as_str(series: pd.Series) -> pd.Series:
     return values.astype(str).astype(object).where(values.notna(), np.nan)
 
 
+def read_dataset_split(dataset: "Dataset", column: str, value: str) -> pd.DataFrame:
+    """The rows of the dataset's CSV whose `column` equals `value`, read
+    afresh from the file -- the loaded pool is normally one split (the
+    Sources tab's row filter), so another split, such as the validation
+    rows the Decision Rule tab tunes on, is never in memory. Only the uuid,
+    label and `column` columns are read; uuids and labels are normalised
+    exactly as load_dataset does, so the rows merge the same way. The
+    Filter tab's filter is not applied: it was written for the loaded pool.
+    Raises ValueError when the file or the column is missing."""
+    columns = dataset.columns
+    if dataset.csv_path is None:
+        raise ValueError("The dataset was not loaded from a CSV file, so its other splits cannot be read.")
+    if not columns.has_ids():
+        raise ValueError("The dataset has no uuid column, so its rows cannot be matched to predictions.")
+    path = str(dataset.csv_path)
+    wanted = {columns.uuid_col, columns.label_col, column}
+    with _readable_csv(path):
+        header = pd.read_csv(path, nrows=0).columns
+    if column not in header:
+        raise ValueError(f"The dataset CSV has no column '{column}'.")
+    df = _read_csv_with_progress(path, None, dtype={columns.uuid_col: str},
+                                 usecols=lambda c: c in wanted, **_label_na_options(path, columns.label_col))
+    df = df[df[column].astype(str) == str(value)].reset_index(drop=True)
+    df[columns.uuid_col] = _uuids_as_str(df[columns.uuid_col])
+    df[columns.label_col] = _labels_as_str(df[columns.label_col])
+    _log(f"read {len(df):,} row(s) where {column}={value!r} from {path}")
+    return df
+
+
 def argmax_ignoring_nan(scores: np.ndarray, block: int = 8192) -> tuple:
     """(index, value) of each row's highest score, a missing (NaN) score
     never being the highest -- np.argmax returns the first NaN, so a row
@@ -1277,7 +1306,6 @@ class AppState:
             return self._merged_cache_df
 
         experiment = self.experiments[experiment_name]
-        cols = self.dataset.columns
         overlap = self.uuid_overlap(experiment_name)
         _log(f"merging dataset ({len(self.dataset.df):,} rows) with experiment '{experiment_name}' "
              f"({len(experiment.df):,} rows): {overlap.matched:,} matching uuids, "
@@ -1290,8 +1318,29 @@ class AppState:
             _log(f"warning: duplicate uuids found (dataset: {overlap.dataset_dupes:,}, "
                  f"experiment: {overlap.experiment_dupes:,}) -- the join below may produce more "
                  f"rows than either input if the same uuid repeats on both sides")
+        merged = self._merge_rows(self.dataset.df, experiment_name)
+
+        if generation == self._merged_cache_gen:
+            self._merged_cache_name = experiment_name
+            self._merged_cache_df = merged
+            self._merged_cache_stamp = stamp
+        return merged
+
+    def merge_rows(self, rows: pd.DataFrame, experiment_name: str) -> pd.DataFrame:
+        """merged() for dataset rows that are not the loaded pool -- e.g. the
+        validation rows read by read_dataset_split -- with the same review
+        overlay, the same unlabelled-row drop and the same derived columns.
+        `rows` must carry the dataset's uuid and label columns. Not cached."""
+        if self.dataset is None:
+            raise ValueError("No dataset loaded.")
+        if not self.dataset.columns.has_ids():
+            raise ValueError("The dataset has no uuid column, so it cannot be joined with an experiment.")
+        return self._merge_rows(rows, experiment_name)
+
+    def _merge_rows(self, left: pd.DataFrame, experiment_name: str) -> pd.DataFrame:
+        experiment = self.experiments[experiment_name]
+        cols = self.dataset.columns
         _check_score_columns(experiment.score_cols, cols)
-        left = self.dataset.df
         # A metadata column sharing a class's name would keep that name in
         # the join (the dataset's side takes no suffix), and merged[score_cols]
         # would then read the metadata as that class's score -- a wrong
@@ -1329,11 +1378,6 @@ class AppState:
                                          for i in pred_idx]
             merged["predicted_score"] = pred_score
             merged["correct"] = merged["predicted_label"] == merged[cols.label_col]
-
-        if generation == self._merged_cache_gen:
-            self._merged_cache_name = experiment_name
-            self._merged_cache_df = merged
-            self._merged_cache_stamp = stamp
         return merged
 
     def crop_details(self, uid: Optional[str] = None, crop: Optional[str] = None,
