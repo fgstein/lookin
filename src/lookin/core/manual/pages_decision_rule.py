@@ -72,14 +72,23 @@ PAGES = (
             Para(
                 "One class at a time, the others fixed: a crop goes to class $c$ exactly when $b_c$ exceeds "
                 "$\\max_{k \\neq c}(\\log p_k + b_k) - \\log p_c$. Sorting those thresholds gives the objective "
-                "for every value of $b_c$ at once, and the best one is kept. Passes over the classes repeat "
-                "until no single bias can be moved for the better."
+                "for every value of $b_c$ at once, and the best one is kept. Once no single bias helps, the same "
+                "exact search is run on a common shift of two classes' biases: two classes confused with each "
+                "other often gain together at a third one's expense while neither gains alone. The search "
+                "alternates the two moves until neither helps."
             ),
-            Callout(CALLOUT_WARNING, "A local optimum", (
+            Para(
+                "It is run from several starting points -- every bias at 0, the class prior "
+                "($b_c = -\\log \\pi_c$, which undoes the advantage the training frequencies give the big "
+                "classes) and, with few classes, a few random points -- and the best end point is kept."
+            ),
+            Callout(CALLOUT_WARNING, "The best point found, not a proof", (
                 Para(
-                    "Each step is exact and the objective never decreases, but the end point is one where no "
-                    "*single* bias helps -- not necessarily the best set of biases overall. With many classes, "
-                    "a second Compute from the biases found can still move a little."
+                    "The objective is a step function of the biases with several peaks, so no search short of "
+                    "trying every combination proves it found the highest. Checked against such an exhaustive "
+                    "search on 3 and 4 classes, including the hard case of imbalanced classes confused with each "
+                    "other, it reached the optimum in every case tried; one class at a time alone missed up to "
+                    "0.13 of macro F1 there."
                 ),
             )),
             HowToRead((

@@ -89,6 +89,8 @@ MIN_GAIN = 1e-12
 BREAKPOINT_TOLERANCE = 1e-9
 RANDOM_STARTS = 4
 RANDOM_STARTS_MAX_CLASSES = 50
+# ...and rows x free classes: past it each start costs tens of seconds.
+RANDOM_STARTS_MAX_CELLS = 1_000_000
 RANDOM_START_SCALE = 1.0
 PAIRS_ALL_MAX_CLASSES = 40
 PAIRS_PER_CLASS = 4
@@ -700,7 +702,9 @@ def fit_biases(problem: Problem, spec: TuningSpec, start: Optional[np.ndarray] =
             starts.append(prior - prior[anchor])
         n_random = spec.random_starts
         if n_random is None:
-            n_random = RANDOM_STARTS if len(free) <= RANDOM_STARTS_MAX_CLASSES else 0
+            few = (len(free) <= RANDOM_STARTS_MAX_CLASSES
+                   and problem.n_rows * len(free) <= RANDOM_STARTS_MAX_CELLS)
+            n_random = RANDOM_STARTS if few else 0
         rng = np.random.default_rng(spec.seed)
         starts += [rng.normal(0.0, RANDOM_START_SCALE, k) for _ in range(n_random)]
 

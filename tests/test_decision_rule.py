@@ -315,3 +315,37 @@ def test_the_pair_sweep_is_shifting_both_biases_and_recomputing(objective, round
             trial = biases.copy()
             trial[[a, b]] += shift
             assert objective_values[j] == pytest.approx(_brute_objective(problem, spec, trial), abs=1e-12)
+
+
+def _hard(seed, n, k):
+    """Imbalanced classes, two of them mixed up with each other: where
+    moving one bias at a time gets stuck (see the study in the commit
+    that added pair moves)."""
+    rng = np.random.default_rng(seed)
+    prior = np.array([0.6, 0.25, 0.1, 0.05][:k])
+    prior /= prior.sum()
+    y = rng.choice(k, n, p=prior)
+    logits = rng.normal(size=(n, k))
+    logits[np.arange(n), y] += 1.4
+    rows = np.isin(y, (1, 2))
+    mix = 0.5 * (logits[rows, 1] + logits[rows, 2])
+    logits[rows, 1] = 0.3 * logits[rows, 1] + 0.7 * mix
+    logits[rows, 2] = 0.3 * logits[rows, 2] + 0.7 * mix
+    logits += np.log(prior)
+    logp = (logits - np.log(np.exp(logits).sum(1, keepdims=True))).astype(np.float32)
+    return dr.Problem([f"c{i}" for i in range(k)], dr.SPACE_LOG_PROB, logp, y, np.bincount(y, minlength=k), {})
+
+
+@pytest.mark.parametrize("seed", [0, 2, 4])
+def test_the_search_reaches_the_brute_force_optimum_where_one_bias_at_a_time_does_not(seed):
+    problem = _hard(seed, 300, 3)
+    spec = dr.TuningSpec(objective=dr.OBJ_MACRO_F1, locked=("c0",))
+    best = -1.0
+    for b1 in np.linspace(-4, 4, 161):  # every b1 on a grid, the exact best b2 for each
+        sweep = dr.class_sweep(problem, np.array([0.0, b1, 0.0]), "c2", spec)
+        best = max(best, float(np.nanmax(sweep.objective)))
+    found = dr.fit_biases(problem, spec)
+    assert found.objective_after >= best - 1e-9
+    one_at_a_time = dr.fit_biases(problem, dr.TuningSpec(objective=dr.OBJ_MACRO_F1, locked=("c0",),
+                                                         pair_moves=False, prior_start=False, random_starts=0))
+    assert one_at_a_time.objective_after < best - 1e-3  # what the pair moves are for

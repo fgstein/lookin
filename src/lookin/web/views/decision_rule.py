@@ -755,8 +755,9 @@ class DecisionRuleView(RebuildView):
                if r.reference else "")
         absent = f" No tuning row for: {', '.join(map(str, r.absent))}." if r.absent else ""
         conv = "" if r.converged else f" Stopped after {r.passes} passes before converging."
-        text = (f'<div class="muted small"><i>Fitted on {r.n_rows:,} rows: no single class\'s bias can be moved for '
-                f'the better from here (a local optimum).{h.e(ref)}{h.e(absent)}{h.e(conv)}</i></div>')
+        text = (f'<div class="muted small"><i>Fitted on {r.n_rows:,} rows, the best of {r.starts} starting '
+                f'point(s): no class\'s bias, nor any pair of them moved together, can be changed for the better '
+                f'from here.{h.e(ref)}{h.e(absent)}{h.e(conv)}</i></div>')
         if fit.cross is not None:
             c = fit.cross
             text += h.banner(
