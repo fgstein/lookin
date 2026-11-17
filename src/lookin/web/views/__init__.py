@@ -20,6 +20,7 @@ _SPECS = {
     "confidence": "lookin.web.views.confidence:ConfidenceView",
     "compare": "lookin.web.views.compare:CompareView",
     "embeddings": "lookin.web.views.embeddings:EmbeddingsView",
+    "embcompare": "lookin.web.views.embcompare:EmbeddingCompareView",
     "prototypes": "lookin.web.views.prototypes:PrototypesView",
     "cleaning": "lookin.web.views.cleaning:CleaningView",
     "notes": "lookin.web.views.notes:NotesView",

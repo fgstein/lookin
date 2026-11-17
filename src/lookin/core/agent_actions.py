@@ -338,7 +338,10 @@ def rename_experiment(workspace_id: str, name: str, new_name: str) -> dict:
                 return True
         return False
 
-    return _workspace_out(_update(workspace, change), renamed={name: new_name})
+    out = _workspace_out(_update(workspace, change), renamed={name: new_name})
+    from lookin.core.embedding_compare import rename_member_everywhere
+    rename_member_everywhere(workspace.id, name, new_name)
+    return out
 
 
 def set_experiment_color(workspace_id: str, name: str, color: str = "") -> dict:
@@ -776,3 +779,67 @@ def regenerate_notes_recap(workspace_id: str) -> dict:
         out = tools._context(entry, "notes")
     out.update({"path": str(path), "recap": recap, "started": current is None})
     return tools._clean(out)
+
+
+# ---- one model, several datasets (core/embedding_compare.py) ----------------
+
+def set_embedding_comparison(workspace_id: str, members: list | None = None, reference: int = 0) -> dict:
+    """Save which experiments the workspace's Compare embeddings tab
+    compares -- as references to them, never copies. Refused unless every
+    member can be read and comes from the reference's model (the same
+    prototypes); an empty list clears the comparison."""
+    from lookin.core import embedding_compare as ec
+
+    workspace = find_workspace(workspace_id)
+    if not members:
+        value = {}
+    else:
+        refs, _, _ = tools.resolve_members(workspace.id, members)
+        if len(refs) < 2:
+            raise ValueError("A comparison needs at least two experiments.")
+        if not 0 <= int(reference) < len(refs):
+            raise ValueError(f"reference must be an index into the {len(refs)} members.")
+        loaded, problems = ec.load_members(refs)
+        if problems:
+            raise ValueError("Not saved -- some members could not be read: " + " ".join(problems))
+        problem = ec.comparison_problem(loaded, int(reference))
+        if problem:
+            raise ValueError(f"Not saved: {problem}")
+        value = ec.comparison_to_json(refs, int(reference))
+
+    def change(fresh: lib.Workspace) -> bool:
+        nonlocal value
+        if value:
+            # The members change; the projection plan saved with them stays.
+            plan, mode = ec.comparison_plan(fresh.embedding_comparison)
+            value = ec.comparison_to_json(ec.refs_from_json(value["members"]), value["reference"], plan, mode)
+        if fresh.embedding_comparison == value:
+            return False
+        fresh.embedding_comparison = value
+        return True
+
+    fresh = _update(workspace, change)
+    return _workspace_out(fresh, embedding_comparison=value or None,
+                          open_url=links.link(fresh.id, tab="embcompare"))
+
+
+
+# ---- saved views of the Embeddings and Compare embeddings tabs ---------------
+
+def rename_saved_view(workspace_id: str, view_id: str, name: str) -> dict:
+    from lookin.core import view_catalogue as vc
+
+    workspace = find_workspace(workspace_id)
+    view = vc.rename_view(workspace, view_id, name)
+    return _workspace_out(workspace, view={"id": view.id, "name": view.name, "tab": view.tab},
+                          open_url=links.link(workspace.id, tab=view.tab))
+
+
+def delete_saved_view(workspace_id: str, view_id: str, confirm: str = "") -> dict:
+    from lookin.core import view_catalogue as vc
+
+    if confirm != view_id:
+        raise ValueError("Give the view's id a second time as `confirm` to delete it.")
+    workspace = find_workspace(workspace_id)
+    vc.delete_view(workspace, view_id)
+    return _workspace_out(workspace, deleted_view=view_id)

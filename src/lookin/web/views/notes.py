@@ -234,6 +234,7 @@ class NotesView(View):
 
     def on_download(self, html: str = "", rev=0, **_):
         self._take(html, rev)
-        name = re.sub(r"[^A-Za-z0-9._-]+", "_", self._title()).strip("_") or "notes"
-        key = self.s.put_download(self.text.encode("utf-8"), f"{name}_notes.md", "text/markdown; charset=utf-8")
-        self.s.cmd(download=f"/dl/{self.s.sid}/{key}", filename=f"{name}_notes.md")
+        from lookin.core.export_names import export_name, workspace_part
+        name = export_name(workspace_part(self.s.current_workspace, self.state), "notes", ext="md")
+        key = self.s.put_download(self.text.encode("utf-8"), name, "text/markdown; charset=utf-8")
+        self.s.cmd(download=f"/dl/{self.s.sid}/{key}", filename=name)

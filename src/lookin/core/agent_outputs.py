@@ -27,6 +27,7 @@ from lookin.core import class_focus as cf
 from lookin.core import links
 from lookin.core import mosaic
 from lookin.core.chart_style import HEAVY_WORK_LOCK, color_for_experiment
+from lookin.core.export_names import export_name
 from lookin.core.images import LUT_NONE, LUT_OPTIONS, quarter_turns_for_roll
 from lookin.core.metrics import MACRO_AVERAGE, compute_curves
 
@@ -182,7 +183,8 @@ def plot_chart(workspace_id: str, chart: str, experiments: list | None = None, m
     if notes:
         out["notes"] = notes
     if save_to:
-        out["saved"] = _save_png(png, save_to, f"{chart}.png")
+        out["saved"] = _save_png(png, save_to, export_name(entry.loaded.workspace.label(), tab, chart,
+                                                            metric or target or column))
     return tools._clean(out), png
 
 
@@ -364,7 +366,8 @@ def make_mosaic(workspace_id: str, experiment: str = "", uuids: list | None = No
         if name and frames:
             out["frames"] = "green: predicted right, red: predicted wrong"
     if save_to:
-        out["saved"] = _save_png(png, save_to, "mosaic.png")
+        out["saved"] = _save_png(png, save_to, export_name(entry.loaded.workspace.label(), "Gallery", "mosaic",
+                                                            name or ""))
     return tools._clean(out), png
 
 
@@ -414,9 +417,60 @@ def generate_report(workspace_id: str, experiments: list | None = None, format: 
                               comparison_pair=pair, snapshot_id=snapshot_id, report_cls=writer,
                               include_per_class_charts=per_class_charts,
                               notes=(nt.read(entry.loaded.workspace) or "") if notes else "")
-        path = destination(dest, default_report_name(state, extension=format))
+        path = destination(dest, default_report_name(state, extension=format, workspace=entry.loaded.workspace))
         report.write(path)
     out = file_answer(path, experiments=names, format=format)
     if snapshot_id:
         out["snapshot"] = {"id": snapshot_id, "open_url": links.link(snapshot_id=snapshot_id)}
     return out
+
+
+# ---- one model, several datasets ---------------------------------------------
+
+def plot_embedding_comparison(workspace_id: str, members: list | None = None, reference: int | None = None,
+                              mode: str = "joint", method: str = "pca", color_by: str = "experiment",
+                              display: str = "overlay", max_points: int = DEFAULT_PROJECTION_POINTS,
+                              save_to: str = "", sampling: str = "real", fit_points: int = 0,
+                              per_class: int = 0) -> tuple:
+    """(answer, png): the Compare embeddings tab's map, drawn as the tab
+    draws it -- overlaid, or one panel per experiment."""
+    from lookin.core import embedding_compare as ec
+
+    if display not in ("overlay", "panels"):
+        raise ValueError(f"display must be overlay or panels; got {display!r}.")
+    if color_by not in ec.COLOR_MODES:
+        raise ValueError(f"color_by must be one of {', '.join(ec.COLOR_MODES)}; got {color_by!r}.")
+    with tools._lock, HEAVY_WORK_LOCK:
+        refs, saved, workspace = tools.resolve_members(workspace_id, members)
+        reference = saved if reference is None else int(reference)
+        if not 0 <= reference < len(refs):
+            raise ValueError(f"reference must be an index into the {len(refs)} members.")
+        loaded, problems = ec.load_members(refs)
+        if problems:
+            raise ValueError("Some members could not be read: " + " ".join(problems))
+        problem = ec.comparison_problem(loaded, reference)
+        if problem:
+            raise ValueError(f"Not compared: {problem}")
+        from lookin.core import projection_plan as pp
+
+        if sampling not in pp.SAMPLINGS:
+            raise ValueError(f"sampling must be one of {', '.join(pp.SAMPLINGS)}; got {sampling!r}.")
+        plan = pp.plan_from_json({"method": method, "sampling": sampling, "display_size": max_points,
+                                  "fit_size": fit_points or max_points,
+                                  "per_class": per_class or pp.DEFAULT_PER_CLASS})
+        cmap = ec.project_members(loaded, reference, mode=mode, plan=plan)
+        names = [m.name for m in loaded]
+        colors = ec.group_colors(loaded, cmap, color_by, {n: color_for_experiment(n, names) for n in names})
+        title = f"{method.upper()} -- {'fitted on all' if mode == ec.PROJ_JOINT else 'fitted on the reference'}"
+        draw = charts.embedding_comparison_panels if display == "panels" else charts.embedding_comparison_overlay
+        fig = draw(loaded, cmap, color_by, colors, title)
+        png = charts.figure_png(fig)
+    answer = {"workspace_id": workspace.id, "title": title, "reference": loaded[reference].name,
+              "members": names, "points_per_member": [len(r) for r in cmap.rows],
+              "fitted_per_member": [len(f) for f in cmap.fit_rows], "notes": cmap.notes,
+              "warnings": [w for m in loaded for w in m.warnings],
+              "open_url": links.link(workspace.id, tab="embcompare")}
+    if save_to:
+        answer["saved"] = _save_png(png, save_to, export_name(workspace.label(), "Compare embeddings", method, mode,
+                                                               f"by-{color_by}"))
+    return tools._clean(answer), png

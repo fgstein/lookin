@@ -224,14 +224,17 @@ class Carousel:
 
     `shuffle_toggle`: offer the shuffle button (a host with its own shuffle
     turns it off). `outcome_borders`: frame each crop green or red by
-    whether the prediction it carries ("correct") was right."""
+    whether the prediction it carries ("correct") was right. `foreign`:
+    the crops are not the session's dataset (Compare embeddings shows other
+    workspaces' crops), so nothing that reads the session's dataset is
+    offered -- no review, no "Find similar", no details panel."""
 
     def __init__(self, owner, session, dataset, total: int, page_provider: Callable[[int, int], list],
                  crop_col: str, uuid_col: Optional[str] = None, highlight_uuid=None,
                  review_source: str = "", suggestions: Optional[dict] = None,
                  label_col: Optional[str] = None, chrome_height: int = 0, action: str = "car",
                  chrome: Optional[tuple] = None, shuffle_toggle: bool = True, outcome_borders: bool = False,
-                 list_id: str = ""):
+                 list_id: str = "", foreign: bool = False):
         self.owner = owner
         self.s = session
         self.dataset = dataset
@@ -247,6 +250,7 @@ class Carousel:
         self.chrome = chrome or (DIALOG_CHROME_W, DIALOG_CHROME_H)
         self.shuffle_toggle = shuffle_toggle
         self.outcome_borders = outcome_borders
+        self.foreign = foreign
         self.action = action
         self.loaded = 0                 # crops in the grid so far
         self.gen = 0                    # bumped whenever the grid starts over
@@ -264,11 +268,11 @@ class Carousel:
     # ---- what the mosaic is allowed to show ----
 
     def _reviewable(self) -> bool:
-        return bool(self.review_source and getattr(self.s.state, "review", None) is not None
+        return bool(not self.foreign and self.review_source and getattr(self.s.state, "review", None) is not None
                     and self.uuid_col is not None)
 
     def _offers_similarity(self) -> bool:
-        return bool(self.review_source != "similarity" and self.uuid_col and similarity_available(self.s))
+        return bool(not self.foreign and self.review_source != "similarity" and self.uuid_col and similarity_available(self.s))
 
     # ---- geometry ----
 
@@ -389,6 +393,8 @@ class Carousel:
 
     def _info_url(self, rec: dict) -> str:
         """Where the full-size view's (i) panel reads this crop's details."""
+        if self.foreign:
+            return ""
         uid = rec.get(self.uuid_col) if self.uuid_col else None
         return details_url(self.s, uid=uid, crop=None if uid is not None else rec.get(self.crop_col))
 
@@ -548,13 +554,15 @@ class CarouselDialog(Dialog):
 
     def __init__(self, session, title: str, dataset, total: int, page_provider, crop_col: str,
                  uuid_col=None, highlight_uuid=None, review_source: str = "", suggestions=None,
-                 label_col=None, header_html: str = "", chrome_height: int = 0):
+                 label_col=None, header_html: str = "", chrome_height: int = 0, outcome_borders: bool = False,
+                 foreign: bool = False):
         super().__init__(title, width=4000)
         self.session = session
         self.header_html = header_html
         self.carousel = Carousel(self, session, dataset, total, page_provider, crop_col, uuid_col,
                                  highlight_uuid, review_source, suggestions, label_col,
-                                 chrome_height=chrome_height + (40 if header_html else 0))
+                                 chrome_height=chrome_height + (40 if header_html else 0),
+                                 outcome_borders=outcome_borders, foreign=foreign)
 
     def body(self) -> str:
         head = f'<div class="car-head">{self.header_html}</div>' if self.header_html else ""
@@ -570,12 +578,14 @@ class CarouselDialog(Dialog):
 
 
 def open_carousel(session, title: str, records: list, crop_col: str, uuid_col=None, highlight_uuid=None,
-                  review_source: str = "", suggestions=None, label_col=None, header_html: str = "") -> CarouselDialog:
+                  review_source: str = "", suggestions=None, label_col=None, header_html: str = "",
+                  outcome_borders: bool = False) -> CarouselDialog:
     """build_carousel_from_list, as a dialog: a small, fully materialized
     list of row dicts."""
     dialog = CarouselDialog(session, title, session.state.dataset, len(records),
                             lambda start, end: records[start:end], crop_col, uuid_col, highlight_uuid,
-                            review_source, suggestions, label_col, header_html=header_html)
+                            review_source, suggestions, label_col, header_html=header_html,
+                            outcome_borders=outcome_borders)
     session.open_dialog(dialog)
     return dialog
 
@@ -597,15 +607,63 @@ def open_similarity(session, query_uuid: str) -> None:
     session.open_dialog(SimilarityDialog(session, query_uuid, previous))
 
 
+# "Search in" keys of the similarity search: an experiment of this session,
+# or one of another workspace (same model -- the same prototypes).
+LOCAL_PREFIX = "local:"
+LIBRARY_PREFIX = "lib:"
+# The side-by-side view of a crop and its nearest one.
+PAIR_SIZE = 200
+
+
+def nearest_pair_html(session, query: dict, nearest: Optional[dict], similarity: Optional[float]) -> str:
+    """A crop and the one nearest to it, side by side and large, with what
+    each is: {"path", "record", "title", "lines"} per side."""
+    from lookin.web.views.media import crop_img
+
+    def side(item, caption):
+        if item is None:
+            return ""
+        lines = "".join(f'<div class="small">{h.e(t)}</div>' for t in item.get("lines", []) if t)
+        return (f'<div class="nn-side"><div class="small muted">{h.e(caption)}</div>'
+                f'{crop_img(session, item["path"], item.get("record"), size=PAIR_SIZE, alt=item.get("title", ""), zoom=True)}'
+                f'<b class="small mono ell" title="{h.e(item.get("title", ""))}">{h.e(item.get("title", ""))}</b>{lines}</div>')
+
+    middle = (f'<div class="nn-sim"><span class="muted small">similarity</span><b>{similarity:.3f}</b></div>'
+              if similarity is not None else "")
+    return (f'<div class="nn-pair">{side(query, "This crop")}{middle}'
+            f'{side(nearest, "Its nearest crop") if nearest is not None else ""}</div>')
+
+
+def _describe(record: dict, label_col, experiment: str = "") -> list:
+    label = record.get(label_col) if label_col else record.get("label")
+    lines = [f"label: {label}" if label is not None and label == label else "no label"]
+    if record.get("predicted_label") is not None:
+        lines.append(f"predicted: {record['predicted_label']}")
+    if experiment:
+        lines.append(experiment)
+    return lines
+
+
 class SimilarityDialog(Dialog):
+    """The crops nearest to one crop -- in an experiment of this session, or
+    in one of another workspace of the library that comes from the same
+    model (the same prototypes): "given this crop, what is closest to it
+    over there?". The nearest one is shown beside it, large."""
+
     def __init__(self, session, query_uuid: str, experiment=None):
         super().__init__(f"Crops most like {query_uuid}", width=4000)
         self.session = session
         self.query = str(query_uuid)
         names = experiments_with_embeddings(session)
-        self.experiment = experiment if experiment in names else (names[0] if names else None)
+        source = experiment if experiment in names else (names[0] if names else None)
+        self.source = source                  # the embedding space the query comes from
+        self.search_in = (LOCAL_PREFIX + source) if source else ""
+        wanted = getattr(session, "_similarity_target", "")
+        if wanted and wanted.startswith(LIBRARY_PREFIX):
+            self.search_in = wanted
         self.k = DEFAULT_K
         self.summary = ""
+        self.pair_html = ""
         self.message = ("", "info")
         self.carousel: Optional[Carousel] = None
         self._compute()
@@ -614,22 +672,121 @@ class SimilarityDialog(Dialog):
         return (f'{h.icon("search", 16, "c-acc")}<span>{h.e(self.title)}</span>'
                 f'<span class="grow"></span>{h.info_btn("nearest-neighbours")}')
 
-    def _compute(self) -> None:
+    # ---- where to search ----
+
+    def _library_targets(self) -> list:
+        """(key, label) of the library's experiments of another workspace
+        with this experiment's prototypes."""
+        from lookin.core import embedding_compare as ec
+
         s = self.session
+        if not self.source or self.source not in s.state.experiments:
+            return []
+        protos = s.state.experiments[self.source].model_prototypes
+        if protos is None:
+            return []
+        current = getattr(s, "current_workspace", None)
+        try:
+            listed = [r for r in ec.comparable_experiments()
+                      if r["embeddings"] and (current is None or r["workspace_id"] != current.id)]
+            same, _ = ec.candidates_for(protos, listed)
+        except Exception:  # noqa: BLE001 -- the session's own experiments are still offered
+            traceback.print_exc()
+            return []
+        return [(f'{LIBRARY_PREFIX}{r["workspace_id"]}/{r["experiment"]}', f'{r["workspace"]} / {r["experiment"]}')
+                for r in same]
+
+    def _targets(self) -> list:
+        local = [(LOCAL_PREFIX + n, f"{n} (this workspace)") for n in experiments_with_embeddings(self.session)]
+        return local + self._library_targets()
+
+    # ---- searching ----
+
+    def _query_side(self, context) -> Optional[dict]:
+        s = self.session
+        row = context["row_by_uuid"].get(self.query) if context is not None else None
+        if row is None:
+            return None
+        label_col = s.state.dataset.columns.label_col
+        try:
+            path = s.state.dataset.resolve_crop_path(row[context["crop_col"]])
+        except Exception:  # noqa: BLE001
+            return None
+        return {"path": path, "record": row, "title": self.query, "lines": _describe(row, label_col, self.source)}
+
+    def _compute(self) -> None:
         self.carousel = None
         self.summary = ""
+        self.pair_html = ""
         self.message = ("", "info")
-        if not self.experiment:
+        if not self.source:
             self.message = ("No loaded experiment has an embeddings sidecar attached -- add one on the Sources tab.", "info")
             return
         try:
-            context = build_analysis_context(s.state, self.experiment)
+            if self.search_in.startswith(LIBRARY_PREFIX):
+                self._compute_library(self.search_in[len(LIBRARY_PREFIX):])
+            else:
+                self._compute_local(self.search_in[len(LOCAL_PREFIX):] or self.source)
         except Exception as ex:  # noqa: BLE001
             traceback.print_exc()
-            self.message = (f"Could not read the embeddings: {ex}", "error")
+            self.message = (f"Could not search: {ex}", "error")
+
+    def _compute_library(self, key: str) -> None:
+        from lookin.core import embedding_compare as ec
+
+        s = self.session
+        workspace_id, _, experiment = key.partition("/")
+        context = build_analysis_context(s.state, self.source)
+        if context is None or self.query not in context["row_by_uuid"]:
+            self.message = (f"{self.query} has no embedding in '{self.source}', the space it is searched from.", "info")
             return
+        member = ec.load_member(ec.MemberRef(workspace_id, experiment))
+        check = ec.check_prototypes(s.state.experiments[self.source].model_prototypes, member.prototypes,
+                                    self.source, member.name)
+        if not check.ok:
+            self.message = (f"Not searched: {check.reason}", "error")
+            return
+        position = int(np.flatnonzero(context["uuids"] == self.query)[0])
+        found = ec.nearest_to_vector(member.embeddings, member.uuids, context["embeddings"][position],
+                                     k=self.k, labels=member.labels)
+        if not found:
+            self.message = (f"'{member.name}' has no crop with an embedding.", "info")
+            return
+        index = {u: i for i, u in enumerate(member.uuids.tolist())}
+        records = []
+        for n in found:
+            record = member.record(index[n.uuid])
+            record["similarity"] = round(n.similarity, 4)
+            records.append(record)
+        query = self._query_side(context)
+        best = records[0]
+        self.pair_html = nearest_pair_html(s, query, {"path": best["path"], "record": best, "title": best["uuid"],
+                                                     "lines": _describe(best, "label", member.name)},
+                                           found[0].similarity)
+        own = query["record"].get(s.state.dataset.columns.label_col) if query else None
+        same = sum(1 for n in found if own is not None and n.label == str(own))
+        self.summary = (f"{len(found)} nearest in '{member.name}' (another workspace, the same model)"
+                        + (f"; {same}/{len(found)} carry this crop's label ({own})" if own is not None else "")
+                        + f"; similarity {found[0].similarity:.3f} down to {found[-1].similarity:.3f}.")
+        labels = {r.get("label") for r in records} | {r.get("predicted_label") for r in records}
+
+        class _Paths:
+            def resolve_crop_path(self, path):
+                from pathlib import Path
+                return Path(str(path))
+
+            def labels(self):
+                return sorted({str(x) for x in labels if x}, key=str)
+
+        self.carousel = Carousel(self, s, _Paths(), len(records), lambda a, b: records[a:b], "path", "uuid",
+                                 label_col="label", chrome_height=70 + PAIR_SIZE + 90, outcome_borders=True,
+                                 foreign=True)
+
+    def _compute_local(self, experiment: str) -> None:
+        s = self.session
+        context = build_analysis_context(s.state, experiment)
         if context is None:
-            self.message = (f"'{self.experiment}' has no embeddings attached.", "info")
+            self.message = (f"'{experiment}' has no embeddings attached.", "info")
             return
         inference = None
         if self.query not in context["row_by_uuid"]:
@@ -641,7 +798,7 @@ class SimilarityDialog(Dialog):
             neighbours = nearest_neighbours(context["embeddings"], context["uuids"], self.query,
                                             k=self.k, labels=context["labels"])
         if not neighbours:
-            self.message = (f"{self.query} has no embedding in '{self.experiment}' -- a sidecar "
+            self.message = (f"{self.query} has no embedding in '{experiment}' -- a sidecar "
                             f"covering only part of the dataset is normal, not an error.", "info")
             return
         row_by_uuid = context["row_by_uuid"]
@@ -651,14 +808,14 @@ class SimilarityDialog(Dialog):
             classes = {n.label for n in neighbours if n.label is not None}
             top = neighbours[0]
             self.summary = (
-                f"{len(neighbours)} nearest in '{self.experiment}', to a crop from the "
+                f"{len(neighbours)} nearest in '{experiment}', to a crop from the "
                 f"'{inference.name}' inference (not in the dataset, so it has no label to compare "
                 f"against). Nearest is {top.label} at {top.similarity:.3f}, down to "
                 f"{neighbours[-1].similarity:.3f} across {len(classes)} class(es).")
         else:
             same = sum(1 for n in neighbours if n.label == str(query_label))
             self.summary = (
-                f"{len(neighbours)} nearest in '{self.experiment}'. "
+                f"{len(neighbours)} nearest in '{experiment}'. "
                 f"{same}/{len(neighbours)} share this crop's label ({query_label}); "
                 f"similarity {neighbours[0].similarity:.3f} down to {neighbours[-1].similarity:.3f}. "
                 f"A crop whose neighbours are mostly another class is either mislabelled or "
@@ -673,24 +830,50 @@ class SimilarityDialog(Dialog):
         if not records:
             self.message = ("The neighbours are not in the loaded pool.", "info")
             return
+        query = self._query_side(context) if inference is None else None
+        best = records[0]
+        try:
+            best_path = s.state.dataset.resolve_crop_path(best[context["crop_col"]])
+            self.pair_html = nearest_pair_html(
+                s, query, {"path": best_path, "record": best, "title": str(best.get(context["uuid_col"], "")),
+                           "lines": _describe(best, label_col, experiment)}, neighbours[0].similarity) if query else ""
+        except Exception:  # noqa: BLE001 -- the list below is what matters
+            self.pair_html = ""
         self.carousel = Carousel(self, s, s.state.dataset, len(records), lambda a, b: records[a:b],
                                  context["crop_col"], context["uuid_col"], highlight_uuid=self.query,
-                                 review_source="similarity", label_col=label_col, chrome_height=70)
+                                 review_source="similarity", label_col=label_col,
+                                 chrome_height=70 + (PAIR_SIZE + 90 if self.pair_html else 0))
 
     def body(self) -> str:
         names = experiments_with_embeddings(self.session)
+        targets = self._targets()
         pickers = (f'<div class="row">'
-                   f'{h.select([(n, n) for n in names], self.experiment or "", change=self.c("experiment"), label="Embedding space", title="Similarity is measured in this run's embedding space -- two models disagree about what looks alike.")}'
-                   f'{h.select([(str(k), f"{k} crops") for k in K_CHOICES], str(self.k), change=self.c("k"), label="How many")}'
+                   f'{h.select(targets, self.search_in, change=self.c("target"), label="Search in", title="The experiment searched: of this workspace, or of another one with the same model (the same prototypes)")}'
+                   + (h.select([(n, n) for n in names], self.source or "", change=self.c("experiment"),
+                               label="From the space of", title="Which experiment's embedding of this crop is searched with")
+                      if self.search_in.startswith(LIBRARY_PREFIX) and len(names) > 1 else "")
+                   + f'{h.select([(str(k), f"{k} crops") for k in K_CHOICES], str(self.k), change=self.c("k"), label="How many")}'
                    f'</div>')
         summary = f'<div class="muted small" style="margin:6px 0">{h.e(self.summary)}</div>' if self.summary else ""
         text, kind = self.message
         msg = h.banner(text, kind) if text else ""
-        return pickers + summary + msg + (self.carousel.render() if self.carousel else "")
+        return pickers + summary + msg + self.pair_html + (self.carousel.render() if self.carousel else "")
+
+    def on_target(self, value: str = "", **_):
+        self.search_in = value
+        if value.startswith(LOCAL_PREFIX):
+            self.source = value[len(LOCAL_PREFIX):] or self.source
+            self.session._similarity_experiment = self.source
+        self.session._similarity_target = value
+        self._compute()
+        self.refresh()
 
     def on_experiment(self, value: str = "", **_):
-        self.experiment = value or None
-        self.session._similarity_experiment = self.experiment
+        if value:
+            self.source = value
+            self.session._similarity_experiment = value
+            if not self.search_in.startswith(LIBRARY_PREFIX):
+                self.search_in = LOCAL_PREFIX + value
         self._compute()
         self.refresh()
 

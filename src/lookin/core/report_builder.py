@@ -341,6 +341,7 @@ def _add_comparison(report: Report, state, baseline: str, candidate: str, focus:
         section.blocks.append(report.dataframe(moved_out))
 
 
-def default_report_name(state, extension: str = "html") -> str:
-    stem = Path(state.dataset.csv_path).stem if state.dataset and state.dataset.csv_path else "lookin"
-    return f"{stem}_report_{datetime.now().strftime('%Y%m%d_%H%M')}.{extension}"
+def default_report_name(state, extension: str = "html", workspace=None) -> str:
+    """lookin_<workspace>_Metrics_report_<date>.<ext> (core/export_names.py)."""
+    from lookin.core.export_names import export_name, workspace_part
+    return export_name(workspace_part(workspace, state), "Metrics", "report", ext=extension)

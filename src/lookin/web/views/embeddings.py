@@ -29,6 +29,8 @@ from lookin.core import class_focus as cf
 from lookin.core import embedding_analysis as ea
 from lookin.core import point_coloring as pc
 from lookin.core import point_filters as pf
+from lookin.core import projection_plan as pp
+from lookin.core import view_catalogue as vc
 from lookin.core.chart_style import short_name, subplots
 from lookin.core.class_focus import FOCUS_MAX
 from lookin.core.data_manager import DATASET_SOURCE_GROUP
@@ -38,7 +40,7 @@ from lookin.core.embedding_context import build_analysis_context, coverage_note,
 from lookin.core.prototype_source import KMEANS_COLOR, MODEL_COLOR
 from lookin.web import html as h
 from lookin.web.session import checkpoint
-from lookin.web.views.base import StaleTracking, View
+from lookin.web.views.base import NO_RENDER, StaleTracking, View
 from lookin.web.views.carousel import open_carousel
 from lookin.web.views.files import menu
 from lookin.web.views.common import short_column_labels
@@ -225,6 +227,11 @@ class _RunResult:
     # ticking a set on costs a transform rather than a projection.
     overlay_proj: dict = field(default_factory=dict)
     overlay_rows: dict = field(default_factory=dict)
+    # The plan the run followed (core/projection_plan.py): `idx` are the
+    # crops shown, the first `n_fit` of what the fit saw were its fit set.
+    plan: object = None
+    n_fit: int = 0
+    plan_note: str = ""
 
 
 @dataclass
@@ -272,7 +279,15 @@ class EmbeddingsView(StaleTracking, View):
 
         self.experiment = None
         self.method = "pca"
-        self.sample_value = "1500"
+        # Which crops the projection is fitted on, and which it shows
+        # (core/projection_plan.py) -- saved in the workspace on each run.
+        self.plan = pp.ProjectionPlan()
+        self.sample_value = str(self.plan.fit_size)
+        self.find_uuid = ""
+        from lookin.web.views.catalogue_panel import CataloguePanel
+        self.catalogue = CataloguePanel(self, vc.TAB_EMBEDDINGS)
+        self._last_view = None          # the SavedView of what is on screen
+        self._plan_for = None           # the workspace the plan was read from
         self.color_key = CLASS_COLOR_KEY
         self._color_column_map: dict = {CLASS_COLOR_KEY: None}
         self._color_options: list = [(CLASS_COLOR_KEY, "Class (true label)")]
@@ -316,6 +331,9 @@ class EmbeddingsView(StaleTracking, View):
         self.overlap_busy = False
         self.overlap_html = ""
         self._overlap = None
+        # linear probe
+        self.probe_busy = False
+        self.probe_html = ""
         self.overlap_focus = ClassFocus(self.name, "ofocus", OVERLAP_FOCUS_CRITERIA, self._on_overlap_focus_change,
                                         what="the overlap grid", support_criteria=(cf.FOCUS_LEAST_SEPARATED,))
         self.built = False
@@ -324,9 +342,40 @@ class EmbeddingsView(StaleTracking, View):
     # ---- lifecycle ----
 
     def on_shown(self) -> None:
+        workspace = getattr(self.s, "current_workspace", None)
+        key = workspace.id if workspace is not None else None
+        if key != self._plan_for:
+            self._plan_for = key
+            saved = getattr(workspace, "embedding_projection", None) if workspace is not None else None
+            if saved:
+                self.plan = pp.plan_from_json(saved, self.method)
+                self.method = self.plan.method if self.plan.method in dict(METHOD_OPTIONS) else self.method
+                self.sample_value = str(self.plan.fit_size)
         if not self.built:
             self.built = True
             self.refresh_controls()
+
+    def _save_plan(self) -> None:
+        """The plan, in the workspace's manifest: it is part of what the
+        workspace is (Workspace.embedding_projection)."""
+        from lookin.core import library as lib
+
+        workspace = getattr(self.s, "current_workspace", None)
+        if workspace is None or not workspace.exists():
+            return
+        value = pp.plan_to_json(self.plan)
+
+        def change(fresh) -> bool:
+            if fresh.embedding_projection == value:
+                return False
+            fresh.embedding_projection = value
+            return True
+
+        try:
+            if lib.update_workspace(workspace.path, change) is not None:
+                workspace.embedding_projection = value
+        except Exception:  # noqa: BLE001 -- the map is drawn all the same
+            traceback.print_exc()
 
     def on_data_change(self) -> None:
         if self.built:
@@ -796,7 +845,9 @@ class EmbeddingsView(StaleTracking, View):
         self._projection_generation += 1
         generation = self._projection_generation
         method = self.method
-        n_sample = self._sample_size()
+        self.plan = pp.clamp(pp.with_method(self.plan, method))
+        plan = self.plan
+        self._save_plan()
         if not self._computing:
             self._results_before = self.results_html
         self.cancelled = False
@@ -817,13 +868,17 @@ class EmbeddingsView(StaleTracking, View):
                     return
                 checkpoint()
                 proto_source = self._proto_source_for(exp_name, sorted(set(ctx["labels"].tolist())))
-                self._run_projection(ctx, exp_name, method, n_sample, generation, class_filter, epoch,
+                self._run_projection(ctx, exp_name, method, plan, generation, class_filter, epoch,
                                      overlays, refit, proto_filter, proto_source)
                 self.dirty = False
             finally:
                 self.refresh()                # a Cancel included
 
         self.s.job("Projection").run(work, on_error=lambda ex: self._fail(ex, generation))
+
+    def _progress(self, text: str) -> None:
+        self.results_html = h.spinner(text)
+        self.refresh()
 
     def _fail(self, ex, generation) -> None:
         traceback.print_exc()
@@ -832,11 +887,10 @@ class EmbeddingsView(StaleTracking, View):
             self.results_html = h.banner(f"Error: {ex}", "error")
         self.refresh()
 
-    def _run_projection(self, ctx, exp_name, method, n_sample, generation, class_filter, epoch,
+    def _run_projection(self, ctx, exp_name, method, plan, generation, class_filter, epoch,
                         overlay_names=None, refit_with_overlay=False, proto_filter=None,
                         proto_source=PROTO_FROM_MODEL) -> None:
         try:
-            rng = np.random.default_rng(0)
             all_classes = sorted(set(ctx["labels"].tolist()))
             pool = np.arange(len(ctx["embeddings"]))
             if class_filter:
@@ -844,8 +898,10 @@ class EmbeddingsView(StaleTracking, View):
             if not len(pool):
                 self.results_html = h.banner("No rows in the selected classes.", "warn")
                 return
-            idx = rng.choice(pool, size=min(n_sample, len(pool)), replace=False)
-            embs = ctx["embeddings"][idx]
+            plan_rows = pp.choose_rows(ctx["labels"], plan, pool)
+            idx = plan_rows.display
+            fit_rows = plan_rows.fit
+            embs = ctx["embeddings"][fit_rows]
             labels = ctx["labels"][idx]
             proto_vecs = np.zeros((0, embs.shape[1]))
             proto_labels: list = []
@@ -895,11 +951,24 @@ class EmbeddingsView(StaleTracking, View):
                 fit_input = np.concatenate(parts, axis=0)
             checkpoint()                  # a Cancel lands here, or once the fit is done
             t0 = time.monotonic()
+            self._progress(f"Fitting {method} on {len(fit_input):,} crops...")
             fit = ea.fit_projection(fit_input, method=method, proto_vectors=proto_vecs if len(proto_vecs) else None)
             _log(f"projection ({method}) for '{exp_name}' computed in {time.monotonic() - t0:.1f}s "
                  f"over {len(fit_input):,} vectors")
             checkpoint()
-            proj, proto_proj = fit.points[: len(embs)], fit.proto_points
+            proto_proj = fit.proto_points
+            # The crops shown: those of the fit set where the fit put them,
+            # the others placed onto it, in batches (a Cancel stops there).
+            proj = np.zeros((len(idx), 2), dtype=float)
+            in_fit = np.isin(idx, fit_rows)
+            proj[in_fit] = fit.points[: len(embs)][np.searchsorted(fit_rows, idx[in_fit])]
+            others = idx[~in_fit]
+            if len(others):
+                def step(done, total):
+                    self._progress(f"Placing {total:,} more crops on the map... {100 * done // max(total, 1)}%")
+                    checkpoint()
+                proj[~in_fit] = pp.place(fit, ctx["embeddings"][others], step)
+                _log(f"placed {len(others):,} more crops on the {method} map")
             overlay_proj: dict = {}
             cursor = len(embs)
             for name in overlay_rows:
@@ -912,7 +981,8 @@ class EmbeddingsView(StaleTracking, View):
                 proto_filter=None if proto_filter is None else list(proto_filter),
                 proto_proj=proto_proj, proto_labels=proto_labels, proto_ks=proto_ks,
                 n_subcenters=n_subcenters, source_key=source_key, source_color=source_color,
-                source_note=source_note, n_sample=n_sample, sample_uuids=ctx["uuids"][idx],
+                source_note=source_note, n_sample=len(idx), sample_uuids=ctx["uuids"][idx],
+                plan=plan, n_fit=len(fit_rows), plan_note=pp.describe(plan_rows, plan) + "".join(" " + n for n in plan_rows.notes),
                 run_generation=generation, fit=fit,
                 overlay_names=list(overlay_rows) if refit_with_overlay else [],
                 refit_with_overlay=bool(refit_with_overlay and overlay_rows),
@@ -934,6 +1004,11 @@ class EmbeddingsView(StaleTracking, View):
             return
         self._last_result = result
         self._render_projection(result, generation)
+        try:
+            self._last_view = self._view_of(result)
+            self.catalogue.add_run(self._last_view)
+        except Exception:  # noqa: BLE001 -- the map is shown all the same
+            traceback.print_exc()
 
     def _redraw_current(self, message: str) -> None:
         if self._computing or self._last_result is None:
@@ -1056,6 +1131,11 @@ class EmbeddingsView(StaleTracking, View):
             self._map_records = records_all
             self._map_uuids = uuids_all
             self._map_n_drawn = n_drawn
+            # What the Neighbours tool searches: the vector of each point on
+            # the map, in the map's order -- gathered when first asked for.
+            self._map_vector_parts = (ctx["embeddings"], result.idx,
+                                      [(layer.name, layer.rows) for layer in layers], shown if n_hidden else None)
+            self._map_vectors_cache = None
 
             notes_above = []
             if result.class_filter:
@@ -1069,7 +1149,9 @@ class EmbeddingsView(StaleTracking, View):
                     f"{kept:,} of {total:,} points shown — {n_hidden:,} hidden by the display "
                     f"filters. The projection is unchanged: what is left is where it always was.", "info",
                     icon_name="filter"))
-            fit_note = self._fit_note(result, layers, len(result.idx))
+            fit_note = self._fit_note(result, layers, result.n_fit or len(result.idx))
+            if result.plan_note:
+                notes_above.append(f'<div class="muted small">{h.e(result.plan_note)}</div>')
             if fit_note:
                 notes_above.append(h.banner(fit_note, "info"))
             self.notes_html = "".join(notes_above)
@@ -1227,91 +1309,13 @@ class EmbeddingsView(StaleTracking, View):
             missing = uid is None or uid != uid or str(uid) == ""     # None, NaN or empty
             return (None if missing else str(uid)), records[i].get(crop_col)
 
-        mkey = self.s.put_point_map(resolve, describe)
-        src = f"/dl/{self.s.sid}/{dkey}?inline=1"
-        pimg = f"/pimg/{self.s.sid}/{mkey}/"
-        pinfo = f"/pinfo/{self.s.sid}/{mkey}/"
-        # One row that never wraps (a button appearing never pushes the map
-        # down), in groups that say what they act on: the view (how the map
-        # is drawn and moved), the lasso selection, the gallery, the export.
-        # Labels show when the map is wide enough, the least needed parts
-        # fold away when it is narrow (embeddings.css).
-        def icon_btn(key: str, icon_name: str, title: str, *, hidden: bool = False, cls: str = "",
-                     label: str = "", attr: str = "") -> str:
-            text = f'<span class="lbl">{h.e(label)}</span>' if label else ""
-            return (f'<button type="button" class="btn btn-sm btn-ghost {"btn-icon " if not label else ""}{cls}" '
-                    f'{attr or f"data-pm={chr(34)}{key}{chr(34)}"} title="{h.e(title)}"{" hidden" if hidden else ""}>'
-                    f'{h.icon(icon_name, 14)}{text}</button>')
-
-        def group(cls: str, title: str, body: str) -> str:
-            return f'<span class="pm-grp {cls}" title="{h.e(title)}">{body}</span>'
-
-        # Shown only while the settings column is folded away (see the
-        # splitter in projection.js): an icon at the head of the toolbar,
-        # set apart from the map's own tools.
-        unfold = (f'<button type="button" class="btn btn-sm btn-icon emb-unfold" data-emb-unfold="1" '
-                  f'title="Show the settings column again" aria-label="Show settings">{h.icon("sliders", 14)}</button>')
-        view = (
-            unfold
-            + f'<div class="seg pm-render"><button type="button" class="seg-b on" data-pm-render="interactive" title="Interactive map">{h.icon("target", 13)}</button>'
-            f'<button type="button" class="seg-b" data-pm-render="static" title="Static matplotlib figure">{h.icon("image", 13)}</button></div>'
-            f'<span class="pm-tools pm-in">'
-            + group("pm-g-view", "Move around the map",
-                    f'<span class="seg">'
-                    f'<button type="button" class="seg-b on" data-pm-mode="pan" title="Pan: drag to move the map">{h.icon("pan", 13)}</button>'
-                    f'<button type="button" class="seg-b" data-pm-mode="zoom" title="Zoom: drag a box to zoom into it">{h.icon("zoom", 13)}</button></span>'
-                    f'<span class="pm-zoom">'
-                    f'<button type="button" class="btn btn-sm btn-ghost btn-icon" data-pm="out" title="Zoom out">-</button>'
-                    f'<span class="pm-zoomtext muted small">x1.0</span>'
-                    f'<button type="button" class="btn btn-sm btn-ghost btn-icon" data-pm="in" title="Zoom in">+</button></span>'
-                    + icon_btn("reset", "refresh", "Reset the view: the whole cloud, centred", hidden=True))
-            + group("pm-g-sel", "Selection",
-                    icon_btn("", "lasso", "Lasso: draw around points to select them", label="Lasso",
-                             attr='data-pm-mode="lasso"')
-                    + '<b class="pm-seltext small"></b>'
-                    + icon_btn("show", "external", "Open the selected points in the carousel", hidden=True)
-                    + icon_btn("clear", "x", "Clear the selection", hidden=True))
-            + group("pm-g-gal", "Gallery",
-                    icon_btn("gallery", "grid", "Gallery: the map moves to a corner, and a lasso fills the rest "
-                             "with crops drawn at random from the selection", cls="pm-toggle", label="Gallery")
-                    + icon_btn("crop-smaller", "minus", "Smaller crops (more of them)", cls="pm-gal-x")
-                    + icon_btn("crop-larger", "plus", "Larger crops (fewer of them)", cls="pm-gal-x")
-                    + icon_btn("shuffle", "refresh", "Draw another random sample of crops", hidden=True, cls="pm-gal-x"))
-            + '<span class="grow"></span>'
-            + group("pm-g-out", "Export what is shown",
-                    icon_btn("copy", "copy", "Copy what is shown as a picture -- always the same size and framing for the same view")
-                    + icon_btn("save", "download", "Save what is shown as a PNG -- always the same size and framing for the same view"))
-            + '</span>')
-        toolbar = f'<div class="pm-row">{view}</div>'
-        map_html = (f'<div class="pmap" data-map="{dkey}" data-src="{h.e(src)}" data-pimg="{h.e(pimg)}" data-pinfo="{h.e(pinfo)}" data-target="{self.name}" '
-                    f'data-static="{dkey}" title="">'
-                    f'<div class="pm-bar">{toolbar}</div>'
-                    f'<div class="pm-inter"><div class="pmap-box"></div></div>'
-                    f'<div class="pm-stat">{static_html}</div></div>')
+        map_html, dkey = map_widget(self.s, self.name, data, resolve, describe, static_html, dkey=dkey,
+                                    export=(result.exp_name, result.method, f"by-{mapping.column}"))
         legend_html = self._legend_html(mapping, names, dkey)
         return map_html, legend_html
 
     def _legend_html(self, mapping, names: list, dkey: str) -> str:
-        if not mapping.legend:
-            return ""
-        known = set(names)
-        filterable = all(label in known for _, label in mapping.legend)
-        if not filterable:
-            body = "".join(f'<div class="row-nw">{h.dot(color, size=10)}<span class="small xname" title="{h.e(label)}">{h.e(label)}</span></div>'
-                           for color, label in mapping.legend)
-            head = '<b class="small">Legend</b>'
-        else:
-            gi = {n: i for i, n in enumerate(names)}
-            body = "".join(
-                f'<div class="row-nw pm-lg"><button type="button" class="btn btn-sm btn-ghost btn-icon" data-front="{gi[label]}" '
-                f'title="Draw on top of the other points">{h.icon("layers", 13)}</button>{h.dot(color, size=10)}'
-                f'<label class="chk ell" title="{h.e(label)}"><input type="checkbox" checked data-g="{gi[label]}"><span>{h.e(label)}</span></label></div>'
-                for color, label in mapping.legend)
-            head = (f'<div class="row-nw"><b class="small">{h.e(f"Show {mapping.column}")}</b>'
-                    f'<button type="button" class="btn btn-sm btn-link" data-pm="all">All</button>'
-                    f'<button type="button" class="btn btn-sm btn-link" data-pm="none">None</button></div>')
-        return (f'<section class="card pm-legend" data-map="{dkey}" data-static="lg-{dkey}"><div class="card-b">{head}'
-                f'<div class="pm-lg-list">{body}</div></div></section>')
+        return legend_card(mapping.legend, names, dkey, f"Show {mapping.column}")
 
     # ---- crops behind points ----
 
@@ -1327,7 +1331,38 @@ class EmbeddingsView(StaleTracking, View):
         if not from_dataset:
             title += " — inference crops, no review"
         open_carousel(self.s, title, picked, cols.crop_col, cols.uuid_col,
-                      review_source="projection" if from_dataset else "", label_col=cols.label_col)
+                      review_source="projection" if from_dataset else "", label_col=cols.label_col,
+                      outcome_borders=True)
+
+    def _map_vectors(self):
+        if getattr(self, "_map_vectors_cache", None) is not None:
+            return self._map_vectors_cache
+        parts = getattr(self, "_map_vector_parts", None)
+        if parts is None:
+            return None
+        pool, idx, layers, shown = parts
+        blocks = [pool[idx]]
+        for name, rows in layers:
+            inference = self.state.inferences.get(name)
+            if inference is None:
+                return None
+            blocks.append(inference.embeddings[rows])
+        vectors = np.concatenate(blocks, axis=0) if len(blocks) > 1 else blocks[0]
+        if shown is not None:
+            vectors = vectors[shown]
+        self._map_vectors_cache = vectors
+        return vectors
+
+    def on_neighbours(self, i: int = 0, k: int = 20, map: str = "", **_):
+        """The map's Neighbours tool: point i's k nearest points of the map,
+        in embedding space, sent back for the map to ring (projection.js)."""
+        vectors = self._map_vectors()
+        if vectors is None or not 0 <= int(i) < len(vectors):
+            return NO_RENDER
+        rows, sims = ea.nearest_rows(vectors, int(i), max(1, min(int(k), 500)))
+        self.s.cmd(event="map-neighbours", detail={"map": str(map), "query": int(i), "idx": rows.tolist(),
+                                                    "sims": [round(float(x), 4) for x in sims]})
+        return NO_RENDER
 
     def on_point(self, i: int = 0, **_):
         i = int(i)
@@ -1366,6 +1401,35 @@ class EmbeddingsView(StaleTracking, View):
         self._overlap = (overlap, exp_name)
         self.overlap_busy = False
         self.overlap_html = self._render_overlap(overlap, exp_name)
+
+    # ---- linear probe ----
+
+    def on_probe(self, **_):
+        exp_name = self.experiment
+        if not exp_name or self.probe_busy:
+            return
+        self.probe_busy = True
+        self.probe_html = ""
+
+        def failed(ex):
+            self.probe_busy = False
+            self.probe_html = h.banner(f"Could not train the probe: {ex}", "error")
+            self.refresh()
+
+        def work():
+            context = self._analysis_context(exp_name)
+            if context is None:
+                self.probe_html = h.banner(f"'{exp_name}' has no embeddings attached.", "info")
+            else:
+                merged = context["merged"]
+                predicted = merged["predicted_label"].to_numpy() if "predicted_label" in merged.columns else None
+                probe = ea.linear_probe(context["embeddings"], context["labels"], predicted=predicted)
+                _log(f"linear probe for '{exp_name}': {probe.n_classes} classes, accuracy {probe.accuracy:.3f}")
+                self.probe_html = probe_html(probe, exp_name)
+            self.probe_busy = False
+            self.refresh()
+
+        self.s.job("Linear probe").run(work, on_error=failed)
 
     def _on_overlap_focus_change(self) -> None:
         if self._overlap is not None:
@@ -1451,7 +1515,16 @@ class EmbeddingsView(StaleTracking, View):
         controls = [
             h.select([(n, n) for n in names], self.experiment or "", change=self.c("experiment"), label="Experiment"),
             h.select(METHOD_OPTIONS, self.method, change=self.c("method"), label="Projection"),
-            h.text_input(self.sample_value, label="Sample size", width=70, change=self.c("sample"), extra=' data-force="1"'),
+            h.select(SAMPLING_OPTIONS, self.plan.sampling, change=self.c("sampling"), label="Fit on",
+                     title="Which crops the projection is fitted on"),
+            (h.text_input(str(self.plan.fit_size), label="Crops", width=70, change=self.c("fit_size"),
+                          extra=' data-force="1"')
+             if self.plan.sampling == pp.SAMPLING_REAL else
+             h.text_input(str(self.plan.per_class), label="Per class", width=60, change=self.c("per_class"),
+                          extra=' data-force="1"')),
+            h.text_input(str(self.plan.display_size), label="Shown", width=80, change=self.c("display_size"),
+                         extra=' data-force="1"' + (" disabled" if self.method not in pp.TRANSFORM_METHODS else "")),
+            h.info_btn("fit-and-shown"),
             h.select(self._color_options, self.color_key, change=self.c("color"), label="Color by"),
         ]
         scale = self._color_scale_kind()
@@ -1462,12 +1535,12 @@ class EmbeddingsView(StaleTracking, View):
             items = [("All classes", self.a("class_all"), None, False)] + [
                 (str(c), self.a("class_toggle", label=str(c)), "check" if c in self._class_filter else None, False)
                 for c in self._classes]
-            controls.append(menu(items, icon_name="filter", label="Restrict to classes", right=False, title="Restrict to classes"))
-        filter_items = [(str(c), self.a("filter_toggle", column=str(c)), "check" if c in self._filter_columns else None, False)
-                        for c in self._filterable_columns()]
-        controls.append(menu(filter_items, icon_name="sliders", label="Filter points", right=False, title="Filter points"))
+            controls.append(menu(items, icon_name="filter", label="Restrict to classes", right=False,
+                                 title="Restrict to classes: only their crops are projected (recomputes the map)"))
         controls.append(h.button("Run projection", act_attr=self.a("run"), kind="primary", icon_name="play"))
-        body = [f'<div class="row-wrap">{"".join(controls)}</div>']
+        body = [f'<div class="row-wrap">{"".join(controls)}</div>',
+                f'<div class="row-nw">{h.text_input(self.find_uuid, label="Crop (uuid)", width=220, change=self.c("find_uuid"), extra=" data-force=1", placeholder="Paste a crop uuid")}'
+                f'{h.button("Find similar", act_attr=self.a("find"), small=True, icon_name="search", title="Its nearest crops -- in this workspace, or in another one of the same model")}</div>']
         if self._score_note:
             body.append(f'<div class="muted small"><i>{h.e(self._score_note)}</i></div>')
         if self._many_classes:
@@ -1489,6 +1562,7 @@ class EmbeddingsView(StaleTracking, View):
         body.append(self.notes_html)
         body.append(self.status_html)
         left.append(f'<section class="card"><div class="card-b stack">{"".join(b for b in body if b)}</div></section>')
+        left.append(self.catalogue.render())
         left.append(self._filters_card())
         left.append(self._overlay_card())
         left.append(self.legend_html)
@@ -1496,6 +1570,10 @@ class EmbeddingsView(StaleTracking, View):
                         f'{h.spinner("Measuring class overlap...") if self.overlap_busy else ""}{self.overlap_html}')
         left.append(h.section("How much the classes overlap", overlap_body, manual="class-overlap",
                               sub="mean cosine similarity within and between classes"))
+        probe_body = (f'<div class="row">{h.button("Train a linear probe", act_attr=self.a("probe"), icon_name="target", disabled=self.probe_busy)}</div>'
+                      f'{h.spinner("Training and cross-validating the probe...") if self.probe_busy else ""}{self.probe_html}')
+        left.append(h.section("How separable the classes are", probe_body, manual="linear-probe",
+                              sub="a linear classifier on the embeddings alone, cross-validated"))
         split = ('<div class="emb-split" title="Drag to resize the map; drag it to the left edge, or double-click, '
                  'for a full-width map"></div>')
         # The settings column folds away (the splitter, see projection.js)
@@ -1512,11 +1590,20 @@ class EmbeddingsView(StaleTracking, View):
                 f'<div class="emb-left stack">{"".join(p for p in left if p)}</div>{right}</div>')
 
     def _filters_card(self) -> str:
+        """The display filters, a section of their own and always on show:
+        tucked in a menu beside "Run projection" they read as one more
+        setting of the computation, and went unnoticed."""
+        filter_items = [(str(c), self.a("filter_toggle", column=str(c)), "check" if c in self._filter_columns else None, False)
+                        for c in self._filterable_columns()]
+        add = menu(filter_items, icon_name="plus", label="Add a filter", right=True,
+                   title="Hide points by the value of a column, without recomputing the projection")
         if not self._filter_columns:
-            return ""
+            return h.section("Display filters",
+                             '<div class="muted small">Hide points by any column; the projection is not recomputed.</div>',
+                             right=add)
         active = [self._filters[c].describe() for c in self._filter_columns
                   if c in self._filters and self._filters[c].is_active()]
-        sub = ("Independent of the coloring: hiding points here changes nothing about the projection."
+        sub = ("Hiding points here changes nothing about the projection."
                if not active else "Showing: " + "; ".join(active))
         blocks = []
         ctx = self._last_context
@@ -1553,7 +1640,8 @@ class EmbeddingsView(StaleTracking, View):
                              f'this filter.</i></div>')
             blocks.append(f'<div class="flt" data-key="pf-{h.e(column)}"><div class="row-wrap">{"".join(head)}</div>{body}</div>')
         return h.section("Display filters", f'<div class="muted small">{h.e(sub)}</div>{"".join(blocks)}',
-                         right=h.button("Reset all", act_attr=self.a("filter_reset"), small=True, kind="ghost", icon_name="rotate"))
+                         right=add + h.button("Reset all", act_attr=self.a("filter_reset"), small=True, kind="ghost",
+                                              icon_name="rotate"))
 
     def _overlay_card(self) -> str:
         inferences = self.state.inferences
@@ -1598,7 +1686,9 @@ class EmbeddingsView(StaleTracking, View):
             restored = self._rebind(self._runs.get(value), ctx) if ctx is not None else None
             if restored is not None:
                 self.method = restored.method
-                self.sample_value = str(restored.n_sample)
+                if restored.plan is not None:
+                    self.plan = restored.plan
+                    self.sample_value = str(self.plan.fit_size)
                 self._class_filter = list(restored.class_filter)
                 self._proto_filter = None if restored.proto_filter is None else list(restored.proto_filter)
                 self._proto_filter_chosen = True
@@ -1622,8 +1712,149 @@ class EmbeddingsView(StaleTracking, View):
             self.method = value
             self.on_run()
 
+    # ---- the catalogue of views (core/view_catalogue.py) ----
+
+    def on_cat(self, op: str = "", **args):
+        return self.catalogue.handle(op, args)
+
+    def _stamp_paths(self, exp_name: str) -> list:
+        state = self.state
+        exp = state.experiments.get(exp_name)
+        paths = [getattr(state.dataset, "csv_path", None) if state.dataset else None]
+        if exp is not None:
+            paths += [exp.embeddings_path, exp.model_prototypes_path]
+        workspace = getattr(self.s, "current_workspace", None)
+        if workspace is not None:
+            paths += [e.path for e in workspace.mount.experiments if e.name == exp_name]
+        return [str(p) for p in paths if p]
+
+    def _view_of(self, result):
+        """A run as a SavedView: its settings, the uuids and positions of the
+        crops drawn, the prototypes, and the PCA when it is one."""
+        plan = result.plan or pp.with_method(self.plan, result.method)
+        settings = {
+            "experiment": result.exp_name, "method": result.method, "plan": pp.plan_to_json(plan),
+            "class_filter": [str(c) for c in result.class_filter],
+            "proto_filter": None if result.proto_filter is None else [str(c) for c in result.proto_filter],
+            "proto_source": result.source_key or "", "n_fit": int(result.n_fit), "plan_note": result.plan_note,
+            "color_column": self._color_column_map.get(self.color_key or CLASS_COLOR_KEY) or "",
+        }
+        arrays = {"uuids": np.asarray(result.sample_uuids).astype(str),
+                  "points": np.asarray(result.proj, dtype=np.float32)}
+        if result.proto_proj is not None and len(result.proto_proj):
+            arrays.update(proto_points=np.asarray(result.proto_proj, dtype=np.float32),
+                          proto_labels=np.asarray(result.proto_labels, dtype=str),
+                          proto_ks=np.asarray(result.proto_ks, dtype=np.int64))
+        arrays.update(vc.model_arrays(result.fit))
+        how = "balanced" if plan.sampling == pp.SAMPLING_BALANCED else "as in the data"
+        name = f"{result.exp_name} - {result.method.upper()} - {len(result.idx):,} crops ({how})"
+        summary = result.plan_note or name
+        return vc.make_view(vc.TAB_EMBEDDINGS, name, settings, arrays, vc.file_stamp(self._stamp_paths(result.exp_name)),
+                            summary)
+
+    def catalogue_current(self, peek: bool = False):
+        # Not while a run is computing: what is on screen is about to be
+        # replaced, and saving it under the new run's name would mislabel it.
+        if self._computing or self._last_result is None or self._last_view is None:
+            return None if not peek else False
+        return True if peek else self._last_view
+
+    def catalogue_open(self, view, arrays) -> None:
+        """Show a saved view again: its positions, against the data as it is
+        now -- nothing is computed."""
+        settings = view.settings
+        exp_name = settings.get("experiment", "")
+        if exp_name not in experiments_with_embeddings(self.state):
+            self.catalogue.message = (f"'{exp_name}' is not loaded with its embeddings, so this view cannot be "
+                                      f"shown.", "error")
+            return
+        self._projection_generation += 1
+        generation = self._projection_generation
+        self.experiment = exp_name
+        self.results_html = h.spinner("Opening the saved view...")
+
+        def work():
+            ctx = self._analysis_context(exp_name)
+            if ctx is None:
+                self.results_html = h.banner(f"'{exp_name}' has no embeddings attached.", "info")
+                return
+            position = {u: i for i, u in enumerate(ctx["uuids"].tolist())}
+            uuids = arrays.get("uuids", np.zeros(0, dtype=str))
+            found = np.asarray([str(u) in position for u in uuids], dtype=bool)
+            idx = np.asarray([position[str(u)] for u, ok in zip(uuids, found) if ok], dtype=np.int64)
+            points = np.asarray(arrays.get("points", np.zeros((0, 2))), dtype=float)[found]
+            labels = ctx["labels"]
+            all_classes = sorted(set(labels.tolist()))
+            class_filter = [c for c in settings.get("class_filter") or [] if isinstance(c, str)]
+            plan = pp.plan_from_json(settings.get("plan"), settings.get("method", "pca"))
+            proto_points = arrays.get("proto_points")
+            fit = vc.fit_from_arrays(settings.get("method", "pca"), points, arrays, proto_points)
+            notes = [settings.get("plan_note", "")]
+            missing = int((~found).sum())
+            changed = vc.changed_files(view)
+            if changed or missing:
+                notes.append(f"Saved on {view.created_at[:16].replace('T', ' ')}; "
+                             + (f"{missing:,} of its crops are no longer in the data; " if missing else "")
+                             + ("the data changed since -- positions are those computed then." if changed
+                                else "positions are those computed then."))
+            if not fit.supports_transform():
+                notes.append("Saved view: positions only -- placing more crops (an inference, a larger display) "
+                             "means running the projection again.")
+            pool_size = int(np.isin(labels, class_filter).sum()) if class_filter else len(labels)
+            result = _RunResult(
+                ctx=ctx, exp_name=exp_name, method=settings.get("method", "pca"), idx=idx, proj=points,
+                labels=labels[idx], all_classes=all_classes, class_filter=class_filter, pool_size=pool_size,
+                proto_proj=proto_points, proto_labels=[str(x) for x in arrays.get("proto_labels", [])],
+                proto_ks=[int(x) for x in arrays.get("proto_ks", [])],
+                n_subcenters=(max([int(x) for x in arrays.get("proto_ks", [])]) + 1) if len(arrays.get("proto_ks", [])) else 0,
+                source_key=settings.get("proto_source") or None,
+                source_color=MODEL_COLOR if settings.get("proto_source") == PROTO_FROM_MODEL else KMEANS_COLOR,
+                proto_filter=settings.get("proto_filter"), n_sample=len(idx), sample_uuids=ctx["uuids"][idx],
+                run_generation=generation, fit=fit, plan=plan, n_fit=int(settings.get("n_fit", 0)),
+                plan_note=" ".join(n for n in notes if n))
+            self.method = result.method
+            self.plan = plan
+            self.sample_value = str(plan.fit_size)
+            self._class_filter = list(class_filter)
+            self._pending_color_column = settings.get("color_column", "")
+            self._render(ctx)
+            self._last_result = result
+            self._last_view = view
+            self._runs[exp_name] = replace(result, ctx=None)
+            if generation == self._projection_generation:
+                self._render_projection(result, generation)
+
+        self.s.job("Embeddings controls").run(lambda: (work(), self.refresh()),
+                                              on_error=lambda ex: (traceback.print_exc(), self._fail(ex, generation)))
+
+    def on_find_uuid(self, value: str = "", **_):
+        self.find_uuid = str(value or "").strip()
+
+    def on_find(self, **_):
+        """A crop given by its uuid (it need not be on the map): its nearest
+        crops, through the same search as "Find similar"."""
+        from lookin.web.views.carousel import open_similarity
+        if self.find_uuid:
+            if self.experiment:
+                self.s._similarity_experiment = self.experiment
+            open_similarity(self.s, self.find_uuid)
+
     def on_sample(self, value: str = "", **_):
-        self.sample_value = str(value or "")
+        self.on_fit_size(value)
+
+    def on_sampling(self, value: str = "", **_):
+        if value in pp.SAMPLINGS:
+            self.plan = pp.ProjectionPlan(**{**vars(self.plan), "sampling": value})
+
+    def on_fit_size(self, value: str = "", **_):
+        self.plan = pp.clamp(pp.ProjectionPlan(**{**vars(self.plan), "fit_size": value}))
+        self.sample_value = str(self.plan.fit_size)
+
+    def on_per_class(self, value: str = "", **_):
+        self.plan = pp.clamp(pp.ProjectionPlan(**{**vars(self.plan), "per_class": value}))
+
+    def on_display_size(self, value: str = "", **_):
+        self.plan = pp.clamp(pp.ProjectionPlan(**{**vars(self.plan), "display_size": value}))
 
     def on_color(self, value: str = "", **_):
         if value not in self._color_column_map:
@@ -1766,6 +1997,7 @@ class EmbeddingsView(StaleTracking, View):
             "experiment": self.experiment or "",
             "method": self.method or "pca",
             "sample": str(self.sample_value or ""),
+            "plan": pp.plan_to_json(self.plan),
             "color_column": self._color_column_map.get(self.color_key or CLASS_COLOR_KEY) or "",
             "column_kind": dict(self._column_kind),
             "class_filter": [str(c) for c in self._class_filter],
@@ -1790,8 +2022,14 @@ class EmbeddingsView(StaleTracking, View):
             self.method = method
         elif method:
             warnings.append(f"Embeddings: unknown projection method '{method}'.")
-        if state.get("sample"):
+        if isinstance(state.get("plan"), dict):
+            self.plan = pp.plan_from_json(state["plan"], self.method)
+            self.sample_value = str(self.plan.fit_size)
+        elif state.get("sample"):
+            # A snapshot from before the plan: its sample size was both sets.
             self.sample_value = str(state["sample"])
+            self.plan = pp.clamp(pp.ProjectionPlan(method=self.method, fit_size=self.sample_value,
+                                                   display_size=self.sample_value))
         kinds = state.get("column_kind")
         if isinstance(kinds, dict):
             self._column_kind = {str(c): k for c, k in kinds.items() if k in (pc.KIND_CATEGORICAL, pc.KIND_NUMERIC)}
@@ -1821,3 +2059,187 @@ class EmbeddingsView(StaleTracking, View):
         self._render()
         self.refresh()
         return warnings
+
+
+# The fit set's sampling (keys: core/projection_plan.SAMPLINGS).
+SAMPLING_OPTIONS = [(pp.SAMPLING_REAL, "Crops as in the data"), (pp.SAMPLING_BALANCED, "Balanced per class")]
+
+# How many neighbours the map's Neighbours tool asks for, as offered; 0 is
+# "Fill": as many as the gallery's mosaic has tiles for (projection.js).
+NEIGHBOUR_COUNTS = (0, 10, 20, 50, 100)
+
+
+def _neighbour_options() -> str:
+    return "".join(f'<option value="{n}"{" selected" if n == 0 else ""}>{"Fill" if n == 0 else n}</option>'
+                   for n in NEIGHBOUR_COUNTS)
+
+
+def map_widget(session, target: str, data: dict, resolve, describe, static_html: str, dkey: str = "",
+               compact: bool = False, link: str = "", min_size: int = 0, heading: str = "",
+               export: tuple = ()) -> tuple:
+    """The interactive map of a projection (static/js/projection.js) and
+    the HTML that hosts it: (map_html, dkey). `data` is the map's JSON (x,
+    y, c, palette, g, groups, k, hl, hi, protos -- see
+    EmbeddingsView._interactive_map), `resolve(i)` / `describe(i)` the
+    crop behind point i, and `target` the view the map's clicks and lasso
+    are sent to (its on_point / on_select / on_neighbours). Shared by the
+    Embeddings and Compare embeddings tabs, which is why it is not a method.
+
+    `compact`: one of several panels -- the view and selection tools only.
+    `link`: maps with the same link move and select together (they must
+    hold the same points in the same order). `min_size`: the smallest side
+    the map is drawn at. `heading`: a title over the map. `export`: what
+    names a saved picture of the map, after the workspace and the tab
+    (core/export_names.py)."""
+    if not dkey:
+        dkey = session.put_download(json.dumps(data).encode("utf-8"), "map.json", "application/json")
+    mkey = session.put_point_map(resolve, describe)
+    src = f"/dl/{session.sid}/{dkey}?inline=1"
+    pimg = f"/pimg/{session.sid}/{mkey}/"
+    pinfo = f"/pinfo/{session.sid}/{mkey}/" if describe is not None else ""
+    # One row that never wraps (a button appearing never pushes the map
+    # down), in groups that say what they act on: the view (how the map
+    # is drawn and moved), the lasso selection, the gallery, the export.
+    # Labels show when the map is wide enough, the least needed parts
+    # fold away when it is narrow (embeddings.css).
+    def icon_btn(key: str, icon_name: str, title: str, *, hidden: bool = False, cls: str = "",
+                 label: str = "", attr: str = "") -> str:
+        text = f'<span class="lbl">{h.e(label)}</span>' if label else ""
+        return (f'<button type="button" class="btn btn-sm btn-ghost {"btn-icon " if not label else ""}{cls}" '
+                f'{attr or f"data-pm={chr(34)}{key}{chr(34)}"} title="{h.e(title)}"{" hidden" if hidden else ""}>'
+                f'{h.icon(icon_name, 14)}{text}</button>')
+
+    def group(cls: str, title: str, body: str) -> str:
+        return f'<span class="pm-grp {cls}" title="{h.e(title)}">{body}</span>'
+
+    # Shown only while the settings column is folded away (see the
+    # splitter in projection.js): an icon at the head of the toolbar,
+    # set apart from the map's own tools.
+    unfold = (f'<button type="button" class="btn btn-sm btn-icon emb-unfold" data-emb-unfold="1" '
+              f'title="Show the settings column again" aria-label="Show settings">{h.icon("sliders", 14)}</button>')
+    view = (
+        unfold
+        + f'<div class="seg pm-render"><button type="button" class="seg-b on" data-pm-render="interactive" title="Interactive map">{h.icon("target", 13)}</button>'
+        f'<button type="button" class="seg-b" data-pm-render="static" title="Static matplotlib figure">{h.icon("image", 13)}</button></div>'
+        f'<span class="pm-tools pm-in">'
+        + group("pm-g-view", "Move around the map",
+                f'<span class="seg">'
+                f'<button type="button" class="seg-b on" data-pm-mode="pan" title="Pan: drag to move the map">{h.icon("pan", 13)}</button>'
+                f'<button type="button" class="seg-b" data-pm-mode="zoom" title="Zoom: drag a box to zoom into it">{h.icon("zoom", 13)}</button></span>'
+                f'<span class="pm-zoom">'
+                f'<button type="button" class="btn btn-sm btn-ghost btn-icon" data-pm="out" title="Zoom out">-</button>'
+                f'<span class="pm-zoomtext muted small">x1.0</span>'
+                f'<button type="button" class="btn btn-sm btn-ghost btn-icon" data-pm="in" title="Zoom in">+</button></span>'
+                + icon_btn("reset", "refresh", "Reset the view: the whole cloud, centred", hidden=True))
+        + group("pm-g-sel", "Selection",
+                icon_btn("", "lasso", "Lasso: draw around points to select them", label="Lasso",
+                         attr='data-pm-mode="lasso"')
+                + icon_btn("", "search", "Neighbours: click a point to ring its nearest points of the map, in "
+                           "the embedding space (not on the screen)", label="Neighbours", attr='data-pm-mode="nn"')
+                + '<select class="sel pm-k" data-pm-k="1" title="How many neighbours">'
+                + _neighbour_options()
+                + '</select>'
+                + '<b class="pm-seltext small"></b>'
+                + icon_btn("show", "external", "Open the selected points in the carousel", hidden=True)
+                + icon_btn("clear", "x", "Clear the selection", hidden=True))
+        + group("pm-g-gal", "Gallery",
+                icon_btn("gallery", "grid", "Gallery: the map moves to a corner, and a lasso fills the rest "
+                         "with crops drawn at random from the selection", cls="pm-toggle", label="Gallery")
+                + icon_btn("crop-smaller", "minus", "Smaller crops (more of them)", cls="pm-gal-x")
+                + icon_btn("crop-larger", "plus", "Larger crops (fewer of them)", cls="pm-gal-x")
+                + icon_btn("shuffle", "refresh", "Draw another random sample of crops", hidden=True, cls="pm-gal-x"))
+        + '<span class="grow"></span>'
+        + group("pm-g-out", "Export what is shown",
+                icon_btn("copy", "copy", "Copy what is shown as a picture -- always the same size and framing for the same view")
+                + icon_btn("save", "download", "Save what is shown as a PNG -- always the same size and framing for the same view"))
+        + '</span>')
+    if compact:
+        view = (f'<span class="pm-tools pm-in">'
+                + (f'<b class="small ell pm-head" title="{h.e(heading)}">{h.e(heading)}</b>' if heading else "")
+                + group("pm-g-view", "Move around the map -- every panel follows",
+                        f'<span class="seg">'
+                        f'<button type="button" class="seg-b on" data-pm-mode="pan" title="Pan: drag to move the map">{h.icon("pan", 13)}</button>'
+                        f'<button type="button" class="seg-b" data-pm-mode="zoom" title="Zoom: drag a box to zoom into it">{h.icon("zoom", 13)}</button></span>'
+                        + icon_btn("reset", "refresh", "Reset the view: the whole cloud, centred", hidden=True))
+                + group("pm-g-sel", "Selection -- shared by every panel",
+                        icon_btn("", "lasso", "Lasso: draw around points to select them", attr='data-pm-mode="lasso"')
+                        + icon_btn("", "search", "Neighbours: click a point to ring its nearest points of the map, "
+                                   "in the embedding space", attr='data-pm-mode="nn"')
+                        + '<select class="sel pm-k" data-pm-k="1" title="How many neighbours">'
+                        + _neighbour_options()
+                        + '</select>'
+                        + '<b class="pm-seltext small"></b>'
+                        + icon_btn("show", "external", "Open the selected points in the carousel", hidden=True)
+                        + icon_btn("clear", "x", "Clear the selection", hidden=True))
+                + '</span>')
+    toolbar = f'<div class="pm-row">{view}</div>'
+    from lookin.web.views.common import session_stem
+
+    extra = (f' data-link="{h.e(link)}"' if link else "") + (f' data-min="{int(min_size)}"' if min_size else "")
+    extra += f' data-export="{h.e(session_stem(session, *export))}"' 
+    map_html = (f'<div class="pmap{" pmap-compact" if compact else ""}" data-map="{dkey}" data-src="{h.e(src)}" data-pimg="{h.e(pimg)}" '
+                f'data-pinfo="{h.e(pinfo)}" data-target="{target}"{extra} '
+                f'data-static="{dkey}" title="">'
+                f'<div class="pm-bar">{toolbar}</div>'
+                f'<div class="pm-inter"><div class="pmap-box"></div></div>'
+                f'<div class="pm-stat">{static_html}</div></div>')
+    return map_html, dkey
+
+
+def legend_card(legend: list, names: list, dkey: str, title: str) -> str:
+    """The map's legend as a card: one entry per (color, label), each a
+    checkbox that hides its points in place when every label is a group
+    of the map (see projection.js wireLegend)."""
+    if not legend:
+        return ""
+    known = set(names)
+    if not all(label in known for _, label in legend):
+        body = "".join(f'<div class="row-nw">{h.dot(color, size=10)}<span class="small xname" title="{h.e(label)}">{h.e(label)}</span></div>'
+                       for color, label in legend)
+        head = '<b class="small">Legend</b>'
+    else:
+        gi = {n: i for i, n in enumerate(names)}
+        body = "".join(
+            f'<div class="row-nw pm-lg"><button type="button" class="btn btn-sm btn-ghost btn-icon" data-front="{gi[label]}" '
+            f'title="Draw on top of the other points">{h.icon("layers", 13)}</button>{h.dot(color, size=10)}'
+            f'<label class="chk ell" title="{h.e(label)}"><input type="checkbox" checked data-g="{gi[label]}"><span>{h.e(label)}</span></label></div>'
+            for color, label in legend)
+        head = (f'<div class="row-nw"><b class="small">{h.e(title)}</b>'
+                f'<button type="button" class="btn btn-sm btn-link" data-pm="all">All</button>'
+                f'<button type="button" class="btn btn-sm btn-link" data-pm="none">None</button></div>')
+    return (f'<section class="card pm-legend" data-map="{dkey}" data-static="lg-{dkey}"><div class="card-b">{head}'
+            f'<div class="pm-lg-list">{body}</div></div></section>')
+
+
+# Rows of the linear probe's per-class table, worst F1 first.
+PROBE_CLASS_ROWS = 15
+
+
+def probe_html(probe, exp_name: str) -> str:
+    """A linear probe's result (core/embedding_analysis.linear_probe):
+    its accuracy beside the model's, the classes it separates worst, its
+    most frequent mistakes. Shared by Embeddings and Compare embeddings."""
+    model = (f'<span class="kv-k">The model itself, on the same crops</span><span class="kv-v">{100 * probe.model_accuracy:.1f}%</span>'
+             if probe.model_accuracy is not None else "")
+    grid = (f'<div class="kv"><span class="kv-k">Probe accuracy</span><span class="kv-v">{100 * probe.accuracy:.1f}%</span>'
+            f'<span class="kv-k">Balanced accuracy</span><span class="kv-v">{100 * probe.balanced_accuracy:.1f}%</span>{model}</div>')
+    notes = [f"Measured in {exp_name} on {probe.n_points:,} crops of {probe.n_classes:,} classes"
+             + (" (sampled per class)" if probe.sampled else "") + "."]
+    if probe.skipped_classes:
+        notes.append(f"{len(probe.skipped_classes):,} class(es) with fewer than {ea.PROBE_FOLDS} crops left out.")
+    worst = sorted(probe.per_class, key=lambda c: c.f1)[:PROBE_CLASS_ROWS]
+    has_model = any(c.model_recall is not None for c in worst)
+    head = ("<th>Class</th><th class='num'>Crops</th><th class='num'>Probe recall</th>"
+            "<th class='num'>Probe precision</th><th class='num'>Probe F1</th>"
+            + ("<th class='num'>Model recall</th>" if has_model else ""))
+    rows = "".join(
+        f"<tr><td>{h.e(c.label)}</td><td class='num'>{c.support:,}</td><td class='num'>{100 * c.recall:.1f}%</td>"
+        f"<td class='num'>{100 * c.precision:.1f}%</td><td class='num'>{100 * c.f1:.1f}%</td>"
+        + (f"<td class='num'>{100 * c.model_recall:.1f}%</td>" if has_model and c.model_recall is not None
+           else ("<td></td>" if has_model else ""))
+        + "</tr>" for c in worst)
+    confusions = "".join(f'<div class="small">{h.e(a)} &rarr; {h.e(b)}  —  {n:,}</div>' for a, b, n in probe.confusions[:8])
+    return (f'{grid}<div class="muted small">{h.e(" ".join(notes))}</div>'
+            f'<b class="small">Classes the probe separates worst</b>'
+            f'<div class="tbl-wrap"><table class="tbl compact"><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table></div>'
+            + (f'<b class="small">Its most frequent mistakes (true &rarr; probe)</b>{confusions}' if confusions else ""))

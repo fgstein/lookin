@@ -30,6 +30,7 @@ TABS = (
     ("confidence", "Confidence", "Evaluate"),
     ("compare", "Compare", "Evaluate"),
     ("embeddings", "Embeddings", "Representations"),
+    ("embcompare", "Compare embeddings", "Representations"),
     ("prototypes", "Prototypes", "Representations"),
     ("cleaning", "Cleaning", "Curate"),
     ("notes", "Notes", "Write"),
@@ -90,7 +91,7 @@ def _wire(session) -> None:
 
     keys = {"filter": vs.DATASET_FILTER, "gallery": vs.GALLERY, "metrics": vs.METRICS,
             "calibration": vs.CALIBRATION, "compare": vs.COMPARE, "embeddings": vs.EMBEDDINGS,
-            "cleaning": vs.CLEANING}
+            "embcompare": vs.EMBEDDING_COMPARE, "cleaning": vs.CLEANING}
     for name in SNAPSHOT_VIEWS:
         session.view_state.register(keys[name], _LazyView(session, name))
     session.view_state.set_tab_accessors(lambda: tab_index(session), lambda i: set_tab_index(session, i))
@@ -376,6 +377,19 @@ def theme_button() -> str:
 
 
 def render_top(session) -> str:
+    return _render_top(session) + _export_stem(session)
+
+
+def _export_stem(session) -> str:
+    """The start of the name of anything this page saves by itself -- a
+    crop from the full-size view, the Embeddings map -- read by app.js and
+    projection.js, which add what is saved and the time
+    (core/export_names.py)."""
+    from lookin.web.views.common import session_stem
+    return f'<span id="export-stem" data-stem="{h.e(session_stem(session))}" hidden></span>'
+
+
+def _render_top(session) -> str:
     busy = session.busy.running
     busy_html = (f'<span class="busy" title="{h.e(", ".join(busy))}"><span class="spinner"></span>'
                  f'{h.e(busy[-1])}{f" (+{len(busy) - 1})" if len(busy) > 1 else ""}</span>') if busy else ""
@@ -508,6 +522,14 @@ class AppActions(Handler):
     def on_analysis(self, **_):
         self.s.mode = "analysis"
         self.s.mark("page")
+
+    def on_similar(self, uid: str = "", **_):
+        """"Find similar" from the full-size view's details panel: the crop's
+        nearest crops, in an experiment of this workspace or of another one
+        of the same model (views/carousel.SimilarityDialog)."""
+        from lookin.web.views.carousel import open_similarity
+        self.s.cmd(close_zoom=True)
+        open_similarity(self.s, str(uid))
 
     def on_manual(self, page: str = "", **_):
         from lookin.web.views.manual import open_manual

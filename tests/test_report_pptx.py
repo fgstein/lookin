@@ -115,8 +115,9 @@ def test_a_long_table_is_paginated_across_slides(tmp_path, loaded_state):
 
 
 def test_the_default_name_carries_the_dataset_and_the_date(loaded_state):
+    import re
     name = default_report_name(loaded_state, extension="pptx")
-    assert name.startswith("dataset_report_") and name.endswith(".pptx")
+    assert re.fullmatch(r"lookin_dataset_Metrics_report_\d{8}-\d{6}\.pptx", name), name
 
 
 def test_a_report_with_no_experiment_is_refused(loaded_state):

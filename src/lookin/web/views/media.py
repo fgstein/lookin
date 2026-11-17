@@ -60,11 +60,14 @@ def png_size(data: bytes) -> tuple:
 def chart_html(session, png: bytes, title: str = "chart", *, max_width: str = "100%", scale: float = 0.5,
                key: str = "") -> str:
     """An <img> for a rendered chart; click to zoom."""
+    from lookin.web.views.common import session_stem
+
     ckey = session.put_chart(png, key or None)
     w, hgt = png_size(png)
     size = f' width="{int(w * scale)}" height="{int(hgt * scale)}"' if w else ""
     return (f'<img class="chart" src="/chart/{session.sid}/{ckey}.png"{size} alt="{h.e(title)}" '
-            f'data-zoom data-title="{h.e(title)}" style="max-width:{max_width}" data-static="{ckey}">')
+            f'data-zoom data-title="{h.e(title)}" data-export="{h.e(session_stem(session, title))}" '
+            f'style="max-width:{max_width}" data-static="{ckey}">')
 
 
 def fig_html(session, fig, title: str = "chart", **kw) -> str:

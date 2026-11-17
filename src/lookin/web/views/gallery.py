@@ -119,8 +119,13 @@ class GalleryView(RebuildView):
         for col in self.active_filter_cols:
             self.set_progress(f"Building filters... {col}")
             self._build_filter_control(col, is_label=(col == cols_cfg.label_col))
-        self.experiment = NONE_EXPERIMENT
+        # Adding a filter rebuilds the panel: the experiment the crops are
+        # framed by stays, as long as it is still loaded.
+        if self.experiment not in state.experiments:
+            self.experiment = NONE_EXPERIMENT
+        kept = set(self.predicted_selected)
         self._rebuild_predicted_filter()
+        self.predicted_selected = {v for v in kept if v in {str(x) for x in self.predicted_values}}
 
     def _rebuild_predicted_filter(self) -> None:
         self.predicted_values = []

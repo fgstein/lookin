@@ -145,8 +145,9 @@ def test_the_report_can_be_written_and_read_back(loaded_state, tmp_path):
 
 
 def test_the_default_name_carries_the_dataset_and_the_date(loaded_state):
+    import re
     name = default_report_name(loaded_state)
-    assert name.startswith("dataset_report_") and name.endswith(".html")
+    assert re.fullmatch(r"lookin_dataset_Metrics_report_\d{8}-\d{6}\.html", name), name
 
 
 def test_a_snapshot_id_is_recorded_so_the_figures_can_be_reopened(loaded_state):

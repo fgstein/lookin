@@ -18,6 +18,12 @@ What gets seeded:
 - "Stress sweep": four runs of the stress-test sweep, two of them
   downloaded (partial), when the stress-test data has been generated.
 - "Local example": the bundled example from local files, no MLflow.
+- "Clean crops" and "Degraded crops": the example dataset split in two (the
+  crops flagged ok, and the blurry or occluded ones), each scored by the
+  same model, with a comparison of the two saved in "Clean crops" -- what
+  the Compare embeddings tab opens on. "Degraded crops" also holds a second
+  model, which that tab refuses to compare. Added on the first start after
+  this was introduced, even if the demo was seeded before.
 - "Load test (local files)" and "Load test (MLflow)": the 500k-image load
   test, when scripts/generate_load_test.py has been run. The local one reads
   the generated files in place; the MLflow one is not downloaded, so its
@@ -130,6 +136,38 @@ def _seed(uri: str) -> None:
         print("[demo] no stress-test data: run scripts/generate_stress_test.py for the sweep", flush=True)
 
 
+def _seed_two_bases() -> None:
+    import pandas as pd
+    from demo_mlflow_server import EXAMPLE
+
+    from lookin.core import embedding_compare as ec
+    from lookin.core import library as lib
+
+    folder = DEMO_DIR / "two_bases"
+    folder.mkdir(parents=True, exist_ok=True)
+    df = pd.read_csv(EXAMPLE / "dataset.csv")
+    clean, degraded = folder / "clean.csv", folder / "degraded.csv"
+    df[df["quality_flag"] == "ok"].to_csv(clean, index=False)
+    df[df["quality_flag"] != "ok"].to_csv(degraded, index=False)
+
+    def experiment(name, stem):
+        return lib.MountExperiment(name=name, path=str(EXAMPLE / f"{stem}_results.csv"),
+                                   embeddings_path=str(EXAMPLE / f"{stem}_embeddings.npz"),
+                                   prototypes_path=str(EXAMPLE / f"{stem}_prototypes.npz"))
+
+    a = lib.create_workspace("Clean crops", lib.Mount(dataset_path=str(clean), image_root=str(EXAMPLE),
+                                                      experiments=[experiment("baseline_cnn", "baseline_cnn")]),
+                             description="The example's crops flagged ok.", tags=["local", "two-bases"])
+    b = lib.create_workspace("Degraded crops", lib.Mount(dataset_path=str(degraded), image_root=str(EXAMPLE),
+                                                         experiments=[experiment("baseline_cnn", "baseline_cnn"),
+                                                                      experiment("finetuned_resnet", "finetuned_resnet")]),
+                             description="The example's blurry and occluded crops.", tags=["local", "two-bases"])
+    a.embedding_comparison = ec.comparison_to_json(
+        [ec.MemberRef(a.id, "baseline_cnn"), ec.MemberRef(b.id, "baseline_cnn")], 0)
+    lib.save_workspace(a)
+    print("[demo] workspaces 'Clean crops' and 'Degraded crops': one model on two bases", flush=True)
+
+
 def _seed_load_test(uri: str) -> None:
     from demo_mlflow_server import LOAD_TEST, load_test_manifest
 
@@ -235,6 +273,10 @@ def main() -> None:
     if not datasets_marker.exists():
         _seed_datasets(uri)
         datasets_marker.write_text(uri, encoding="utf-8")
+    two_bases_marker = DEMO_DIR / "seeded-two-bases"
+    if not two_bases_marker.exists():
+        _seed_two_bases()
+        two_bases_marker.write_text(uri, encoding="utf-8")
     print(f"[demo] state in {DEMO_DIR}", flush=True)
 
     from lookin.web.server import run_web

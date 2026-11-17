@@ -108,8 +108,35 @@ in both, like the PNGs they are exported as.
    classes, measured on the crops themselves. The confusion matrix says the
    model mixes two classes up; this says whether they genuinely sit on top
    of each other, which is the difference between a model that needs more
-   training and a taxonomy that needs rewriting. Simple inferences loaded
+   training and a taxonomy that needs rewriting. A linear probe -- a
+   logistic regression trained on the embeddings alone, cross-validated --
+   says how separable the classes are for a linear boundary, beside the
+   model's own accuracy. On the map, the Neighbours tool rings a clicked
+   point's nearest points in embedding space; in gallery mode the mosaic
+   shows that point first, then its neighbours nearest first. A map is
+   fitted on a modest set of crops -- at random, or balanced per class --
+   and shows many more, each placed onto the fit (PCA, UMAP); the choice
+   is saved in the workspace. Every run is kept for the session, and any
+   view -- here or in Compare embeddings -- can be saved in the workspace
+   under a name and reopened at once, without computing anything again
+   (a UMAP or t-SNE view keeps positions only). Simple inferences loaded
    on the Sources tab can be overlaid on the same map -- see below.
+   **Compare embeddings** puts several experiments in one embedding space:
+   the same model run on different datasets, typically from different
+   workspaces. Their imported prototypes must be identical (else the
+   comparison is refused: two models are two coordinate systems). The map
+   is fitted on all of them, or on a reference the others are placed onto,
+   drawn overlaid or side by side (one interactive map per experiment,
+   moving and selecting together); below it, one row per experiment: how
+   well each base can be
+   told apart from the reference, how much of it the reference covers,
+   whether its labels agree with the reference's nearest crops, a linear
+   probe on its own crops; then every pair of experiments on demand, per
+   class, and the crops outside the reference. Clicking a crop -- or typing its
+   uuid -- lists its nearest crops in the experiment chosen, the nearest
+   one shown beside it. "Find similar", on any crop, can also search another
+   workspace's experiment of the same model. What is compared is saved in the workspace as references to
+   the other workspaces' experiments, never as copies.
 9. **Cleaning tab** -- find the crops worth a human look, decide on them,
    and export a versioned dataset you can train on. See below.
 10. **Notes tab** -- free text about the workspace, written like a chat
@@ -570,6 +597,9 @@ The model needs to support tool calling (and images, for the pictures).
 | `search_mlflow_runs`, `list_mlflow_run_files` | runs on the configured MLflow servers; the CSVs a run logged |
 | `get_mlflow_run_links` | for MLflow run ids: the workspaces made from them, where TrainHub shows them, the link to a new workspace |
 | `get_notes` | the workspace's notes, as Markdown |
+| `compare_embedding_spaces`, `find_neighbours_across` | one model on several datasets: refused unless the prototypes match; how far apart the datasets sit (against the reference, or every pair), per class, the crops outside the reference; nearest crops in the other dataset |
+| `list_saved_views` | the views saved in the Embeddings and Compare embeddings tabs, and whether their data changed since |
+| `get_class_separability` | a linear probe on an experiment's embeddings: cross-validated accuracy beside the model's, the classes it separates worst |
 | `list_datasets` | every dataset CSV of the shared folders: derivatives, MLflow link, rows, classes, health |
 | `get_dataset` | one dataset's file, content hash, MLflow run (and how sure the link is), derivatives, workspaces |
 | `get_dataset_stats` | sources, splits, columns, checks; per mapping: class balance, class x source / split tables |
@@ -580,7 +610,8 @@ The model needs to support tool calling (and images, for the pictures).
 **Pictures and files** -- `plot_chart` draws any chart of the tabs (per-class
 bars, ROC/PR, confusion matrix, reliability, risk-coverage, a column, a
 slice breakdown, a 2D projection of the embeddings) with the very code the
-tab draws it with, and `make_mosaic` puts crops on one picture, framed green
+tab draws it with, `plot_embedding_comparison` draws the Compare embeddings
+map, and `make_mosaic` puts crops on one picture, framed green
 or red by an experiment's verdict; both come back as images. `generate_report`
 writes the Metrics tab's HTML, PowerPoint or Markdown report.
 
@@ -593,7 +624,8 @@ guessed as on the Sources tab), `update_workspace` (and its Home group),
 `delete_snapshot`; `export_workspace`, `import_workspace`;
 `record_review_decisions`, `undo_review_batch`, `create_review_version`,
 `export_reviewed_dataset`; `write_notes`, `regenerate_notes_recap` (the
-Notes tab). Each does what the matching button does, through
+Notes tab); `set_embedding_comparison` (the Compare embeddings tab);
+`rename_saved_view`, `delete_saved_view`. Each does what the matching button does, through
 the same code, so a tab with that workspace open picks the change up within
 seconds. Deleting asks for the id a second time, and those tools are marked
 destructive so a client can ask its user first.

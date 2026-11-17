@@ -30,6 +30,25 @@ def default_save_dir() -> Path:
     return downloads if downloads.is_dir() else Path.cwd()
 
 
+def session_stem(session, *parts) -> str:
+    """lookin_<workspace>_<tab>_<parts> for what this session exports
+    (core/export_names.py); the page adds the date when it saves."""
+    from lookin.core.export_names import export_stem, workspace_part
+    from lookin.web.render import TAB_TITLES
+
+    mode = getattr(session, "mode", "")
+    where = TAB_TITLES.get(getattr(session, "tab", ""), "") if mode == "analysis" else mode
+    return export_stem(workspace_part(getattr(session, "current_workspace", None), getattr(session, "state", None)),
+                       where, *parts)
+
+
+def session_export_name(session, *parts, ext: str = "png") -> str:
+    """The same, with the date and the extension: for files written here."""
+    from datetime import datetime as _dt
+    from lookin.core.export_names import DATE_FORMAT
+    return f"{session_stem(session, *parts)}_{_dt.now().strftime(DATE_FORMAT)}.{ext}"
+
+
 def slug(title: str, fallback: str = "image") -> str:
     """A panel title reduced to something safe in a filename and a URL."""
     return re.sub(r"[^A-Za-z0-9._-]+", "_", title).strip("_")[:60] or fallback
@@ -251,7 +270,7 @@ def saved_path_message(session, path) -> str:
 def save_png(session, png: bytes, title: str) -> tuple:
     """(ok, message): `png` written next to the user's downloads, on the
     machine running Lookin (where the data is)."""
-    dest = default_save_dir() / f"lookin_{slug(title)}_{datetime.now():%Y%m%d-%H%M%S}.png"
+    dest = default_save_dir() / session_export_name(session, title)
     try:
         dest.write_bytes(png)
     except OSError as ex:
