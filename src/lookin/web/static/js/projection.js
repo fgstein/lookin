@@ -302,7 +302,8 @@
     }
 
     resize() {
-      if (!document.contains(this.box)) {      // the tab was redrawn without this map
+      // the tab was redrawn without this map, or another map took its place
+      if (!document.contains(this.box) || !this.root.contains(this.box) || maps.get(this.root) !== this) {
         this.ro.disconnect();
         window.removeEventListener("resize", this.onWinResize);
         return;
