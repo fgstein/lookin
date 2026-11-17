@@ -53,6 +53,12 @@ get_examples or find_cleaning_candidates. plot_chart and make_mosaic return pict
 writes a whole report. Typical building: create_workspace (with its dataset), then add_experiment
 (a local results CSV) or search_mlflow_runs + add_mlflow_run.
 
+Decision rule: tune_decision_rule finds one bias per class to add to an experiment's log-scores
+before the argmax (favouring rare classes while every crop keeps exactly one class), fitted on the
+dataset's validation rows and scored on the evaluated ones; apply_decision_rule makes the workspace read
+the experiment that way everywhere, revert_decision_rule undoes it. While one is applied, every answer
+about that experiment says so in its warnings.
+
 Datasets on their own: the CSVs of the team's shared dataset folders, whether or not a workspace uses
 them. list_datasets, then get_dataset (file, the MLflow run it came from, derivatives) and
 get_dataset_stats (sources, splits, checks, and per mapping -- a label column; a dataset can have
@@ -257,6 +263,51 @@ def get_calibration(
     (area under the risk-coverage curve, and what it costs above a perfect ranking of the errors)."""
     return _run(agent_tools.get_calibration, workspace_id, experiments, target_accuracy, threshold,
                 fit_temperature)
+
+
+Objective = Annotated[str, Field(description=(
+    "What the biases maximise: macro_f1 (every counted class once), weighted_f1 (every counted class by "
+    "its number of rows) or balanced_accuracy (mean recall of every class)."))]
+Classes = Annotated[list[str] | None, Field(description=(
+    "macro_f1 and weighted_f1 only: the classes whose F1 counts in the objective. Omit for every class. "
+    "A class left out may lose much of its F1 -- leave it out only when it does not matter."))]
+Locked = Annotated[list[str] | None, Field(description="Classes whose bias stays 0.")]
+MaxAbsBias = Annotated[float | None, Field(description="No bias goes past this, either way. Omit for no bound.",
+                                           gt=0)]
+TuneOn = Annotated[str, Field(description=(
+    "'val' (default): the validation rows of the dataset CSV -- the rows where split_column equals "
+    "split_value, which the other tools never use; the experiment's results CSV must hold predictions for "
+    "them. 'test': the evaluated rows themselves, which makes every number after it optimistic; only to "
+    "explore, and say so to the user."))]
+SplitColumn = Annotated[str, Field(description=(
+    "tune_on='val': the dataset column naming the split. Omit for the column the workspace filters its "
+    "rows on (usually 'split')."))]
+SplitValue = Annotated[str, Field(description="tune_on='val': the value of the validation rows.")]
+
+
+def tune_decision_rule(
+    workspace_id: WorkspaceId,
+    experiment: ExperimentName,
+    objective: Objective = "macro_f1",
+    classes: Classes = None,
+    locked: Locked = None,
+    max_abs_bias: MaxAbsBias = None,
+    tune_on: TuneOn = "val",
+    split_column: SplitColumn = "",
+    split_value: SplitValue = "val",
+    top: Top = agent_tools.DEFAULT_TOP,
+) -> str:
+    """Find one bias per class that, added to the experiment's log-scores before the argmax
+    (prediction = argmax_c(log p_c + b_c)), maximises an objective -- the deployable way to favour rare
+    classes, since every crop still gets exactly one class (unlike a separate threshold per class). The
+    biases are fitted on the tuning rows, then scored on the evaluated rows (those every other tool uses):
+    accuracy, balanced accuracy, macro/weighted F1, MCC and kappa with every bias at 0 (plain argmax) and
+    with the biases, per-class F1 changes, and the one-vs-rest F1-max and AP as a ceiling no such rule
+    reaches. With tune_on='test', also cross_fit: the objective fitted on half the rows and scored on
+    the other half, which measures the optimism. Biases are defined up to a common constant: one class
+    (reference_class) stays 0. Changes nothing; apply_decision_rule makes the workspace use them."""
+    return _run(agent_tools.tune_decision_rule, workspace_id, experiment, objective, classes, locked,
+                max_abs_bias, tune_on, split_column, split_value, top)
 
 
 def get_confidence(workspace_id: WorkspaceId, experiment: ExperimentName) -> str:
@@ -731,6 +782,36 @@ def set_experiment_color(
     return _run(actions.set_experiment_color, workspace_id, name, color)
 
 
+def apply_decision_rule(
+    workspace_id: WorkspaceId,
+    name: ExperimentName,
+    biases: Annotated[dict[str, float], Field(description=(
+        "Class label -> bias on its log-score, e.g. the 'biases' tune_decision_rule returned (or edited "
+        "values). A class not given stays 0."))],
+    tune_on: TuneOn = "val",
+    split_column: SplitColumn = "",
+    split_value: SplitValue = "val",
+    objective: Objective = "macro_f1",
+    classes: Classes = None,
+    locked: Locked = None,
+    max_abs_bias: MaxAbsBias = None,
+) -> str:
+    """Make the workspace read an experiment as if its network carried per-class biases on its logits:
+    its scores become softmax(log p + b) in every tab, chart, report and tool, and it shows a badge
+    saying so. Records the rows the biases were tuned on (pass the same tune_on, split_column,
+    split_value, objective and classes as the tune_decision_rule call they came from: the tuning rows
+    are read again to check them and to record the objective). Replaces a rule already applied;
+    revert_decision_rule undoes it."""
+    return _run(actions.apply_decision_rule, workspace_id, name, biases, tune_on, split_column, split_value,
+                objective, classes, locked, max_abs_bias)
+
+
+def revert_decision_rule(workspace_id: WorkspaceId, name: ExperimentName) -> str:
+    """Read an experiment with the scores of its results CSV again, without the decision rule
+    apply_decision_rule gave it."""
+    return _run(actions.revert_decision_rule, workspace_id, name)
+
+
 GroupKey = Annotated[str, Field(description="An experiment group's id or exact name, as get_workspace lists them.")]
 
 
@@ -1028,7 +1109,8 @@ def get_dataset_rows(
 
 READ_TOOLS = (
     list_workspaces, get_workspace, get_dataset_summary, get_column_stats, get_metrics, get_per_class,
-    get_confusions, compare_experiments, get_slices, get_calibration, get_confidence, get_examples,
+    get_confusions, compare_experiments, get_slices, get_calibration, get_confidence, tune_decision_rule,
+    get_examples,
     find_cleaning_candidates, find_similar, get_review, get_snapshot, search_mlflow_runs, list_mlflow_run_files,
     get_mlflow_run_links, plot_chart, make_mosaic, get_notes,
     compare_embedding_spaces, find_neighbours_across, plot_embedding_comparison, get_class_separability,
@@ -1038,6 +1120,7 @@ READ_TOOLS = (
 WRITE_TOOLS = (
     generate_report, create_workspace, update_workspace, duplicate_workspace, delete_workspace, rename_group,
     add_experiment, add_mlflow_run, remove_experiment, rename_experiment, set_experiment_color,
+    apply_decision_rule, revert_decision_rule,
     create_experiment_group, set_experiment_group, rename_experiment_group, set_experiment_group_color,
     delete_experiment_group, show_experiment_groups, group_experiments_by_run,
     download_workspace, set_dataset_filter, create_snapshot, update_snapshot, delete_snapshot,

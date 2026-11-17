@@ -95,7 +95,7 @@ def build_report(state, experiment_names: list, include_per_class: bool = True,
         report.section("Notes").blocks.append(report.notes(notes))
     metrics = {name: _metrics_for(state, name) for name in experiment_names}
     focus = _report_focus(metrics, focus)
-    _add_summary(report, metrics)
+    _add_summary(report, metrics, state)
     if include_per_class_charts:
         _add_per_class_charts(report, state, metrics, focus)
     if include_per_class:
@@ -172,7 +172,7 @@ def _metrics_for(state, name):
                            experiment.score_cols, experiment.class_labels)
 
 
-def _add_summary(report: Report, metrics: dict) -> None:
+def _add_summary(report: Report, metrics: dict, state=None) -> None:
     section = report.section("Summary")
     names = list(metrics)
 
@@ -196,6 +196,12 @@ def _add_summary(report: Report, metrics: dict) -> None:
                 f"so nothing about those classes can be ranked; they are excluded from the macro "
                 f"ROC-AUC and average precision."
             )
+    if state is not None:
+        # An experiment read through a decision rule: its numbers are the
+        # biased rule's (see core/decision_rule.py).
+        from lookin.core.agent_tools import _rule_warnings
+        ruled = {n for n in names if getattr(state.experiments.get(n), "decision_rule", None)}
+        warnings += [w for w in _rule_warnings(state) if any(repr(n) in w for n in ruled)]
     for warning in warnings:
         section.blocks.append(report.paragraph(warning, note=True))
 

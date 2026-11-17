@@ -805,3 +805,66 @@ def ovr_curve(frame: pd.DataFrame, label_col: str, score_col: str, label) -> Opt
         return None
     _fpr, _tpr, recall, precision, _ap = curves[0]
     return recall, precision
+
+
+# ---- one call for what a tool needs ---------------------------------------------------
+
+@dataclass
+class Setup:
+    """The evaluated rows and the tuning rows of one experiment, read and
+    checked: what tune and apply both start from."""
+    eval_frame: pd.DataFrame
+    eval_problem: Problem
+    pool: TuningPool
+    tuning_problem: Problem
+    check: PoolCheck
+
+
+def setup(state, experiment_name: str, tune_on: str = POOL_VAL, split_column: str = "",
+          split_value: str = DEFAULT_VAL_VALUE) -> Setup:
+    """Read and check everything a tuning needs, from the scores as read
+    (whatever rule is applied). Raises ValueError, in words for the user,
+    when the rows cannot be used -- never falls back to other rows."""
+    if tune_on not in POOL_KEYS:
+        raise ValueError(f"tune_on must be one of {', '.join(POOL_KEYS)}; got {tune_on!r}.")
+    if state.dataset is None:
+        raise ValueError("The workspace has no dataset loaded.")
+    experiment = state.experiments[experiment_name]
+    cols = state.dataset.columns
+    labels = list(experiment.class_labels[: len(experiment.score_cols)])
+    eval_frame = state.raw_merged(experiment_name)
+    eval_problem = prepare(eval_frame, cols.label_col, experiment.score_cols, labels)
+    if tune_on == POOL_TEST:
+        return Setup(eval_frame, eval_problem, evaluation_as_tuning_pool(eval_frame), eval_problem,
+                     check_pools([], [], same_pool=True))
+    if not split_column:
+        row_filter = state.dataset.row_filter
+        split_column = row_filter[0] if row_filter and row_filter[0] else DEFAULT_SPLIT_COLUMN
+    pool = read_tuning_pool(state, experiment_name, split_column, split_value or DEFAULT_VAL_VALUE)
+    if pool.frame is None:
+        raise ValueError(pool.disabled_reason)
+    check = check_pools(pool.frame[cols.uuid_col], eval_frame[cols.uuid_col], same_pool=False)
+    if check.blocking:
+        raise ValueError(check.blocking)
+    tuning_problem = prepare(pool.frame, cols.label_col, experiment.score_cols, labels, space=eval_problem.space)
+    return Setup(eval_frame, eval_problem, pool, tuning_problem, check)
+
+
+def biases_from_labels(labels: list, given: dict) -> tuple:
+    """(bias per score column, labels left at 0) from {class label: bias};
+    raises ValueError on a label with no score column or a bias that is not
+    a finite number."""
+    names = [str(l) for l in labels]
+    unknown = sorted(set(map(str, given)) - set(names))
+    if unknown:
+        raise ValueError(f"no score column for: {', '.join(unknown[:10])}")
+    biases = np.zeros(len(names))
+    for label, value in given.items():
+        try:
+            value = float(value)
+        except (TypeError, ValueError) as ex:
+            raise ValueError(f"the bias of {label!r} is not a number: {value!r}") from ex
+        if not np.isfinite(value):
+            raise ValueError(f"the bias of {label!r} is not finite")
+        biases[names.index(str(label))] = value
+    return biases, [l for l in names if l not in set(map(str, given))]

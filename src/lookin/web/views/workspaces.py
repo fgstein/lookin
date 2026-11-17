@@ -690,11 +690,37 @@ def follow_workspace(session, fresh) -> bool:
             if new:
                 upload.add_mount_experiments(new, fresh.mount.experiment_groups)
                 _adopt_loaded_mount(session, fresh)
+            if _follow_decision_rules(session, previous, fresh):
+                session.notify_change()
         _remember_loadable(session, fresh)
         session.mark("*")
         return True
     finally:
         lock.release()
+
+
+def _follow_decision_rules(session, previous, fresh) -> bool:
+    """A decision rule applied or reverted in the manifest (by an agent, or
+    another tab): applied here too. Only where the manifest's rule changed
+    -- a rule applied in this tab and not saved yet is left alone. Returns
+    whether anything changed."""
+    from lookin.core import decision_rule as dr
+
+    before = {e.name: e.decision_rule for e in previous.mount.experiments}
+    state = session.state
+    changed = False
+    for e in fresh.mount.experiments:
+        if e.name not in state.experiments or before.get(e.name, "") == e.decision_rule:
+            continue
+        if e.decision_rule:
+            problem = dr.restore(state, e.name, e.decision_rule)
+            if problem:
+                session.toast(problem, "warn")
+                continue
+        else:
+            state.revert_decision_rule(e.name)
+        changed = True
+    return changed
 
 
 def check_current_workspace(session) -> None:
