@@ -298,3 +298,20 @@ def test_a_workspace_reopens_with_its_rule(tmp_path):
     loaded = load_mount_into(None, lib.Mount(dataset_path=str(tmp_path / "ds.csv"), uuid_col="uuid",
                                               crop_col="crop", label_col="label", experiments=[broken]))
     assert loaded.state.experiments["exp"].decision_rule is None and "not applied" in loaded.warnings[-1]
+
+
+@pytest.mark.parametrize("objective", [dr.OBJ_MACRO_F1, dr.OBJ_BALANCED_ACCURACY])
+@pytest.mark.parametrize("rounded", [False, True])
+def test_the_pair_sweep_is_shifting_both_biases_and_recomputing(objective, rounded):
+    problem, _df, _labels = _problem(13, 300, 5, rounded=rounded)
+    spec = dr.TuningSpec(objective=objective)
+    weights = dr._weights(problem, spec)
+    biases = np.array([0.0, 0.3, -0.2, 0.5, 0.1])
+    tops = dr._Tops(problem.logs, biases.copy())
+    for a, b in [(1, 2), (0, 4), (2, 3)]:
+        edges, objective_values, lows = dr._group_sweep(problem, tops.inside((a, b)), tops.outside((a, b)), weights)
+        for j in range(len(objective_values)):
+            shift = dr._interval_point(edges, j, -np.inf, np.inf, lows)
+            trial = biases.copy()
+            trial[[a, b]] += shift
+            assert objective_values[j] == pytest.approx(_brute_objective(problem, spec, trial), abs=1e-12)

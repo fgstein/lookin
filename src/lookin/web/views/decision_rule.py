@@ -425,14 +425,15 @@ class DecisionRuleView(RebuildView):
         self.message = ""
         self.rebuild(self._fit, clear_stale=False)
 
-    def _progress(self, passes: int, done: int, total: int) -> None:
+    def _progress(self, start: int, starts: int, passes: int, done: int, total: int) -> None:
         now = time.monotonic()
         if now - self._last_progress < PROGRESS_EVERY:
             from lookin.web.session import checkpoint
             checkpoint()
             return
         self._last_progress = now
-        self.set_progress(f"Fitting the biases -- pass {passes}, class {done + 1:,} of {total:,}...")
+        self.set_progress(f"Fitting the biases -- starting point {start} of {starts}, pass {passes}, "
+                          f"step {done + 1:,} of {total:,}...")
 
     def _fit(self) -> None:
         ctx = self.ctx
