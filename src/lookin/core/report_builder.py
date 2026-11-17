@@ -36,6 +36,7 @@ METRIC_ROWS = (
     ("cohen_kappa", "Cohen's kappa"),
     ("macro_roc_auc", "Macro ROC-AUC"),
     ("macro_avg_precision", "Macro avg. precision"),
+    ("macro_f1_max", "Macro F1-max"),
     ("log_loss", "Log loss"),
     ("brier_score", "Brier score"),
     ("ece", "ECE"),

@@ -37,7 +37,7 @@ CHART_KINDS = (
     "per_class", "roc_pr", "confusion_matrix", "confusion_overview", "reliability", "confidence_histogram",
     "risk_coverage", "column", "slices", "projection",
 )
-PER_CLASS_METRICS = ("f1", "precision", "recall", "specificity", "roc_auc", "average_precision", "support")
+PER_CLASS_METRICS = ("f1", "precision", "recall", "specificity", "roc_auc", "average_precision", "f1_max", "support")
 PROJECTION_METHODS = ("pca", "umap", "tsne", "umap_circle")
 MAX_PROJECTION_POINTS = 20_000
 DEFAULT_PROJECTION_POINTS = 3_000

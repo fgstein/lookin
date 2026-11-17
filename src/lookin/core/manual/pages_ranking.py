@@ -212,7 +212,80 @@ PAGES = (
                 )),
             )),
         ),
-        see_also=("roc-auc", "precision-recall", "one-vs-rest", "support-and-imbalance"),
+        see_also=("roc-auc", "precision-recall", "one-vs-rest", "support-and-imbalance", "f1-max"),
         keywords=("precision recall curve", "average precision", "ap", "auprc", "pr curve"),
+    ),
+
+    ManualPage(
+        id="f1-max",
+        title="F1-max: the best F1 on the precision-recall curve",
+        summary=(
+            "For each class, the highest F1 reached anywhere on its precision-recall curve -- the F1 "
+            "the class would get with the best possible threshold on its own score. It is a ranking "
+            "metric computed one-vs-rest, like average precision, and not the F1 of the argmax "
+            "prediction."
+        ),
+        shown_in="Metrics tab (per-class bars, Summary columns \"Macro F1-max\" and \"Weighted F1-max\")",
+        blocks=(
+            Heading("Definition"),
+            Para(
+                "Take the one-vs-rest problem of class $c$: crops of class $c$ are positive, all others "
+                "negative, ranked by the score column $p_{i,c}$. At a threshold $t$, predict $c$ for "
+                "every crop with $p_{i,c} \\geq t$; that gives a precision, a recall and so an F1. "
+                "F1-max is the largest of them."
+            ),
+            Equation(
+                r"\mathrm{F}_1^{\max}(c) = \max_t \; \frac{2\,\mathrm{TP}_c(t)}"
+                r"{2\,\mathrm{TP}_c(t) + \mathrm{FP}_c(t) + \mathrm{FN}_c(t)}",
+                where=(
+                    (r"\mathrm{TP}_c(t)", "crops of class $c$ with $p_{i,c} \\geq t$"),
+                    (r"\mathrm{FP}_c(t)", "crops of another class with $p_{i,c} \\geq t$"),
+                    (r"\mathrm{FN}_c(t)", "crops of class $c$ with $p_{i,c} < t$"),
+                ),
+                note="Only the thresholds at a positive crop's score need trying: they are the points of the precision-recall curve.",
+            ),
+            Para(
+                "On the precision-recall chart it is the highest iso-F1 line the curve touches. Macro "
+                "F1-max averages it over the classes that have one; weighted F1-max weights each class "
+                "by its support."
+            ),
+            Heading("How it differs from F1"),
+            Para(
+                "The F1 of the per-class bars and of the Summary is measured on the argmax prediction: "
+                "a crop counts as predicted $c$ when $c$ has the highest score of its row. That is a "
+                "single operating point, and generally *not* a point of the one-vs-rest curve of $c$, "
+                "because whether a crop is predicted $c$ depends on the other classes' scores too. "
+                "F1-max uses the column $p_{\\cdot,c}$ alone, with a threshold chosen per class."
+            ),
+            HowToRead((
+                ("F1-max well above F1", "the class is ranked well but the argmax decision does not make the most of it: a per-class threshold or a recalibration could recover the difference"),
+                ("F1-max close to F1", "the argmax already sits near the best operating point the score allows"),
+                ("F1-max low", "no threshold separates the class: the score itself, not the decision rule, is the limit"),
+            )),
+            Callout(CALLOUT_PITFALL, "An optimistic number", (
+                Para(
+                    "The threshold is chosen on the very rows it is evaluated on, so F1-max overstates "
+                    "what that threshold would give on new data -- the more so for classes with few "
+                    "examples. Read it as the potential of the score, not as a performance to report."
+                ),
+            )),
+            Callout(CALLOUT_WARNING, "F1-max can be below F1", (
+                Para(
+                    "The argmax is not one of the thresholds F1-max tries, so nothing forces F1-max to be "
+                    "at least F1. It is the usual case, not a rule: a crop whose score for $c$ is modest "
+                    "but still the highest of its row is predicted $c$ by the argmax, and no single "
+                    "threshold on $p_{\\cdot,c}$ may reproduce that set of crops."
+                ),
+            )),
+            Callout(CALLOUT_TIP, "When it is blank", (
+                Para(
+                    "As for average precision: a class absent from the ground truth, present in every "
+                    "row, or whose score column is constant or holds non-finite values has no curve, and "
+                    "so no F1-max."
+                ),
+            )),
+        ),
+        see_also=("f1", "pr-auc", "one-vs-rest", "per-class-thresholds"),
+        keywords=("f1 max", "max f1", "best f1", "optimal threshold", "oracle threshold"),
     ),
 )

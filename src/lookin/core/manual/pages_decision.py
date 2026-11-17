@@ -200,7 +200,7 @@ PAGES = (
                 ),
             )),
         ),
-        see_also=("precision-recall", "averaging", "mcc", "balanced-accuracy", "pr-auc"),
+        see_also=("precision-recall", "averaging", "mcc", "balanced-accuracy", "pr-auc", "f1-max"),
         keywords=("f1", "f-score", "harmonic mean", "fbeta", "dice"),
     ),
 

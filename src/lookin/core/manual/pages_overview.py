@@ -150,6 +150,7 @@ PAGES = (
                     ("Cohen's kappa", "decision", "accuracy above chance", "Cohen's kappa"),
                     ("Macro / Weighted ROC-AUC", "ranking", "quality of the ranking, threshold-free", "ROC curve and ROC-AUC"),
                     ("Macro / Weighted AP", "ranking", "ranking quality for rare classes; floor is the prevalence", "Precision-Recall curve and average precision"),
+                    ("Macro / Weighted F1-max", "ranking", "best F1 a per-class threshold reaches; optimistic", "F1-max: the best F1 on the precision-recall curve"),
                     ("Log loss", "probabilistic", "lower better; $\\log C$ is the uniform baseline", "Log loss (cross-entropy)"),
                     ("Brier", "probabilistic", "lower better; bounded", "Brier score"),
                     ("Brier reliability / resolution / uncertainty", "probabilistic", "the three parts of Brier", "Brier decomposition: reliability, resolution, uncertainty"),

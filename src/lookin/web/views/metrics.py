@@ -51,7 +51,7 @@ from lookin.web.views.widgets import (
 # Every per-class column compute_metrics() produces, so the chart below can
 # show any of them -- "support" included, which is a count rather than a
 # rate and so is the one that needs its own y-axis (see _render_perclass_bars).
-METRIC_OPTIONS = ["f1", "precision", "recall", "specificity", "roc_auc", "average_precision", "support"]
+METRIC_OPTIONS = ["f1", "precision", "recall", "specificity", "roc_auc", "average_precision", "f1_max", "support"]
 # Export destinations -- keys, compared in code.
 REPORT_TO_BROWSER = "browser"
 REPORT_TO_SERVER = "server"
@@ -73,12 +73,13 @@ PERCLASS_MANUAL_PAGES = {
     "specificity": "precision-recall",
     "roc_auc": "roc-auc",
     "average_precision": "pr-auc",
+    "f1_max": "f1-max",
     "support": "support-and-imbalance",
 }
 SUMMARY_HEADERS = [
     "Experiment", "N", "Accuracy", "Balanced Acc", "Macro F1", "Weighted F1",
     "MCC", "Cohen's kappa", "Macro ROC-AUC", "Weighted ROC-AUC",
-    "Macro AP", "Weighted AP", "Log loss", "Brier",
+    "Macro AP", "Weighted AP", "Macro F1-max", "Weighted F1-max", "Log loss", "Brier",
     "Brier reliability", "Brier resolution", "Brier uncertainty", "ECE", "MCE",
 ]
 
@@ -389,6 +390,7 @@ class MetricsView(GroupActions, RebuildView):
         for name, m in metrics_by_name.items():
             values = [m.accuracy, m.balanced_accuracy, m.macro_f1, m.weighted_f1, m.mcc, m.cohen_kappa,
                       m.macro_roc_auc, m.weighted_roc_auc, m.macro_avg_precision, m.weighted_avg_precision,
+                      m.macro_f1_max, m.weighted_f1_max,
                       m.log_loss, m.brier_score, m.brier_reliability, m.brier_resolution, m.brier_uncertainty,
                       m.ece, m.mce]
             cells = "".join(f"<td class=num>{f'{v:.3f}' if v == v else '—'}</td>" for v in values)
