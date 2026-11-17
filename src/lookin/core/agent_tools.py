@@ -42,6 +42,7 @@ from lookin.core import candidates as cand
 from lookin.core import comparison as cmp
 from lookin.core import confidence as conf
 from lookin.core import dataset_filter as dsf
+from lookin.core import decision_rule as dr
 from lookin.core import experiment_groups
 from lookin.core import library as lib
 from lookin.core import links
@@ -187,7 +188,25 @@ def _context(entry: _Entry, tab: str = "") -> dict:
         review = state.review
         if review is not None and review.versions:
             out["review_versions_available"] = sorted(review.versions)
-    out["warnings"] = list(loaded.warnings)
+    out["warnings"] = list(loaded.warnings) + _rule_warnings(state)
+    return out
+
+
+def _rule_warnings(state) -> list:
+    """One warning per experiment read through a decision rule: every
+    number about it is the biased rule's, not the model's argmax."""
+    out = []
+    for name, experiment in state.experiments.items():
+        rule = getattr(experiment, "decision_rule", None)
+        if not rule:
+            continue
+        if dr.is_tuned_on_evaluation(rule):
+            out.append(f"Experiment {name!r} is read with a decision rule (per-class biases) tuned on the evaluated "
+                       f"rows themselves: its numbers are those of the biased rule, and optimistic.")
+        else:
+            out.append(f"Experiment {name!r} is read with a decision rule (per-class biases tuned on "
+                       f"{rule.get('n_rows', 0)} rows where {rule.get('split_column')!r} is "
+                       f"{rule.get('split_value')!r}): its numbers are those of the biased rule.")
     return out
 
 
@@ -649,6 +668,72 @@ def _point(p) -> dict:
             "accuracy_accepted": p.accuracy, "errors_accepted": p.n_errors_accepted,
             "abstained": p.n_abstained, "accuracy_abstained": p.accuracy_abstained,
             "unreachable": bool(p.unreachable)}
+
+
+DECISION_SUMMARY = ("accuracy", "balanced_accuracy", "macro_f1", "weighted_f1", "mcc", "cohen_kappa")
+DECISION_REFERENCE = ("macro_f1_max", "weighted_f1_max", "macro_avg_precision", "weighted_avg_precision")
+
+
+def tune_decision_rule(workspace_id: str, experiment: str, objective: str = dr.OBJ_MACRO_F1,
+                       classes: list | None = None, locked: list | None = None,
+                       max_abs_bias: float | None = None, tune_on: str = dr.POOL_VAL,
+                       split_column: str = "", split_value: str = dr.DEFAULT_VAL_VALUE,
+                       top: int = DEFAULT_TOP) -> dict:
+    """The Decision Rule tab's Compute: the per-class biases maximising
+    `objective` on the tuning rows, and what they do to the evaluated rows.
+    Changes nothing -- apply_decision_rule does."""
+    with _lock:
+        entry = _entry(workspace_id)
+        name = _experiment_name(entry, experiment)
+        state = entry.loaded.state
+        cols = state.dataset.columns if state.dataset is not None else None
+        su = dr.setup(state, name, tune_on, split_column, split_value)
+        spec = dr.TuningSpec(objective=objective, classes=tuple(classes) if classes else None,
+                             locked=tuple(locked or ()), max_abs_bias=max_abs_bias)
+        result = dr.fit_biases(su.tuning_problem, spec)
+        cross = dr.cross_fit(su.tuning_problem, spec, in_sample=result.objective_after) \
+            if tune_on == dr.POOL_TEST else None
+        exp = state.experiments[name]
+        before = compute_metrics(name, su.eval_frame, cols.label_col, exp.score_cols, exp.class_labels)
+        after_frame = dr.apply_to_frame(su.eval_frame, cols.label_col, exp.score_cols, su.eval_problem.labels,
+                                        su.eval_problem.space, result.biases)
+        after = compute_metrics(name, after_frame, cols.label_col, exp.score_cols, exp.class_labels)
+        out = _context(entry, "decision")
+        out["warnings"] += list(su.pool.warnings)
+        if tune_on == dr.POOL_TEST:
+            out["warnings"].append("Tuned on the evaluated rows themselves: the 'after' numbers are measured on the "
+                                   "rows the biases were fitted to and are optimistic -- see cross_fit.")
+        before_pc = before.per_class.set_index("label")
+        after_pc = after.per_class.set_index("label")
+        tuning_n = dict(zip(map(str, su.tuning_problem.labels), su.tuning_problem.n_true))
+        per_class = []
+        for label, bias in zip(result.labels, result.biases):
+            f1_b = before_pc["f1"].get(label, float("nan")) if label in before_pc.index else float("nan")
+            f1_a = after_pc["f1"].get(label, float("nan")) if label in after_pc.index else float("nan")
+            per_class.append({"label": label, "bias": bias, "tuning_rows": tuning_n.get(str(label), 0),
+                              "evaluated_rows": int(before_pc["support"].get(label, 0)) if label in before_pc.index else 0,
+                              "f1_before": f1_b, "f1_after": f1_a,
+                              "f1_change": f1_a - f1_b if f1_a == f1_a and f1_b == f1_b else None})
+        per_class.sort(key=lambda r: -abs(r["f1_change"] or 0.0))
+        out.update(
+            experiment=name, tuned_on=tune_on,
+            tuning_rows=su.tuning_problem.n_rows, evaluated_rows=su.eval_problem.n_rows,
+            split_column=su.pool.split_column or None, split_value=su.pool.split_value or None,
+            score_space=su.eval_problem.space, objective=objective,
+            objective_on_tuning_rows={"all_biases_zero": result.objective_before, "fitted": result.objective_after},
+            converged=result.converged, passes=result.passes, reference_class=result.reference,
+            classes_in_objective=len(result.counted), classes_with_no_tuning_row=result.absent or None,
+            biases=result.as_dict(),
+            evaluated={k: {"plain_argmax": getattr(before, k), "with_biases": getattr(after, k)}
+                       for k in DECISION_SUMMARY},
+            one_vs_rest_reference={k: getattr(before, k) for k in DECISION_REFERENCE},
+            per_class_most_changed=per_class[:_top(top)],
+            currently_applied=bool(exp.decision_rule),
+        )
+        if cross is not None:
+            out["cross_fit"] = {"in_sample": cross.in_sample, "held_out": cross.held_out,
+                                "all_biases_zero": cross.before}
+        return _clean(out)
 
 
 def get_calibration(workspace_id: str, experiments: list | None = None, target_accuracy: float | None = None,

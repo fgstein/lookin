@@ -223,6 +223,10 @@ class MountExperiment:
     # The id of the experiment group it is drawn as, "" for none (see
     # core/experiment_groups.py and Mount.experiment_groups).
     group: str = ""
+    # The per-class biases applied to it, as JSON (core/decision_rule.py
+    # make_record), "" for none: the experiment reopens as if its network
+    # carried them.
+    decision_rule: str = ""
 
     def from_mlflow(self) -> bool:
         return bool(self.mlflow_run_id and self.artifact_path)

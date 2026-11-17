@@ -29,7 +29,7 @@ from lookin.core.class_focus import FOCUS_MAX
 from lookin.web import html as h
 from lookin.web.views.base import NO_RENDER, RebuildView
 from lookin.web.views.carousel import Carousel
-from lookin.web.views.widgets import ClassPicker
+from lookin.web.views.widgets import ClassPicker, experiment_options
 
 # Kept for snapshots, which have always carried "cols"; the carousel's zoom
 # steps decide how many crops sit on a row now.
@@ -302,7 +302,7 @@ class GalleryView(RebuildView):
 
     def _mosaic_controls(self) -> str:
         """The Gallery's own controls, at the start of the mosaic's toolbar."""
-        options = [(NONE_EXPERIMENT, "(none)")] + [(n, n) for n in self.state.experiments]
+        options = [(NONE_EXPERIMENT, "(none)")] + experiment_options(self.state, self.state.experiments)
         shuffle = h.checkbox("Shuffle", bool(self.shuffle_seed), change=self.c("shuffle"), cls="sw")
         reshuffle = (h.button(icon_name="shuffle", act_attr=self.a("reshuffle"), small=True, kind="ghost",
                               title="Another random order") if self.shuffle_seed else "")

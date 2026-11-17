@@ -34,6 +34,7 @@ from lookin.core.embedding_context import (
 )
 from lookin.core.review_actions import NO_REASON, record_decision
 from lookin.web import html as h
+from lookin.web.views.widgets import experiment_options
 from lookin.web.session import checkpoint
 from lookin.web.views.base import Dialog, StaleTracking, View
 from lookin.web.views.carousel import open_carousel, reason_options
@@ -826,7 +827,7 @@ class CleaningView(StaleTracking, View):
 
     def _sources_html(self, names: list) -> str:
         source = self.source
-        exp_select = (h.select([(n, n) for n in names], self.experiment or "", change=self.c("experiment"),
+        exp_select = (h.select(experiment_options(self.state, names), self.experiment or "", change=self.c("experiment"),
                                label="Experiment")
                       if names else h.select([("", "")], "", label="Experiment", disabled=True))
         params = []

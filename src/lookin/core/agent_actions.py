@@ -843,3 +843,81 @@ def delete_saved_view(workspace_id: str, view_id: str, confirm: str = "") -> dic
     workspace = find_workspace(workspace_id)
     vc.delete_view(workspace, view_id)
     return _workspace_out(workspace, deleted_view=view_id)
+
+
+# ---- decision rule (core/decision_rule.py) ------------------------------------
+
+def apply_decision_rule(workspace_id: str, experiment: str, biases: dict, tune_on: str = "val",
+                        split_column: str = "", split_value: str = "val", objective: str = "macro_f1",
+                        classes: list | None = None, locked: list | None = None,
+                        max_abs_bias: float | None = None) -> dict:
+    """The Decision Rule tab's Apply: from now on every tab, report and tool
+    reads `experiment` as if its network carried `biases` (class label ->
+    bias on its log-score). The rule is recorded with the rows it was tuned
+    on, which are read again to check them and to score the objective."""
+    import numpy as np
+
+    from lookin.core import decision_rule as dr
+
+    if not isinstance(biases, dict) or not biases:
+        raise ValueError("biases must map class labels to numbers, e.g. the 'biases' tune_decision_rule returns.")
+    workspace = find_workspace(workspace_id)
+    with tools._lock:
+        entry = tools._entry(workspace.id)
+        name = tools._experiment_name(entry, experiment)
+        state = entry.loaded.state
+        su = dr.setup(state, name, tune_on, split_column, split_value)
+        vector, left_at_zero = dr.biases_from_labels(su.tuning_problem.labels, biases)
+        spec = dr.TuningSpec(objective=objective, classes=tuple(classes) if classes else None,
+                             locked=tuple(locked or ()), max_abs_bias=max_abs_bias)
+        for label in spec.locked:
+            if str(label) in {str(k) for k in biases} and float(biases[label]) != 0.0:
+                raise ValueError(f"{label!r} is listed as locked but its bias is not 0.")
+        before = dr.objective_value(su.tuning_problem, spec, np.zeros(len(vector)))
+        after = dr.objective_value(su.tuning_problem, spec, vector)
+        exp = state.experiments[name]
+        record = dr.make_record(
+            exp.score_cols, su.tuning_problem.labels, vector, su.eval_problem.space, tune_on,
+            split_column=su.pool.split_column if tune_on == dr.POOL_VAL else "",
+            split_value=su.pool.split_value if tune_on == dr.POOL_VAL else "",
+            n_rows=su.tuning_problem.n_rows, objective=objective, classes=spec.classes, locked=spec.locked,
+            max_abs_bias=max_abs_bias, objective_before=before, objective_after=after)
+        dr.check_record(record, exp.score_cols, su.eval_frame[exp.score_cols].to_numpy())
+        text = dr.record_to_text(record)
+
+    def change(fresh: lib.Workspace) -> bool:
+        for e in fresh.mount.experiments:
+            if e.name == name:
+                e.decision_rule = text
+                return True
+        raise ValueError(f"No experiment {name!r} in this workspace.")
+
+    fresh = _update(workspace, change)
+    out = _workspace_out(fresh, experiment=name, tuned_on=tune_on, tuning_rows=record["n_rows"],
+                         objective=objective, objective_on_tuning_rows={"all_biases_zero": before, "applied": after},
+                         classes_left_at_zero=left_at_zero or None)
+    out["open_url"] = links.link(fresh.id, tab="decision")
+    if tune_on == dr.POOL_TEST:
+        out["warning"] = ("Tuned on the evaluated rows: every number about this experiment is now measured on the rows "
+                          "the rule was fitted to, and is optimistic.")
+    return out
+
+
+def revert_decision_rule(workspace_id: str, experiment: str) -> dict:
+    """Read `experiment` with its scores as they are again."""
+    workspace = find_workspace(workspace_id)
+    out = {}
+
+    def change(fresh: lib.Workspace) -> bool:
+        for e in fresh.mount.experiments:
+            if e.name == experiment:
+                out["had_rule"] = bool(e.decision_rule)
+                e.decision_rule = ""
+                return out["had_rule"]
+        raise ValueError(f"No experiment {experiment!r} in this workspace.")
+
+    fresh = _update(workspace, change)
+    if not out.get("had_rule"):
+        return _workspace_out(fresh, experiment=experiment, reverted=False,
+                              note="No decision rule was applied to this experiment: nothing changed.")
+    return _workspace_out(fresh, experiment=experiment, reverted=True)

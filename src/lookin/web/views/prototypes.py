@@ -32,7 +32,7 @@ from lookin.web import html as h
 from lookin.web.views.base import Dialog, RebuildView
 from lookin.web.views.carousel import open_carousel
 from lookin.web.views.media import crop_img, fig_html
-from lookin.web.views.widgets import ClassFocus
+from lookin.web.views.widgets import ClassFocus, experiment_options
 
 
 OWN_COLOR = "#3b7d5c"
@@ -654,7 +654,7 @@ class PrototypesView(RebuildView):
             parts.append(h.banner(res["note"], "warn"))
         parts.append(self.class_focus.render())
         names = experiments_with_embeddings(state)
-        exp_select = h.select([(n, n) for n in names], self.exp_name, change=self.c("experiment"), label="Experiment")
+        exp_select = h.select(experiment_options(self.state, names), self.exp_name, change=self.c("experiment"), label="Experiment")
         parts.append(f'<div class="row">{exp_select}</div>')
         if "ctx" not in res:
             if not res and not self.progress_text:

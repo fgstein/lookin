@@ -30,7 +30,7 @@ from lookin.web.views.carousel import CarouselDialog
 from lookin.web.views.common import (
     matrix_cell_size, matrix_label_chars, matrix_text_size, short_column_labels, status_line,
 )
-from lookin.web.views.widgets import ClassFocus
+from lookin.web.views.widgets import ClassFocus, experiment_options
 
 
 CELL_SIZE = 38
@@ -389,7 +389,7 @@ class CompareView(RebuildView):
 
     def _head_html(self) -> str:
         names = list(self.state.experiments)
-        options = [(n, n) for n in names]
+        options = experiment_options(self.state, names)
         picker = (f'<div class="row cmp-pick">'
                   f'{h.select(options, self.baseline_value or "", change=self.c("baseline"), label="Baseline (A)", cls="cmp-sel")}'
                   f'{_icon_button("", "swap", self.a("swap"), kind="ghost", title="Swap baseline and candidate")}'

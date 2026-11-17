@@ -35,7 +35,9 @@ from lookin.web.views.base import RebuildView
 from lookin.web.views.carousel import CarouselDialog
 from lookin.web.views.common import score_diagnostics_banner
 from lookin.web.views.media import chart_html, fig_png, png_size
-from lookin.web.views.widgets import ClassFocus, GroupActions, class_select, group_tag, groups_switch
+from lookin.web.views.widgets import (
+    ClassFocus, GroupActions, class_select, experiment_options, group_tag, groups_switch, rule_tag,
+)
 
 CHART_MAX_WIDTH = 1200
 CHART_PX_PER_INCH = 90
@@ -572,7 +574,7 @@ class CalibrationView(GroupActions, RebuildView):
         ticks = "".join(
             f'<span class="cal-exp">{h.dot(color_for_experiment(name, self.state.color_slots), size=10)}'
             f'{h.checkbox(name, ticked, change=self.c("tick", experiment=name), ellipsis=True)}'
-            f'{group_tag(self.state, name)}</span>'
+            f'{group_tag(self.state, name)}{rule_tag(self.state, name)}</span>'
             for name, ticked in self.checks.items())
         switch = groups_switch(self.target, self.state)
         if switch:
@@ -643,7 +645,7 @@ class CalibrationView(GroupActions, RebuildView):
             excess = bundle.curve.aurc - bundle.curve.optimal_aurc
             gap_cls = " c-warn" if abs(gap) > 0.05 else ""
             rows.append(
-                f'<tr><td><span class="row-nw">{h.dot(color_for_experiment(name, self.state.color_slots), size=10)}{h.name(name)}</span></td>'
+                f'<tr><td><span class="row-nw">{h.dot(color_for_experiment(name, self.state.color_slots), size=10)}{h.name(name)}{rule_tag(self.state, name)}</span></td>'
                 f'<td class="num">{bundle.n:,}</td>'
                 f'<td class="num">{_fmt(bundle.accuracy)}</td>'
                 f'<td class="num">{_fmt(bundle.mean_confidence)}</td>'
@@ -748,7 +750,7 @@ class CalibrationView(GroupActions, RebuildView):
 
     def _class_block(self) -> str:
         selected = self._selected_names()
-        picker = h.select([(n, n) for n in selected], self.class_experiment or "",
+        picker = h.select(experiment_options(self.state, selected), self.class_experiment or "",
                           change=self.c("class_experiment"), label="Experiment")
         field = h.text_input(self.class_target_text, name="target", label="Target precision per class", width="90px",
                              input_=self.i("class_target_typed"))

@@ -27,7 +27,7 @@ from lookin.web import html as h
 from lookin.web.views.base import RebuildView
 from lookin.web.views.common import score_diagnostics_banner, uuid_overlap_banner
 from lookin.web.views.media import fig_html
-from lookin.web.views.widgets import ClassFocus, class_select
+from lookin.web.views.widgets import ClassFocus, class_select, experiment_options
 
 
 # Which classes the per-class chart shows past FOCUS_MAX (see ClassFocus).
@@ -597,7 +597,7 @@ class ConfidenceView(RebuildView):
         if self.empty_msg:
             return (f'<div class="stack conf">{"".join(head)}'
                     f'{h.banner(self.empty_msg, "info")}{self.progress_html()}</div>')
-        exp_select = h.select([(n, n) for n in self.exp_names], self.experiment or "",
+        exp_select = h.select(experiment_options(self.state, self.exp_names), self.experiment or "",
                               change=self.c("experiment"), label="Experiment")
         head.append(f'<div class="row">{exp_select}</div>')
         head += self.warnings

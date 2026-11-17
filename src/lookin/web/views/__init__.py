@@ -17,6 +17,7 @@ _SPECS = {
     "gallery": "lookin.web.views.gallery:GalleryView",
     "metrics": "lookin.web.views.metrics:MetricsView",
     "calibration": "lookin.web.views.calibration:CalibrationView",
+    "decision": "lookin.web.views.decision_rule:DecisionRuleView",
     "confidence": "lookin.web.views.confidence:ConfidenceView",
     "compare": "lookin.web.views.compare:CompareView",
     "embeddings": "lookin.web.views.embeddings:EmbeddingsView",

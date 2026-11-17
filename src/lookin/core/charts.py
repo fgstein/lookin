@@ -103,7 +103,7 @@ def _name_in_legend(name, names: dict | None) -> str:
 
 
 def per_class_bars(per_class_by_name: dict, metric: str, labels: list, colors: dict,
-                   names: dict | None = None) -> tuple:
+                   names: dict | None = None, title: str | None = None) -> tuple:
     """(figure, uneven_support): one group of bars per class, one bar per
     experiment. `per_class_by_name` maps an experiment to its per-class
     table indexed by label (ExperimentMetrics.per_class.set_index("label")).
@@ -126,7 +126,7 @@ def per_class_bars(per_class_by_name: dict, metric: str, labels: list, colors: d
         ax.set_ylabel(f"{metric} (rows)")
     else:
         ax.set_ylim(0, 1.05)
-    ax.set_title(f"Per-class {metric} by experiment")
+    ax.set_title(title or f"Per-class {metric} by experiment")
     style_axes(ax, x=GRID_NONE)
     legend_below(ax)
     layout_with_legends_below(fig)
@@ -222,6 +222,115 @@ def confusion_matrix(confusion, title: str, focus: list | None = None):
                 ax.text(j, i, str(value), ha="center", va="center", fontsize=7,
                         color="white" if dark else "black")
     fig.tight_layout()
+    return fig
+
+
+def confusion_change(before, after, title: str, focus: list | None = None):
+    """after - before, cell by cell, in red where the rule adds crops and
+    blue where it removes them -- the Decision Rule tab's "what moved".
+    Both matrices are indexed by label; a class missing from one counts 0
+    there. With `focus`, only those classes, plus an "(other)" column."""
+    labels = list(dict.fromkeys(list(before.index) + list(after.index) + list(before.columns)
+                                + list(after.columns)))
+    b = before.reindex(index=labels, columns=labels, fill_value=0)
+    a = after.reindex(index=labels, columns=labels, fill_value=0)
+    if focus is not None:
+        shown = [label for label in focus if label in labels]
+        rest = [label for label in labels if label not in set(shown)]
+        diff = (a - b).loc[shown]
+        grid = diff[shown].copy()
+        grid["(other)"] = diff[rest].sum(axis=1) if rest else 0
+        rows, columns, counts = shown, list(grid.columns), grid.to_numpy()
+    else:
+        diff = a - b
+        rows, columns, counts = labels, labels, diff.to_numpy()
+    counts = counts.astype(np.int64)
+    scale = max(1, int(np.abs(counts).max()) if counts.size else 1)
+    side = max(4.0, 0.42 * len(columns) + 2.2)
+    fig, ax = subplots(figsize=(side, side * 0.9))
+    ax.imshow(counts, cmap="RdBu_r", vmin=-scale, vmax=scale)
+    ax.set_xticks(range(len(columns)), columns, rotation=60, ha="right", fontsize=8)
+    ax.set_yticks(range(len(rows)), rows, fontsize=8)
+    ax.set_xlabel("predicted")
+    ax.set_ylabel("true")
+    ax.set_title(title, fontsize=10)
+    for i in range(len(rows)):
+        for j in range(len(columns)):
+            value = int(counts[i, j])
+            if value:
+                strong = abs(value) > scale * 0.55
+                ax.text(j, i, f"{value:+d}", ha="center", va="center", fontsize=7,
+                        color="white" if strong else "black")
+    fig.tight_layout()
+    return fig
+
+
+# ---- decision rule --------------------------------------------------------
+
+# Points drawn per curve of a class's bias sweep: past it the sweep is
+# thinned (it has one point per distinct breakpoint, which is up to one per
+# row), keeping the current point.
+SWEEP_POINTS_MAX = 2500
+SWEEP_COLOR = "#2550C8"
+OVR_COLOR = "#7b828d"
+
+
+def _thinned(n: int, keep: int) -> np.ndarray:
+    if n <= SWEEP_POINTS_MAX:
+        return np.arange(n)
+    picked = np.unique(np.r_[np.linspace(0, n - 1, SWEEP_POINTS_MAX).astype(int), keep])
+    return picked
+
+
+def decision_rule_sweep(sweep, objective_label: str = "", ovr=None, plain=None):
+    """One class's bias swept with the other biases fixed
+    (decision_rule.ClassSweep). Left: the precision-recall curve the
+    deployable rule draws -- argmax with this bias -- over the one-vs-rest
+    curve of the same class (`ovr`: (recall, precision), the reference that
+    no single-label rule can reach), with the current point and the plain
+    argmax's (`plain`: (recall, precision)). Right: the class's F1 and the
+    objective against its bias."""
+    fig, (ax1, ax2) = subplots(1, 2, figsize=(11, 4.4))
+    iso_f1_lines(ax1)
+    keep = _thinned(len(sweep.bias), sweep.current)
+    if ovr is not None:
+        recall, precision = ovr
+        f1 = np.where(recall + precision > 0, 2 * recall * precision / np.maximum(recall + precision, 1e-12), 0.0)
+        ax1.plot(recall, precision, color=OVR_COLOR, linestyle="--", linewidth=1.2,
+                 label=f"One-vs-rest on its own score (F1-max={f1.max():.3f})")
+    valid = ~np.isnan(sweep.precision[keep]) & ~np.isnan(sweep.recall[keep])
+    ax1.plot(sweep.recall[keep][valid], sweep.precision[keep][valid], color=SWEEP_COLOR, linewidth=1.6,
+             label=f"Argmax with this class's bias (best F1={np.nanmax(sweep.f1):.3f})")
+    if plain is not None and plain[1] == plain[1]:
+        ax1.plot([plain[0]], [plain[1]], marker="o", markersize=8, markerfacecolor="white",
+                 markeredgecolor="black", linestyle="none", label="Plain argmax (every bias 0)", zorder=5)
+    cur = sweep.current
+    if sweep.precision[cur] == sweep.precision[cur]:
+        ax1.plot([sweep.recall[cur]], [sweep.precision[cur]], marker="o", markersize=8, color=SWEEP_COLOR,
+                 linestyle="none", label=f"Current bias ({sweep.current_bias:+.3f})", zorder=6)
+    ax1.set_xlim(0, 1)
+    ax1.set_ylim(0, 1.02)
+    ax1.set_xlabel("Recall")
+    ax1.set_ylabel("Precision")
+    ax1.set_title(f"Precision-recall of {sweep.label}", fontsize=10)
+
+    bias = sweep.bias[keep]
+    ax2.step(bias, sweep.f1[keep], where="mid", color=SWEEP_COLOR, linewidth=1.4, label=f"F1 of {sweep.label}")
+    if objective_label and not np.all(np.isnan(sweep.objective)):
+        ax2.step(bias, sweep.objective[keep], where="mid", color="#d62728", linewidth=1.4, label=objective_label)
+    ax2.axvline(sweep.current_bias, color="black", linewidth=0.9, linestyle=":")
+    ax2.set_xlabel(f"Bias of {sweep.label} (log-score units)")
+    ax2.set_ylabel("Score")
+    ax2.set_title(f"Against the bias of {sweep.label}, the others fixed", fontsize=10)
+    finite = sweep.edges[np.isfinite(sweep.edges)]
+    if finite.size:
+        lo, hi = np.quantile(finite, [0.01, 0.99])
+        pad = max(0.5, 0.1 * (hi - lo))
+        ax2.set_xlim(min(lo, sweep.current_bias) - pad, max(hi, sweep.current_bias) + pad)
+    for ax in (ax1, ax2):
+        style_axes(ax)
+        legend_below(ax, fontsize=7)
+    layout_with_legends_below(fig)
     return fig
 
 
