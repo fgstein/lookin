@@ -78,6 +78,22 @@ DEFAULT_MAX_PASSES = 20
 ROW_BLOCK = 8192
 # An improvement smaller than this is noise, not a reason to move a bias.
 MIN_GAIN = 1e-12
+# The search (fit_biases): random starting points tried besides all-zero
+# and the class prior, while there are few enough classes for it to be
+# cheap; and how many pairs of classes are tried as a joint move once no
+# single bias helps -- every pair up to PAIRS_ALL_MAX_CLASSES free classes,
+# else the PAIRS_PER_CLASS most confused pairs per class.
+# Breakpoints closer than this are one: they come from the same scores
+# summed in a different order, and a bias between them would land on
+# either side depending on that order.
+BREAKPOINT_TOLERANCE = 1e-9
+RANDOM_STARTS = 4
+RANDOM_STARTS_MAX_CLASSES = 50
+# ...and rows x free classes: past it each start costs tens of seconds.
+RANDOM_STARTS_MAX_CELLS = 1_000_000
+RANDOM_START_SCALE = 1.0
+PAIRS_ALL_MAX_CLASSES = 40
+PAIRS_PER_CLASS = 4
 
 
 # ---- pools -----------------------------------------------------------------
@@ -291,6 +307,14 @@ class TuningSpec:
     # |bias| never exceeds this (None: unbounded).
     max_abs_bias: Optional[float] = None
     max_passes: int = DEFAULT_MAX_PASSES
+    # Random starting points tried besides all-zero and the class prior;
+    # None: RANDOM_STARTS up to RANDOM_STARTS_MAX_CLASSES free classes, else 0.
+    random_starts: Optional[int] = None
+    seed: int = 0
+    # Try moving two classes' biases together once no single one helps.
+    pair_moves: bool = True
+    # Start from the class prior (logit adjustment) besides all-zero.
+    prior_start: bool = True
 
 
 @dataclass
@@ -364,19 +388,23 @@ def objective_value(problem: Problem, spec: TuningSpec, biases: np.ndarray) -> f
 # ---- the sweep of one class's bias ---------------------------------------------
 
 class _Tops:
-    """The two highest biased log-scores of every row, and their columns,
+    """The three highest biased log-scores of every row, and their columns,
     kept up to date as biases change: what the rest of a row offers class c
-    is the best of them that is not c."""
+    -- or a pair of classes -- is the best of them outside it."""
+
+    DEPTH = 3
 
     def __init__(self, logs: np.ndarray, biases: np.ndarray):
         self.logs = logs
         self.biases = biases
         n = len(logs)
-        self.v1 = np.full(n, -np.inf)
-        self.v2 = np.full(n, -np.inf)
-        self.i1 = np.full(n, -1, dtype=np.int64)
-        self.i2 = np.full(n, -1, dtype=np.int64)
+        self.v = np.full((self.DEPTH, n), -np.inf)
+        self.i = np.full((self.DEPTH, n), -1, dtype=np.int64)
         self.rescan(np.arange(n))
+
+    @property
+    def i1(self) -> np.ndarray:
+        return self.i[0]
 
     def rescan(self, rows: np.ndarray) -> None:
         k = self.logs.shape[1]
@@ -384,33 +412,63 @@ class _Tops:
             part = rows[start:start + ROW_BLOCK]
             block = self.logs[part] + self.biases
             r = np.arange(len(part))
-            i1 = block.argmax(axis=1)
-            v1 = block[r, i1]
-            if k > 1:
-                block[r, i1] = -np.inf
-                i2 = block.argmax(axis=1)
-                v2 = block[r, i2]
-            else:
-                i2 = np.zeros(len(part), dtype=np.int64)
-                v2 = np.full(len(part), -np.inf)
-            self.v1[part] = v1
-            self.i1[part] = np.where(np.isfinite(v1), i1, -1)
-            self.v2[part] = v2
-            self.i2[part] = np.where(np.isfinite(v2), i2, -1)
+            for level in range(self.DEPTH):
+                if level >= k:
+                    self.v[level, part] = -np.inf
+                    self.i[level, part] = -1
+                    continue
+                # argmax, so ties go to the first column -- as predict() does.
+                idx = block.argmax(axis=1)
+                val = block[r, idx]
+                self.v[level, part] = val
+                self.i[level, part] = np.where(np.isfinite(val), idx, -1)
+                block[r, idx] = -np.inf
 
-    def set_bias(self, c: int, value: float) -> None:
-        self.biases[c] = value
-        column = self.logs[:, c].astype(np.float64) + value
-        touched = (self.i1 == c) | (self.i2 == c) | (column >= self.v2)
+    def set_biases(self, changes: dict) -> None:
+        """{column: new bias}; rows where a changed column was or becomes
+        one of the top three are scanned again."""
+        touched = np.zeros(len(self.logs), dtype=bool)
+        for c, value in changes.items():
+            self.biases[c] = value
+            column = self.logs[:, c].astype(np.float64) + value
+            touched |= (self.i == c).any(axis=0) | (column >= self.v[-1])
         self.rescan(np.flatnonzero(touched))
 
+    def set_bias(self, c: int, value: float) -> None:
+        self.set_biases({c: value})
+
     def prediction(self) -> np.ndarray:
-        return self.i1.copy()
+        return self.i[0].copy()
 
     def competitor(self, c: int) -> tuple:
         """(value, column) of the best class other than c on every row."""
-        top_is_c = self.i1 == c
-        return np.where(top_is_c, self.v2, self.v1), np.where(top_is_c, self.i2, self.i1)
+        return self.outside((c,))
+
+    def outside(self, group) -> tuple:
+        """(value, column) of the best class not in `group` (at most
+        DEPTH - 1 columns) on every row; -inf and -1 where there is none."""
+        value = np.full(len(self.logs), -np.inf)
+        column = np.full(len(self.logs), -1, dtype=np.int64)
+        found = np.zeros(len(self.logs), dtype=bool)
+        for level in range(self.DEPTH):
+            ok = ~found & ~np.isin(self.i[level], list(group))
+            value = np.where(ok, self.v[level], value)
+            column = np.where(ok, self.i[level], column)
+            found |= ok
+        return value, column
+
+    def inside(self, group) -> tuple:
+        """(value, column) of the best class of `group` on every row, ties to
+        the first column."""
+        group = sorted(group)
+        value = np.full(len(self.logs), -np.inf)
+        column = np.full(len(self.logs), -1, dtype=np.int64)
+        for c in group:
+            v = self.logs[:, c].astype(np.float64) + self.biases[c]
+            better = v > value
+            value = np.where(better, v, value)
+            column = np.where(better & np.isfinite(v), c, column)
+        return value, column
 
 
 @dataclass
@@ -418,10 +476,11 @@ class _Sweep:
     """Everything that changes when only b_c moves, one entry per interval
     between consecutive breakpoints: interval j is b_c in (edges[j-1],
     edges[j]), with edges[-1] = -inf and edges[len] = +inf."""
-    edges: np.ndarray        # (m,) distinct breakpoints, ascending
+    edges: np.ndarray        # (m,) distinct breakpoints, ascending (the largest of each run of near-equal ones)
     tp_c: np.ndarray         # (m + 1,) true positives of c in each interval
     pred_c: np.ndarray       # (m + 1,) rows predicted c
     objective: np.ndarray    # (m + 1,) objective (NaN without weights)
+    lows: Optional[np.ndarray] = None  # (m,) the smallest breakpoint of each run
 
 
 def _sweep(problem: Problem, c: int, competitor: tuple, weights: Optional[_Weights]) -> _Sweep:
@@ -449,12 +508,13 @@ def _sweep(problem: Problem, c: int, competitor: tuple, weights: Optional[_Weigh
 
     # Positions where b_c can stop: after a run of equal breakpoints.
     if len(order):
-        last_of_run = np.r_[u_sorted[1:] != u_sorted[:-1], True]
+        last_of_run = np.r_[np.diff(u_sorted) > BREAKPOINT_TOLERANCE, True]
         stops = np.r_[0, np.flatnonzero(last_of_run) + 1]
         edges = u_sorted[last_of_run]
+        lows = u_sorted[np.r_[True, last_of_run[:-1]]]
     else:
         stops = np.array([0])
-        edges = np.empty(0)
+        edges = lows = np.empty(0)
 
     if weights is None:
         objective = np.full(len(stops), np.nan)
@@ -484,21 +544,29 @@ def _sweep(problem: Problem, c: int, competitor: tuple, weights: Optional[_Weigh
         others = base - w[c] * _terms(tp[c], predicted[c], problem.n_true[c], weights.recall) \
             + np.r_[0.0, np.cumsum(delta)]
         objective = (others + own_term)[stops]
-    return _Sweep(edges, tp_c[stops], pred_c[stops], objective)
+    return _Sweep(edges, tp_c[stops], pred_c[stops], objective, lows)
 
 
-def _interval_value(edges: np.ndarray, j: int, bound: Optional[float]) -> Optional[float]:
+def _interval_value(edges: np.ndarray, j: int, bound: Optional[float], lows=None) -> Optional[float]:
     """A bias inside interval j (see _Sweep), within [-bound, bound], or None
     when the interval lies outside the bound. Inner intervals take their
     midpoint, the two outer ones a point one unit past the last breakpoint."""
+    if bound is None:
+        return _interval_point(edges, j, -np.inf, np.inf, lows)
+    return _interval_point(edges, j, -bound, bound, lows)
+
+
+def _interval_point(edges: np.ndarray, j: int, low: float, high: float, lows=None) -> Optional[float]:
+    """_interval_value within [low, high]. Interval j runs from the largest
+    breakpoint of run j-1 to the smallest of run j (`lows`; the same as
+    `edges` when every run is a single value)."""
     lo = edges[j - 1] if j > 0 else -np.inf
-    hi = edges[j] if j < len(edges) else np.inf
-    if bound is not None:
-        if hi <= -bound or lo >= bound:
-            return None
-        lo_b, hi_b = max(lo, -bound), min(hi, bound)
-    else:
-        lo_b, hi_b = lo, hi
+    hi = (edges if lows is None else lows)[j] if j < len(edges) else np.inf
+    if hi <= low or lo >= high:
+        return None
+    lo_b, hi_b = max(lo, low), min(hi, high)
+    if lo_b >= hi_b:
+        return None
     if np.isfinite(lo_b) and np.isfinite(hi_b):
         if np.isfinite(lo) and np.isfinite(hi):
             return float((lo_b + hi_b) / 2)
@@ -511,6 +579,66 @@ def _interval_value(edges: np.ndarray, j: int, bound: Optional[float]) -> Option
     if np.isfinite(lo_b):
         return float(lo_b + 1.0)
     return 0.0
+
+
+def _group_counts(cls: np.ndarray, hit: np.ndarray) -> tuple:
+    """For a sequence of events on classes `cls`, how many events -- and how
+    many hits -- each class has had up to and including each one."""
+    n = len(cls)
+    if not n:
+        return np.empty(0), np.empty(0)
+    perm = np.argsort(cls, kind="stable")
+    c_p = cls[perm]
+    new_group = np.r_[True, c_p[1:] != c_p[:-1]]
+    starts = np.flatnonzero(new_group)
+    group = np.cumsum(new_group) - 1
+    cnt_p = np.arange(n) - starts[group] + 1
+    cs = np.cumsum(hit[perm])
+    tpc_p = cs - np.r_[0.0, cs][starts][group]
+    cnt, tpc = np.empty(n), np.empty(n)
+    cnt[perm], tpc[perm] = cnt_p, tpc_p
+    return cnt, tpc
+
+
+def _group_sweep(problem: Problem, inside: tuple, outside: tuple, weights: _Weights) -> tuple:
+    """(edges, objective): the objective as the same shift t is added to
+    the biases of a group of classes, the others fixed -- interval j is t in
+    (edges[j-1], edges[j]). A row goes to the group's best class exactly
+    when t exceeds u = (best outside) - (best inside), so one sort of the u
+    gives every value of t, as _sweep does for one class."""
+    in_val, in_col = inside
+    out_val, out_col = outside
+    with np.errstate(invalid="ignore"):
+        u = out_val - in_val
+    always = np.isfinite(in_val) & np.isneginf(out_val)
+    movable = np.isfinite(u)
+    order = np.flatnonzero(movable)
+    order = order[np.argsort(u[order], kind="stable")]
+    u_sorted = u[order]
+    y = problem.y
+    pred0 = np.where(always, in_col, out_col)
+    tp, predicted = _counts(problem, pred0)
+    w, recall, n_true = weights.w, weights.recall, problem.n_true
+    base = float((w * _terms(tp, predicted, n_true, recall)).sum())
+
+    gain, loss = in_col[order], out_col[order]
+    hit_g = (y[order] == gain).astype(np.float64)
+    hit_l = (y[order] == loss).astype(np.float64)
+    cnt_g, tpc_g = _group_counts(gain, hit_g)
+    cnt_l, tpc_l = _group_counts(loss, hit_l)
+    delta = (w[gain] * (_terms(tp[gain] + tpc_g, predicted[gain] + cnt_g, n_true[gain], recall)
+                        - _terms(tp[gain] + tpc_g - hit_g, predicted[gain] + cnt_g - 1, n_true[gain], recall))
+             + w[loss] * (_terms(tp[loss] - tpc_l, predicted[loss] - cnt_l, n_true[loss], recall)
+                          - _terms(tp[loss] - tpc_l + hit_l, predicted[loss] - cnt_l + 1, n_true[loss], recall)))
+    objective = base + np.r_[0.0, np.cumsum(delta)]
+    if len(order):
+        last_of_run = np.r_[np.diff(u_sorted) > BREAKPOINT_TOLERANCE, True]
+        stops = np.r_[0, np.flatnonzero(last_of_run) + 1]
+        edges = u_sorted[last_of_run]
+        lows = u_sorted[np.r_[True, last_of_run[:-1]]]
+    else:
+        stops, edges, lows = np.array([0]), np.empty(0), np.empty(0)
+    return edges, objective[stops], lows
 
 
 # ---- fitting ---------------------------------------------------------------------
@@ -528,18 +656,27 @@ class TuningResult:
     passes: int
     converged: bool
     n_rows: int
+    starts: int = 1              # starting points tried; the best end point is kept
 
     def as_dict(self) -> dict:
         return {str(l): float(b) for l, b in zip(self.labels, self.biases)}
 
 
 def fit_biases(problem: Problem, spec: TuningSpec, start: Optional[np.ndarray] = None,
-               progress: Optional[Callable[[int, int, int], None]] = None) -> TuningResult:
-    """The biases maximising spec's objective on `problem`, by coordinate
-    ascent from `start` (default: all 0, the plain argmax). Each step is the
-    exact best value of one class's bias with the others fixed, so the
-    objective never decreases; the result is a local optimum. `progress`
-    gets (pass, classes done, classes in a pass)."""
+               progress: Optional[Callable[[int, int, int, int, int], None]] = None) -> TuningResult:
+    """The biases maximising spec's objective on `problem`.
+
+    From each starting point -- `start` if given, else all biases at 0 (the
+    plain argmax), the class prior (b_c = -log of the class's share, the
+    "logit adjustment"), and a few random points while the classes are few
+    -- an ascent alternates two exact moves until neither helps: the best
+    value of one class's bias with the others fixed (_sweep), and the best
+    common shift of a pair of classes' biases (_group_sweep), which is what
+    frees two classes confused with each other, neither of which gains by
+    moving alone. The best end point over the starts is returned. The
+    objective never decreases along an ascent; the result is the best
+    point found, not a proven global optimum. `progress` gets (start,
+    starts, pass, steps done, steps in the pass)."""
     weights = _weights(problem, spec)
     k = len(problem.labels)
     names = [str(l) for l in problem.labels]
@@ -552,16 +689,84 @@ def fit_biases(problem: Problem, spec: TuningSpec, start: Optional[np.ndarray] =
         ref = int(np.argmax(problem.n_true))
         locked = {ref}
         reference = problem.labels[ref]
-    biases = np.zeros(k) if start is None else np.asarray(start, dtype=np.float64).copy()
-    for j in locked:
-        biases[j] = 0.0
-    if spec.max_abs_bias is not None:
-        biases = np.clip(biases, -spec.max_abs_bias, spec.max_abs_bias)
+    free = [j for j in range(k) if j not in locked]
     before = _objective(problem, weights, predict(problem.logs, np.zeros(k)))
+
+    starts = [np.zeros(k) if start is None else np.asarray(start, dtype=np.float64).copy()]
+    if start is None:
+        share = problem.n_true / max(1, problem.n_true.sum())
+        with np.errstate(divide="ignore"):
+            prior = np.where(share > 0, -np.log(np.where(share > 0, share, 1.0)), 0.0)
+        anchor = sorted(locked)[0]
+        if spec.prior_start:
+            starts.append(prior - prior[anchor])
+        n_random = spec.random_starts
+        if n_random is None:
+            few = (len(free) <= RANDOM_STARTS_MAX_CLASSES
+                   and problem.n_rows * len(free) <= RANDOM_STARTS_MAX_CELLS)
+            n_random = RANDOM_STARTS if few else 0
+        rng = np.random.default_rng(spec.seed)
+        starts += [rng.normal(0.0, RANDOM_START_SCALE, k) for _ in range(n_random)]
+
+    best = None
+    for index, point in enumerate(starts):
+        for j in locked:
+            point[j] = 0.0
+        if spec.max_abs_bias is not None:
+            point = np.clip(point, -spec.max_abs_bias, spec.max_abs_bias)
+        step = None if progress is None else (lambda p, d, t, i=index: progress(i + 1, len(starts), p, d, t))
+        found = _ascend(problem, spec, weights, point, free, step)
+        if best is None or found[1] > best[1] + MIN_GAIN:
+            best = found
+    biases, current, passes, converged = best
+    return TuningResult(biases, list(problem.labels), reference, spec.objective, before, current,
+                        weights.counted, weights.absent, passes, converged, problem.n_rows, len(starts))
+
+
+def _pairs(problem: Problem, free: list, pred: np.ndarray) -> list:
+    """The pairs of free classes tried as a joint move: all of them while
+    they are few, else the most confused pairs (rows of one predicted as
+    the other, both ways) -- PAIRS_PER_CLASS per class."""
+    if len(free) < 2:
+        return []
+    if len(free) <= PAIRS_ALL_MAX_CLASSES:
+        return [(a, b) for i, a in enumerate(free) for b in free[i + 1:]]
+    k = len(problem.labels)
+    ok = (problem.y >= 0) & (pred >= 0) & (problem.y != pred)
+    counts = np.bincount(problem.y[ok] * k + pred[ok], minlength=k * k).reshape(k, k)
+    counts = counts + counts.T
+    is_free = np.zeros(k, dtype=bool)
+    is_free[free] = True
+    counts[~is_free, :] = 0
+    counts[:, ~is_free] = 0
+    upper = np.triu(counts, 1)
+    flat = np.flatnonzero(upper)
+    flat = flat[np.argsort(-upper.ravel()[flat], kind="stable")][: PAIRS_PER_CLASS * len(free)]
+    return [(int(f // k), int(f % k)) for f in flat]
+
+
+def _ascend(problem: Problem, spec: TuningSpec, weights: _Weights, biases: np.ndarray, free: list,
+            progress) -> tuple:
+    """One ascent from `biases`: single-class moves, then pair moves when no
+    single one helps, until neither does. Returns (biases, objective,
+    passes, converged)."""
+    bound = spec.max_abs_bias
     tops = _Tops(problem.logs, biases)
     pred = tops.prediction()
     current = _objective(problem, weights, pred)
-    free = [j for j in range(k) if j not in locked]
+
+    def accept(changes: dict) -> bool:
+        nonlocal pred, current
+        old = {c: biases[c] for c in changes}
+        tops.set_biases(changes)
+        candidate = tops.prediction()
+        score = _objective(problem, weights, candidate)
+        if score > current + MIN_GAIN:
+            pred, current = candidate, score
+            return True
+        tops.set_biases(old)  # a tie the sweep could not see: keep the old biases
+        return False
+
     passes, converged = 0, False
     for passes in range(1, spec.max_passes + 1):
         improved = False
@@ -569,27 +774,36 @@ def fit_biases(problem: Problem, spec: TuningSpec, start: Optional[np.ndarray] =
             if progress is not None:
                 progress(passes, done, len(free))
             sweep = _sweep(problem, c, tops.competitor(c), weights)
-            order = np.argsort(-sweep.objective, kind="stable")
-            for j in order:
+            for j in np.argsort(-sweep.objective, kind="stable"):
                 if sweep.objective[j] <= current + MIN_GAIN:
                     break
-                value = _interval_value(sweep.edges, int(j), spec.max_abs_bias)
+                value = _interval_value(sweep.edges, int(j), bound, sweep.lows)
                 if value is None:
                     continue
-                old = biases[c]
-                tops.set_bias(c, value)
-                candidate = tops.prediction()
-                score = _objective(problem, weights, candidate)
-                if score > current + MIN_GAIN:
-                    pred, current, improved = candidate, score, True
-                else:  # a tie the sweep could not see: keep the old bias
-                    tops.set_bias(c, old)
+                improved |= accept({c: value})
+                break
+        if improved:
+            continue
+        pairs = _pairs(problem, free, pred) if spec.pair_moves else []
+        for done, (a, b) in enumerate(pairs):
+            if progress is not None:
+                progress(passes, len(free) + done, len(free) + len(pairs))
+            edges, objective, lows = _group_sweep(problem, tops.inside((a, b)), tops.outside((a, b)), weights)
+            low = -np.inf if bound is None else max(-bound - biases[a], -bound - biases[b])
+            high = np.inf if bound is None else min(bound - biases[a], bound - biases[b])
+            for j in np.argsort(-objective, kind="stable"):
+                if objective[j] <= current + MIN_GAIN:
+                    break
+                shift = _interval_point(edges, int(j), low, high, lows)
+                if shift is None:
+                    continue
+                if accept({a: biases[a] + shift, b: biases[b] + shift}):
+                    improved = True
                 break
         if not improved:
             converged = True
             break
-    return TuningResult(biases.copy(), list(problem.labels), reference, spec.objective, before, current,
-                        weights.counted, weights.absent, passes, converged, problem.n_rows)
+    return biases.copy(), current, passes, converged
 
 
 @dataclass
@@ -661,7 +875,7 @@ def class_sweep(problem: Problem, biases: np.ndarray, label, spec: Optional[Tuni
         precision = np.where(sweep.pred_c > 0, sweep.tp_c / sweep.pred_c, np.nan)
         recall = sweep.tp_c / n if n > 0 else np.full(len(sweep.tp_c), np.nan)
         f1 = 2 * sweep.tp_c / (sweep.pred_c + n) if n > 0 else np.full(len(sweep.tp_c), np.nan)
-    values = np.array([_interval_value(sweep.edges, j, None) for j in range(len(sweep.tp_c))])
+    values = np.array([_interval_value(sweep.edges, j, None, sweep.lows) for j in range(len(sweep.tp_c))])
     current = int(np.searchsorted(sweep.edges, biases[c], side="left"))
     return ClassSweep(str(label), values, sweep.edges, precision, recall, f1, sweep.objective,
                       float(biases[c]), current, int(n))
