@@ -214,17 +214,50 @@ class MlflowHub:
         server.artifacts[run_id] = {"loading": True}
 
         def work():
+            # `then` is called whatever happens: a caller waiting for N
+            # listings (adding several runs at once) waits forever for one
+            # that never reports back.
             try:
                 csvs, npzs = mlf.list_csv_and_npz_artifacts(server.uri, run_id)
                 server.artifacts[run_id] = {"csvs": csvs, "npzs": npzs}
-                mlflow_cache.save_artifacts(server.uri, server.artifacts_payload())
             except mlf.MlflowError as ex:
                 server.artifacts[run_id] = {"error": str(ex)}
-            self.changed()
-            if then:
-                then()
+            except Exception as ex:  # noqa: BLE001
+                traceback.print_exc()
+                server.artifacts[run_id] = {"error": f"Could not list the artifacts: {ex}"}
+            try:
+                if "csvs" in server.artifacts.get(run_id, {}):
+                    mlflow_cache.save_artifacts(server.uri, server.artifacts_payload())
+            except Exception:  # noqa: BLE001 -- the cache is best effort
+                traceback.print_exc()
+            try:
+                self.changed()
+            finally:
+                if then:
+                    then()
 
         threading.Thread(target=work, daemon=True).start()
+
+    def fetch_artifacts_all(self, pending: list, then: Callable[[], None]) -> None:
+        """List the artifacts of every `(server, run_id)` of `pending` again,
+        then call `then` once, after the last one has reported (with its
+        CSVs or its error). The countdown is under a lock: the listings
+        finish on their own threads, and an unlocked `n -= 1` that two of
+        them interleave loses a step -- `then` never came and adding the
+        runs sat on "Listing the artifacts..." for good."""
+        lock = threading.Lock()
+        remaining = {"n": len(pending)}
+
+        def one_done():
+            with lock:
+                remaining["n"] -= 1
+                last = remaining["n"] == 0
+            if last:
+                then()
+
+        for server, run_id in pending:
+            server.artifacts.pop(run_id, None)
+            self.fetch_artifacts(server, run_id, then=one_done)
 
     def _watch_loop(self) -> None:
         """Pick up hand edits of home_view.json, and retry servers that are down."""

@@ -554,18 +554,17 @@ class RunsDialog(Dialog):
                 pending.append((server, run_id))
         if pending:
             self.s.toast(f"Listing the artifacts of {len(pending)} run(s)...", "neutral")
-            remaining = {"n": len(pending)}
 
-            def one_done():
-                remaining["n"] -= 1
-                if remaining["n"] == 0:
+            def listed():
+                try:
                     with self.s.lock:
                         self.on_load(keys=keys)
-                    self.s.push({"dirty": ["dialogs"]})
+                except Exception as ex:  # noqa: BLE001 -- on a worker thread: say it, or nothing ever shows
+                    traceback.print_exc()
+                    self.s.toast(f"Could not load the runs: {ex}", "error")
+                self.s.push({"dirty": ["dialogs"]})
 
-            for server, run_id in pending:
-                server.artifacts.pop(run_id, None)
-                hub.fetch_artifacts(server, run_id, then=one_done)
+            hub.fetch_artifacts_all(pending, listed)
             return
         candidates, problems = [], []
         for key in keys:

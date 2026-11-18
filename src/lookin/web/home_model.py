@@ -169,9 +169,12 @@ class ServerState:
         }
 
     def artifacts_payload(self) -> dict:
+        # A copy first: listing workers write `artifacts` while another one
+        # saves it, and iterating the live dict then raises "dictionary
+        # changed size during iteration".
         return {
             run_id: {"csvs": [asdict(a) for a in v["csvs"]], "npzs": [asdict(a) for a in v["npzs"]]}
-            for run_id, v in self.artifacts.items() if "csvs" in v
+            for run_id, v in dict(self.artifacts).items() if "csvs" in v
         }
 
     def adopt_listing(self, payload: dict, artifacts: Optional[dict] = None) -> None:
@@ -199,7 +202,7 @@ class ServerState:
     def mark_artifacts_stale(self) -> None:
         """What a refresh does to the run -> CSV lists: they stay drawn, and
         are listed again before anything is added from them."""
-        for entry in self.artifacts.values():
+        for entry in list(self.artifacts.values()):
             if "csvs" in entry:
                 entry["stale"] = True
 

@@ -223,3 +223,49 @@ def test_runs_fetched_under_a_filter_that_changed_meanwhile_are_dropped(hub, mon
     monkeypatch.setattr(mlflow_cache, "save_listing", lambda *a: None)
     hub._fetch_worker(server, runs_only=True)
     assert [r.run_id for r in server.runs] == []
+
+
+def _wait(cond, timeout=5.0):
+    end = time.monotonic() + timeout
+    while not cond() and time.monotonic() < end:
+        time.sleep(0.01)
+    return cond()
+
+
+def test_a_listing_that_fails_unexpectedly_still_reports_back(hub, monkeypatch):
+    """Only MlflowError used to be caught: any other failure left the run
+    "loading" and never called `then`, so adding it hung on "Listing the
+    artifacts..." with nothing on screen."""
+    server = hub.servers[URI]
+
+    def broken(uri, run_id):
+        raise KeyError("path")
+
+    monkeypatch.setattr(mlf, "list_csv_and_npz_artifacts", broken)
+    done = []
+    hub.fetch_artifacts(server, "r1", then=lambda: done.append(1))
+    assert _wait(lambda: done)
+    assert "error" in server.artifacts["r1"]
+
+
+def test_many_runs_listed_at_once_call_back_exactly_once(hub, monkeypatch):
+    """Adding many runs at once lists them on as many threads, each saving
+    the shared run -> CSV dict while the others write to it; that used to
+    raise "dictionary changed size during iteration" in one of them, and
+    the add waited for it forever."""
+    server = hub.servers[URI]
+    for i in range(2000):
+        server.artifacts[f"old{i}"] = {"csvs": [mlf.ArtifactFile("a.csv", 1)], "npzs": []}
+
+    def listing(uri, run_id):
+        time.sleep(0.001)
+        return [mlf.ArtifactFile(f"{run_id}/results.csv", 9)], []
+
+    monkeypatch.setattr(mlf, "list_csv_and_npz_artifacts", listing)
+    calls = []
+    pending = [(server, f"r{i}") for i in range(60)]
+    hub.fetch_artifacts_all(pending, lambda: calls.append(1))
+    assert _wait(lambda: calls)
+    time.sleep(0.1)
+    assert calls == [1]
+    assert all("csvs" in server.artifacts[f"r{i}"] for i in range(60))
