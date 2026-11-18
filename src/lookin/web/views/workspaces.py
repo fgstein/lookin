@@ -60,6 +60,95 @@ def provenance() -> dict:
     return {}
 
 
+# The names of the saves run in the background (Session.background): what
+# the top bar says while they run, and what stops a second click from
+# starting the same save again behind the first.
+SAVING_WORKSPACE = "Saving workspace"
+SAVING_SNAPSHOT = "Saving snapshot"
+EXPORTING = "Exporting workspace"
+IMPORTING = "Importing workspace"
+
+
+def _reporter(session, report):
+    """`tell(text, kind)`: to the dialog that asked, if one did."""
+    def tell(text, kind="ok"):
+        if report is not None:
+            report(text, kind)
+    return tell
+
+
+def _start(session, what, work, tell) -> bool:
+    def failed(ex):
+        session.toast(f"{what} failed: {ex}", "error")
+        tell(f"{what} failed: {ex}", "error")
+
+    if not session.background(what, work, on_error=failed):
+        session.toast(f"{what}: still writing the previous save -- its progress is in the top bar.", "warn")
+        return False
+    tell(f"{what}...", "busy")
+    session.mark("chrome")
+    return True
+
+
+def update_workspace_in_background(session, workspace, mount, captured, report=None) -> bool:
+    """Write `mount` (what is loaded) into `workspace`, off the request
+    thread, each step in the top bar and the server log. `captured`: the
+    view state when Save was clicked (save_status.mark_baseline).
+    `report(text, kind)`: progress and outcome, for a dialog showing them."""
+    tell = _reporter(session, report)
+
+    def work(step):
+        def progress(text):
+            step(text)
+            tell(f"{SAVING_WORKSPACE}: {text}", "busy")
+
+        fresh = lib.update_workspace_mount(workspace.path, mount, progress=progress)
+        if fresh is None:
+            session.toast("Could not write the workspace -- the server log says why.", "error")
+            tell("Could not write the workspace -- the server log says why.", "error")
+            return
+        with session.lock:
+            # Another workspace opened in this tab meanwhile: this one is
+            # saved all the same, but is no longer the one on screen.
+            if session.current_workspace is not None and session.current_workspace.id == fresh.id:
+                session.current_workspace = fresh
+                save_status.mark_baseline(session, captured)
+        session.toast(f"Updated workspace {fresh.label()} ({fresh.id}).", "ok")
+        tell(f"Updated workspace {fresh.label()} ({fresh.id}).", "ok")
+        session.mark("chrome")
+
+    return _start(session, SAVING_WORKSPACE, work, tell)
+
+
+def create_workspace_in_background(session, name, mount, captured, report=None, on_done=None) -> bool:
+    """Make `mount` a new workspace named `name`, as
+    update_workspace_in_background does; `on_done(workspace)` once it is
+    written, under the session's lock."""
+    tell = _reporter(session, report)
+
+    def work(step):
+        def progress(text):
+            step(text)
+            tell(f"{SAVING_WORKSPACE}: {text}", "busy")
+
+        workspace = lib.create_workspace(name, mount, provenance=provenance(), progress=progress)
+        if workspace is None:
+            session.toast("Could not create the workspace -- the server log says why.", "error")
+            tell("Could not create the workspace -- the server log says why.", "error")
+            return
+        with session.lock:
+            session.current_workspace = workspace
+            session.title = f"{workspace.label()} — Lookin"
+            save_status.mark_baseline(session, captured)
+            if on_done is not None:
+                on_done(workspace)
+        session.cmd(replace_url=workspace_link(workspace))
+        tell(f"Saved workspace {workspace.label()} ({workspace.id}).", "ok")
+        session.mark("page", "chrome")
+
+    return _start(session, SAVING_WORKSPACE, work, tell)
+
+
 class WorkspacesDialog(Dialog):
     width = 1180
 
@@ -164,18 +253,19 @@ class WorkspacesDialog(Dialog):
                 + column("Snapshots", self.snap_filter, "snap_filter", SNAPSHOT_SORTS, self.snap_sort, "snap_sort", snap_rows)
                 + f'<div style="flex:1.3 1 0;min-width:280px;border:1px solid var(--line-2);border-radius:8px;padding:10px;overflow-y:auto;height:420px">{self._details()}</div>')
         current = self.s.current_workspace
+        saving_ws = self.s.background_running(SAVING_WORKSPACE)
         update_btn = ""
         if current is not None and current.exists():
             st = save_status.compute(self.s)
             update_btn = h.button(f"Update '{current.label()}'", act_attr=self.a("update_ws"),
-                                  disabled=not st.has_data or st.workspace_saved, icon_name="refresh",
+                                  disabled=not st.has_data or st.workspace_saved or saving_ws, icon_name="refresh",
                                   title="Already matches what is loaded." if st.workspace_saved else
                                   "Write the dataset and experiments loaded now into this workspace. Its id and its snapshots are kept.")
         save_bar = (f'<div class="row" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line-2)">'
                     f'{h.text_input(self.save_name, change=self.c("save_name"), label="Name", width="260px", autofocus=self.focus_save)}'
-                    f'{h.button("Save as workspace", act_attr=self.a("save_ws"), kind="primary", icon_name="save")}'
+                    f'{h.button("Save as workspace", act_attr=self.a("save_ws"), kind="primary", icon_name="save", disabled=saving_ws)}'
                     f'{update_btn}'
-                    f'{h.button("Save this snapshot", act_attr=self.a("save_snap"), icon_name="bookmark", title="A new snapshot in the selected workspace -- never an overwrite")}'
+                    f'{h.button("Save this snapshot", act_attr=self.a("save_snap"), icon_name="bookmark", disabled=self.s.background_running(SAVING_SNAPSHOT), title="A new snapshot in the selected workspace -- never an overwrite")}'
                     f'</div><div class="row" style="margin-top:8px">'
                     f'{h.button("Import a workspace…", act_attr=self.a("import_ws"), icon_name="upload")}'
                     f'{h.checkbox("Include embeddings in exports (much larger)", self.include_embeddings, change=self.c("include_emb"), title="Needed only to re-project or search by similarity; the saved map itself travels without them.")}'
@@ -328,19 +418,14 @@ class WorkspacesDialog(Dialog):
             self._set_status("Load a dataset in the Sources tab first.", "warning")
             return
         name = (self.save_name or "").strip() or Path(mount.dataset_path).stem
-        workspace = lib.create_workspace(name, mount, provenance=provenance())
-        if workspace is None:
-            self._set_status("Could not create the workspace.", "error")
-            return
-        self.save_name = ""
-        self.selected_ws, self.selected_snap = workspace, None
-        self.s.current_workspace = workspace
-        self.s.title = f"{workspace.label()} — Lookin"
-        self.reload()
-        save_status.mark_baseline(self.s)
-        self.s.mark("chrome")
-        self.s.cmd(replace_url=workspace_link(workspace))
-        self._set_status(f"Saved workspace {workspace.label()} ({workspace.id}).")
+
+        def done(workspace):
+            self.save_name = ""
+            self.selected_ws, self.selected_snap = workspace, None
+            self.reload()
+
+        create_workspace_in_background(self.s, name, mount, save_status.capture(self.s),
+                                       report=self._set_status, on_done=done)
 
     def on_update_ws(self, **_):
         workspace = self.s.current_workspace
@@ -350,18 +435,17 @@ class WorkspacesDialog(Dialog):
         if mount is None:
             self._set_status("Load a dataset in the Sources tab first.", "warning")
             return
+        captured = save_status.capture(self.s)
+
+        def report(text, kind):
+            if kind == "ok":
+                with self.s.lock:
+                    self.selected_ws, self.selected_snap = self.s.current_workspace, None
+                    self.reload()
+            self._set_status(text, kind)
 
         def go():
-            fresh = lib.update_workspace_mount(workspace.path, mount)
-            if fresh is None:
-                self._set_status("Could not write the workspace.", "error")
-                return
-            self.s.current_workspace = fresh
-            self.selected_ws, self.selected_snap = fresh, None
-            self.reload()
-            save_status.mark_baseline(self.s)
-            self.s.mark("chrome")
-            self._set_status(f"Updated workspace {fresh.label()} ({fresh.id}).")
+            update_workspace_in_background(self.s, workspace, mount, captured, report=report)
 
         self.s.open_dialog(ConfirmDialog(
             f"Update {workspace.label()}?",
@@ -370,20 +454,34 @@ class WorkspacesDialog(Dialog):
             go, yes_label="Update", danger=False))
 
     def on_save_snap(self, **_):
-        if self.selected_ws is None:
+        workspace = self.selected_ws
+        if workspace is None:
             self._set_status("Select the workspace to save this snapshot into.", "warning")
             return
-        snapshot = lib.create_snapshot(self.selected_ws, self.s.view_state.capture(), name=(self.save_name or "").strip())
-        if snapshot is None:
-            self._set_status("Could not save the snapshot.", "error")
-            return
-        self.save_name = ""
-        self.selected_snap = snapshot
-        self.s.current_snapshot = snapshot
-        self._reload_snapshots()
-        save_status.mark_baseline(self.s)
-        self.s.mark("chrome")
-        self._set_status(f"Saved snapshot {snapshot.id} -- share that id to reopen exactly this.")
+        captured = self.s.view_state.capture()
+        name = (self.save_name or "").strip()
+        session = self.s
+
+        def work(step):
+            def progress(text):
+                step(text)
+                self._set_status(f"{SAVING_SNAPSHOT}: {text}", "busy")
+
+            snapshot = lib.create_snapshot(workspace, captured, name=name, progress=progress)
+            if snapshot is None:
+                session.toast("Could not save the snapshot -- the server log says why.", "error")
+                self._set_status("Could not save the snapshot -- the server log says why.", "error")
+                return
+            with session.lock:
+                self.save_name = ""
+                self.selected_snap = snapshot
+                session.current_snapshot = snapshot
+                self._reload_snapshots()
+                save_status.mark_baseline(session, captured)
+            session.mark("chrome")
+            self._set_status(f"Saved snapshot {snapshot.id} -- share that id to reopen exactly this.")
+
+        _start(session, SAVING_SNAPSHOT, work, self._set_status)
 
     def on_export_ws(self, **_):
         workspace = self.selected_ws
@@ -392,23 +490,41 @@ class WorkspacesDialog(Dialog):
 
         def picked(directory: str):
             dest = Path(directory) / f"{lib.slugify(workspace.label())}-{workspace.id}.zip"
-            ok, message = lib.export_workspace(workspace, dest, include_embeddings=self.include_embeddings)
-            if ok:
-                message = f"{message} Wrote {dest}"
-            self._set_status(message, "ok" if ok else "error")
+            include = self.include_embeddings
+
+            def work(step):
+                def progress(text):
+                    step(text)
+                    self._set_status(f"{EXPORTING}: {text}", "busy")
+
+                ok, message = lib.export_workspace(workspace, dest, include_embeddings=include, progress=progress)
+                if ok:
+                    message = f"{message} Wrote {dest}"
+                self._set_status(message, "ok" if ok else "error")
+                self.s.toast(message, "ok" if ok else "error")
+
+            _start(self.s, EXPORTING, work, self._set_status)
 
         self.s.open_dialog(FileBrowserDialog(picked, "", dirs_only=True, title="Export this workspace to which folder?"))
 
     def on_import_ws(self, **_):
         def picked(path: str):
-            workspace, notes = lib.import_workspace(path)
-            if workspace is None:
-                self._set_status(" ".join(notes), "error")
-                return
-            self.selected_ws, self.selected_snap = workspace, None
-            self.reload()
-            self.refresh()
-            self.s.open_dialog(ImageRootDialog(self, workspace, notes))
+            def work(step):
+                def progress(text):
+                    step(text)
+                    self._set_status(f"{IMPORTING}: {text}", "busy")
+
+                workspace, notes = lib.import_workspace(path, progress=progress)
+                if workspace is None:
+                    self._set_status(" ".join(notes), "error")
+                    return
+                with self.s.lock:
+                    self.selected_ws, self.selected_snap = workspace, None
+                    self.reload()
+                    self._set_status(f"Imported {workspace.label()} -- where are its crops?", "ok")
+                    self.s.open_dialog(ImageRootDialog(self, workspace, notes))
+
+            _start(self.s, IMPORTING, work, self._set_status)
 
         self.s.open_dialog(FileBrowserDialog(picked, "", {".zip"}, title="Import which workspace?"))
 

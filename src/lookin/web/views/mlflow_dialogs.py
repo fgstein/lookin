@@ -600,7 +600,7 @@ class RunsDialog(Dialog):
             for c in candidates:
                 taken = set(session.state.experiments) | {r.name for r in sources.rows}
                 name = wss.unique_name(taken, c.default_name(), c.run.run_id)
-                session.busy.begin(f"Loading {Path(c.csv.path).name}")
+                busy = session.busy.begin(f"Loading {Path(c.csv.path).name}")
                 try:
                     dest = mlflow_cache.download_cached(c.uri, c.run.run_id, c.csv.path, c.csv.size)
                     origin = lib.MountExperiment(
@@ -639,7 +639,7 @@ class RunsDialog(Dialog):
                     traceback.print_exc()
                     session.toast(f"Could not load: {ex}", "error")
                 finally:
-                    session.busy.end()
+                    session.busy.end(busy)
             made = []
             if grouping != eg.GROUPING_NONE:
                 with session.lock:
@@ -1020,9 +1020,13 @@ class DatasetsDialog(Dialog):
         session = self.s
 
         def work():
-            dsc.read_facts(path)
-            self.loading_facts = False
-            session.push({"dirty": ["dialogs", "home"]})
+            try:
+                dsc.read_facts(path)
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+            finally:
+                self.loading_facts = False
+                session.push({"dirty": ["dialogs", "home"]})
 
         threading.Thread(target=work, daemon=True).start()
         self.refresh()

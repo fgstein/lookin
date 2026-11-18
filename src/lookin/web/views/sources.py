@@ -868,7 +868,7 @@ class SourcesView(GroupActions, View):
         self.ds_loading = True
         self.ds_status = ("Reading the file...", "busy")
         self.ds_progress = None
-        self.s.busy.begin("Loading dataset")
+        busy = self.s.busy.begin("Loading dataset")
         loaded = False
 
         def progress_cb(done: int, total: int):
@@ -880,7 +880,7 @@ class SourcesView(GroupActions, View):
                 self.ds_status = (f"Preparing {total:,} rows...", "busy")
             else:
                 self.ds_status = (f"Loading... {done:,} / {total:,} rows", "busy")
-            self.s.busy.detail_text(f"{done:,} / {total:,} rows")
+            self.s.busy.detail(busy, f"{done:,} / {total:,} rows")
             self._push()
 
         try:
@@ -916,7 +916,7 @@ class SourcesView(GroupActions, View):
             traceback.print_exc()
             self.ds_status = (f"Error: {ex}", "error")
         finally:
-            self.s.busy.end()
+            self.s.busy.end(busy)
             self.ds_loading = False
             self.ds_progress = None
             self._push(force=True)
@@ -1161,7 +1161,7 @@ class SourcesView(GroupActions, View):
         r.progress = None
         r.status = ("Reading the file...", "busy")
         self._push(force=True)
-        self.s.busy.begin(f"Loading experiment '{name}'")
+        busy = self.s.busy.begin(f"Loading experiment '{name}'")
 
         def progress_cb(done: int, total: int):
             r.progress = done / total if total else 0
@@ -1170,7 +1170,7 @@ class SourcesView(GroupActions, View):
                 r.status = (f"Matching {total:,} rows...", "busy")
             else:
                 r.status = (f"Loading... {done:,} / {total:,} rows", "busy")
-            self.s.busy.detail_text(f"{done:,} / {total:,} rows")
+            self.s.busy.detail(busy, f"{done:,} / {total:,} rows")
             self._push()
 
         try:
@@ -1178,7 +1178,7 @@ class SourcesView(GroupActions, View):
                 state.remove_experiment(r.loaded_name)
             exp = state.add_experiment(path, name, uuid_col=self.uuid_value or "uuid", progress_cb=progress_cb)
             r.status = ("Finalizing...", "busy")
-            self.s.busy.detail_text("finalizing")
+            self.s.busy.detail(busy, "finalizing")
             r.loaded_name = name
             r.name = name
             msg = f"Loaded ({len(exp.df):,} rows, {exp.n_classes()} classes)"
@@ -1195,7 +1195,7 @@ class SourcesView(GroupActions, View):
             r.status = (f"Error: {ex}", "error")
             ok = False
         finally:
-            self.s.busy.end()
+            self.s.busy.end(busy)
             r.loading = False
             r.progress = None
             self._push(force=True)
@@ -1226,13 +1226,10 @@ class SourcesView(GroupActions, View):
             setattr(r, attr, ("enter a path", "warning"))
             return False
         what = "embeddings" if kind == "embed" else "prototypes"
-        self.s.busy.begin(f"Loading {what} for '{name}'")
-        try:
+        with self.s.busy.task(f"Loading {what} for '{name}'"):
             loader = (self.s.prototype_source.load_embeddings_for if kind == "embed"
                       else self.s.prototype_source.load_prototypes_for)
             ok, msg = loader(name, path)
-        finally:
-            self.s.busy.end()
         setattr(r, attr, (msg if ok else f"error: {msg}", "neutral" if ok else "error"))
         if ok:
             self.s.notify_change()
@@ -1382,12 +1379,12 @@ class SourcesView(GroupActions, View):
             r.status = ("A crops CSV and an embeddings .npz are both required", "warning")
             return False
         r.progress = 0.0
-        self.s.busy.begin(f"Loading inference '{name}'")
+        busy = self.s.busy.begin(f"Loading inference '{name}'")
 
         def progress_cb(done: int, total: int):
             r.progress = done / total if total else 0
             r.status = (f"Loading... {done:,} / {total:,} rows", "busy")
-            self.s.busy.detail_text(f"{done:,} / {total:,} rows")
+            self.s.busy.detail(busy, f"{done:,} / {total:,} rows")
             self._push()
 
         try:
@@ -1412,7 +1409,7 @@ class SourcesView(GroupActions, View):
             r.status = (f"Error: {ex}", "error")
             ok = False
         finally:
-            self.s.busy.end()
+            self.s.busy.end(busy)
             r.loading = False
             r.progress = None
             self._push(force=True)
@@ -1516,11 +1513,8 @@ class SourcesView(GroupActions, View):
         # row in turn -- not rows appearing one by one as each is done.
         self._hold(mount.experiments, "Waiting for the dataset...")
         self._push(force=True)
-        self.s.busy.begin(f"Restoring {mount.label()}")
-        try:
+        with self.s.busy.task(f"Restoring {mount.label()}"):
             self._restore_loads(mount)
-        finally:
-            self.s.busy.end()
 
     def _restore_loads(self, mount) -> None:
         if mount.dataset_path:
@@ -1555,11 +1549,8 @@ class SourcesView(GroupActions, View):
         definitions, for the groups those experiments were added in."""
         if self.state.dataset is None or not experiments:
             return
-        self.s.busy.begin("Loading experiments")
-        try:
+        with self.s.busy.task("Loading experiments"):
             self._load_mount_experiments(experiments, groups)
-        finally:
-            self.s.busy.end()
         self.s.notify_change()
 
     def is_loading(self) -> bool:

@@ -58,12 +58,13 @@ import json
 import os
 import threading
 import re
+import time
 import secrets
 import shutil
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from lookin.core import fileio
 from lookin.core.prefs import config_dir
@@ -137,22 +138,66 @@ def workspace_dirname(name: str, workspace_id: str) -> str:
     return f"{slugify(name)}-{workspace_id}{WORKSPACE_SUFFIX}"
 
 
-def hash_file(path) -> str:
+def _megabytes(n: int) -> str:
+    return f"{n / 1e6:,.0f} MB" if n >= 10e6 else f"{n / 1e6:,.1f} MB"
+
+
+def _size_of(path) -> str:
+    try:
+        return _megabytes(os.path.getsize(path))
+    except OSError:
+        return "size unknown"
+
+
+# How often a progress callback hears from a long step, at most.
+PROGRESS_EVERY_S = 0.25
+
+# A step announced to `progress` (see Progress).
+Progress = Optional[Callable[[str], None]]
+
+
+def _step(progress: Progress, text: str) -> None:
+    if progress is not None:
+        progress(text)
+
+
+def hash_file(path, progress: Progress = None) -> str:
     """Content hash of a file, or "" if it cannot be read.
 
     Read in chunks: a dataset CSV is routinely hundreds of megabytes, and
     slurping it whole to hash it would cost more memory than loading the
-    frame it describes.
+    frame it describes. `progress(text)` hears how far it is ("Hashing the
+    dataset: 120 MB of 800 MB"), a few times a second -- on a slow or
+    network disk this is the step a save spends its time on, and the one
+    that looks like a hang without it. Its throughput goes to the log.
     """
+    started = time.monotonic()
+    try:
+        total = os.path.getsize(path)
+    except OSError:
+        total = 0
+    done, told = 0, 0.0
+    name = Path(path).name
+    _step(progress, f"Hashing {name}" + (f" ({_megabytes(total)})" if total else ""))
     try:
         digest = hashlib.sha256()
         with open(path, "rb") as handle:
             while chunk := handle.read(_HASH_CHUNK):
                 digest.update(chunk)
-        return digest.hexdigest()[:HASH_CHARS]
+                done += len(chunk)
+                now = time.monotonic()
+                if progress is not None and now - told >= PROGRESS_EVERY_S:
+                    told = now
+                    progress(f"Hashing {name}: {_megabytes(done)} of {_megabytes(total)}" if total
+                             else f"Hashing {name}: {_megabytes(done)}")
     except OSError as ex:
         _log(f"library: could not hash {path} ({ex})")
         return ""
+    elapsed = time.monotonic() - started
+    if progress is not None or elapsed >= 1.0:
+        rate = f", {done / 1e6 / elapsed:,.0f} MB/s" if elapsed > 0.05 else ""
+        _log(f"library: hashed {path} ({_megabytes(done)}) in {elapsed:.2f} s{rate}")
+    return digest.hexdigest()[:HASH_CHARS]
 
 
 # ---------------------------------------------------------------------------
@@ -466,12 +511,18 @@ def _atomic_write_json(payload: dict, path: Path) -> bool:
     disk mid-write leaves the previous file intact rather than a truncated
     one. Same directory matters: os.replace is only atomic within one
     filesystem."""
+    started = time.monotonic()
     try:
         fileio.atomic_write_text(path, json.dumps(payload, indent=2))
-        return True
     except OSError as ex:
         _log(f"library: could not write {path} ({ex})")
         return False
+    elapsed = time.monotonic() - started
+    if elapsed >= 1.0:
+        # A manifest is a few kilobytes: a second to write one is the disk
+        # (a network share, a full one), and worth saying in the log.
+        _log(f"library: writing {path} took {elapsed:.2f} s")
+    return True
 
 
 def _read_json(path: Path) -> Optional[dict]:
@@ -576,13 +627,14 @@ def snapshot_from_dict(raw: dict) -> Snapshot:
 def create_workspace(
     name: str, mount: Mount, description: str = "", tags: Optional[list] = None,
     provenance: Optional[dict] = None, root=None, hash_dataset: bool = True,
+    progress: Progress = None,
 ) -> Optional[Workspace]:
     """Write a new workspace directory and return it, or None if it could not
     be written.
 
     `hash_dataset` is honoured rather than assumed: hashing a 500k-row CSV
     takes a second or two, which is fine here (the user clicked "save") and
-    is not fine on every listing.
+    is not fine on every listing. `progress(text)` hears each step.
     """
     workspace_id = new_id(WORKSPACE_PREFIX)
     root_path = Path(root) if root is not None else library_root()
@@ -597,24 +649,26 @@ def create_workspace(
         updated_at=stamp,
         mount=mount,
         provenance=dict(provenance or {}),
-        dataset_hash=hash_file(mount.dataset_path) if hash_dataset and mount.dataset_path else "",
+        dataset_hash=hash_file(mount.dataset_path, progress) if hash_dataset and mount.dataset_path else "",
         path=path,
     )
+    _step(progress, f"Creating {path.name}")
     try:
         (path / SNAPSHOTS_DIRNAME).mkdir(parents=True, exist_ok=True)
     except OSError as ex:
         _log(f"library: could not create {path} ({ex})")
         return None
-    return workspace if save_workspace(workspace) else None
+    return workspace if save_workspace(workspace, progress) else None
 
 
-def save_workspace(workspace: Workspace) -> bool:
+def save_workspace(workspace: Workspace, progress: Progress = None) -> bool:
     """Rewrite a workspace's manifest. Used for metadata edits, which keep the
     id and the directory -- see the copy-on-write rule: only a change of
     *state* forks a new object, a rename never does."""
     if workspace.path is None:
         return False
     workspace.updated_at = _now()
+    _step(progress, f"Writing {MANIFEST_NAME}")
     return _atomic_write_json(workspace_to_dict(workspace), Path(workspace.path) / MANIFEST_NAME)
 
 
@@ -626,7 +680,7 @@ def save_workspace(workspace: Workspace) -> bool:
 _UPDATE_LOCK = threading.Lock()
 
 
-def update_workspace(path, change) -> Optional[Workspace]:
+def update_workspace(path, change, progress: Progress = None) -> Optional[Workspace]:
     """Apply `change(workspace) -> bool` to the manifest as it is *on disk
     now*, and save it if it returns True. Returns the fresh workspace (None
     when it is gone).
@@ -635,18 +689,24 @@ def update_workspace(path, change) -> Optional[Workspace]:
     save_workspace: the one in memory was read when a page was drawn, and
     another tab -- or another person on a shared library -- may have added
     an experiment since. Saving the old copy would silently remove it.
+
+    `progress(text)` hears each step -- waiting for the lock is one: another
+    tab saving, or a lock file left on a shared library by a crashed
+    server (given up on after fileio.LOCK_TIMEOUT_S).
     """
+    _step(progress, f"Waiting for the lock on {MANIFEST_NAME}")
     with _UPDATE_LOCK, fileio.locked(Path(path) / MANIFEST_NAME):
+        _step(progress, f"Reading {MANIFEST_NAME}")
         workspace = load_workspace(path)
         if workspace is None:
             return None
         if change(workspace):
-            if not save_workspace(workspace):
+            if not save_workspace(workspace, progress):
                 return None
         return workspace
 
 
-def update_workspace_mount(path, mount: Mount) -> Optional[Workspace]:
+def update_workspace_mount(path, mount: Mount, progress: Progress = None) -> Optional[Workspace]:
     """Make `mount` -- what is loaded right now -- the workspace's own,
     keeping its id, its directory and its snapshots. What "Save as
     workspace" followed by deleting the old one used to do, minus losing
@@ -657,7 +717,7 @@ def update_workspace_mount(path, mount: Mount) -> Optional[Workspace]:
     been loaded, so its absence says nothing about the user removing it,
     and it is kept. Returns the fresh workspace, None if it could not be
     written."""
-    digest = hash_file(mount.dataset_path) if mount.dataset_path else ""
+    digest = hash_file(mount.dataset_path, progress) if mount.dataset_path else ""
 
     def change(fresh: Workspace) -> bool:
         loaded = {e.name for e in mount.experiments}
@@ -667,7 +727,7 @@ def update_workspace_mount(path, mount: Mount) -> Optional[Workspace]:
         fresh.dataset_hash = digest
         return True
 
-    return update_workspace(path, change)
+    return update_workspace(path, change, progress)
 
 
 def load_workspace(path) -> Optional[Workspace]:
@@ -804,7 +864,7 @@ def delete_workspace(workspace: Workspace) -> bool:
 
 def create_snapshot(
     workspace: Workspace, view_state: dict, name: str = "", description: str = "",
-    tags: Optional[list] = None,
+    tags: Optional[list] = None, progress: Progress = None,
 ) -> Optional[Snapshot]:
     stamp = _now()
     snapshot = Snapshot(
@@ -818,7 +878,7 @@ def create_snapshot(
         view_state_version=VIEW_STATE_VERSION,
         workspace_id=workspace.id,
     )
-    return snapshot if save_snapshot(workspace, snapshot) else None
+    return snapshot if save_snapshot(workspace, snapshot, progress) else None
 
 
 def fork_snapshot(workspace: Workspace, snapshot: Snapshot, view_state: dict) -> Optional[Snapshot]:
@@ -834,13 +894,14 @@ def fork_snapshot(workspace: Workspace, snapshot: Snapshot, view_state: dict) ->
     )
 
 
-def save_snapshot(workspace: Workspace, snapshot: Snapshot) -> bool:
+def save_snapshot(workspace: Workspace, snapshot: Snapshot, progress: Progress = None) -> bool:
     """Write a snapshot in place. Metadata edits go through here and keep
     the id; a state change must go through fork_snapshot instead."""
     if workspace.path is None or not _is_plain_id(snapshot.id):
         return False
     snapshot.updated_at = _now()
     snapshot.workspace_id = snapshot.workspace_id or workspace.id
+    _step(progress, f"Writing {snapshot.id}.json")
     return _atomic_write_json(
         snapshot_to_dict(snapshot), workspace.snapshots_dir() / f"{snapshot.id}.json"
     )
@@ -1010,8 +1071,10 @@ def _unique_name(used: set, name: str) -> str:
     return candidate
 
 
-def export_workspace(workspace: Workspace, dest_path, include_embeddings: bool = False) -> tuple:
+def export_workspace(workspace: Workspace, dest_path, include_embeddings: bool = False,
+                     progress: Progress = None) -> tuple:
     """Write a self-contained .zip of `workspace`. Returns (ok, message).
+    `progress(text)` hears each file as it is compressed.
 
     Every path in the exported manifest is rewritten to "data/<name>", so
     the machine that imports it resolves them against the workspace it
@@ -1078,8 +1141,10 @@ def export_workspace(workspace: Workspace, dest_path, include_embeddings: bool =
     def write(tmp: Path) -> None:
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.writestr(MANIFEST_NAME, json.dumps(payload, indent=2))
-            for arcname, source in staged.items():
+            for number, (arcname, source) in enumerate(staged.items(), 1):
+                _step(progress, f"Compressing {source.name} ({number} of {len(staged)}, {_size_of(source)})")
                 archive.write(source, DATA_PREFIX + arcname)
+            _step(progress, "Adding the snapshots and notes")
             for snapshot in list_snapshots(workspace):
                 archive.writestr(
                     f"{SNAPSHOTS_DIRNAME}/{snapshot.id}.json",
@@ -1090,6 +1155,7 @@ def export_workspace(workspace: Workspace, dest_path, include_embeddings: bool =
             if notes is not None and notes.is_file():
                 archive.write(notes, NOTES_NAME)
 
+    started = time.monotonic()
     try:
         # Through fileio so that a full disk halfway through a gigabyte of
         # CSVs does not leave the partial zip behind in the user's folder.
@@ -1097,6 +1163,7 @@ def export_workspace(workspace: Workspace, dest_path, include_embeddings: bool =
     except (OSError, ValueError) as ex:
         _log(f"library: could not export to {dest} ({ex})")
         return False, f"Could not write {dest.name}: {ex}"
+    _log(f"library: exported {workspace.id} to {dest} ({_size_of(dest)}) in {time.monotonic() - started:.2f} s")
 
     note = f"Exported {len(staged)} file(s) to {dest.name}."
     if missing:
@@ -1125,8 +1192,9 @@ def _safe_members(archive, workspace_dir: Path) -> list:
     return safe
 
 
-def import_workspace(zip_path, root=None) -> tuple:
+def import_workspace(zip_path, root=None, progress: Progress = None) -> tuple:
     """Extract an exported workspace into the library. Returns (workspace, notes).
+    `progress(text)` hears each file as it is extracted.
 
     The manifest's "data/..." paths are turned back into absolute ones
     pointing at what was just extracted. The image root is deliberately not
@@ -1153,7 +1221,10 @@ def import_workspace(zip_path, root=None) -> tuple:
             name = str(raw.get("name", "")) or source.stem
             workspace_dir = root_path / workspace_dirname(name, workspace_id)
             workspace_dir.mkdir(parents=True, exist_ok=True)
-            for member in _safe_members(archive, workspace_dir):
+            members = _safe_members(archive, workspace_dir)
+            for number, member in enumerate(members, 1):
+                size = archive.getinfo(member).file_size
+                _step(progress, f"Extracting {Path(member).name} ({number} of {len(members)}, {_megabytes(size)})")
                 archive.extract(member, workspace_dir)
     except (OSError, zipfile.BadZipFile) as ex:
         return None, [f"Could not read {source.name}: {ex}"]
@@ -1182,7 +1253,8 @@ def import_workspace(zip_path, root=None) -> tuple:
     if not workspace.mount.dataset_path:
         notes.append("This workspace has no dataset CSV -- it cannot be opened.")
     (workspace_dir / SNAPSHOTS_DIRNAME).mkdir(exist_ok=True)
-    save_workspace(workspace)
+    save_workspace(workspace, progress)
+    _log(f"library: imported {source} as {workspace.id}")
     notes.append(f"Imported as {workspace.label()} ({workspace.id}).")
     return workspace, notes
 

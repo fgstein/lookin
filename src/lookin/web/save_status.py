@@ -121,17 +121,32 @@ def compute(session) -> SaveStatus:
     return status
 
 
-def mark_baseline(session) -> None:
+def mark_baseline(session, captured=None) -> None:
     """Remember the state as "nothing to lose from here".
 
     Called after a save and after a load. Cheap, and the alternative -- a
     dirty flag every view has to remember to set -- is a flag that will be
     missed somewhere and will then claim work is safe when it is not.
+
+    `captured`: the state as it was when a save that ran in the background
+    was clicked -- what it saved. Capturing it once the write is done would
+    call saved whatever was changed while the disk was busy.
     """
+    if captured is not None:
+        session.view_state_baseline = captured
+        return
     try:
         session.view_state_baseline = session.view_state.capture()
     except Exception:  # noqa: BLE001
         session.view_state_baseline = None
+
+
+def capture(session):
+    """The view state now, or None (see mark_baseline's `captured`)."""
+    try:
+        return session.view_state.capture()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # Longer than this and the top bar starts pushing the tabs around.

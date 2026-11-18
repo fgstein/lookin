@@ -26,6 +26,7 @@ import threading
 import time
 import traceback
 from collections import OrderedDict, deque
+from contextlib import contextmanager
 from typing import Callable, Optional
 
 from lookin.core.data_manager import AppState
@@ -56,7 +57,13 @@ def _log(msg: str) -> None:
 class Busy:
     """"Is anything still running?", answered in the top bar of every view
     of the session: a tab's progress line is invisible from every other
-    tab, and this is what is not."""
+    tab, and this is what is not.
+
+    Every entry is ended by the entry begin() returned, never by "the latest
+    one": jobs on other threads begin and end in any order (a dataset load
+    starts the rebuild of the tab on screen, which begins after it and ends
+    before it), and ending "the latest" removed the wrong one -- the top bar
+    then kept saying "Loading dataset" long after the load was over."""
 
     def __init__(self, session: "Session"):
         self.session = session
@@ -64,35 +71,45 @@ class Busy:
         self._lock = threading.Lock()
 
     def begin(self, what: str) -> list:
-        """Returns the entry, for end(): jobs on other threads end in any order."""
+        """Returns the entry, for detail() and end()."""
         entry = [what, ""]
         with self._lock:
             self._jobs.append(entry)
         self.session.mark("chrome")
         return entry
 
-    def detail_text(self, detail: str) -> None:
+    def detail(self, entry: list, text: str) -> None:
+        """What `entry` is doing now, shown beside its name."""
         with self._lock:
-            if self._jobs:
-                self._jobs[-1][1] = detail
+            if any(e is entry for e in self._jobs):
+                entry[1] = text
         self.session.mark("chrome")
 
-    def end(self, entry: Optional[list] = None) -> None:
-        """Remove `entry` (what begin() returned), or the latest one. A job
-        that ended while another had begun after it used to remove that
-        other one, and the top bar went on naming the job that was over."""
+    def end(self, entry: list) -> None:
         with self._lock:
-            if entry is not None:
-                if any(e is entry for e in self._jobs):
-                    self._jobs = [e for e in self._jobs if e is not entry]
-            elif self._jobs:
-                self._jobs.pop()
+            self._jobs = [e for e in self._jobs if e is not entry]
         self.session.mark("chrome")
+
+    @contextmanager
+    def task(self, what: str):
+        """`with session.busy.task("Saving") as entry:` -- ended however the
+        block is left."""
+        entry = self.begin(what)
+        try:
+            yield entry
+        finally:
+            self.end(entry)
 
     @property
     def running(self) -> list:
         with self._lock:
             return [what for what, _ in self._jobs]
+
+    @property
+    def entries(self) -> list:
+        """(name, detail) of everything running, oldest first."""
+        with self._lock:
+            return [(what, detail) for what, detail in self._jobs]
 
 
 class Cancelled(BaseException):
@@ -239,6 +256,8 @@ class Session:
         self._pending_cmds: list = []
         self._dialogs_dirty = False
         self._jobs: dict = {}
+        self._background: set = set()        # names of the background() tasks running
+        self._background_lock = threading.Lock()
         self._listeners: list = []
         self._closers: list = []
 
@@ -273,6 +292,63 @@ class Session:
         if j is None:
             j = self._jobs[name] = Job(self, name)
         return j
+
+    def background(self, what: str, work: Callable[[Callable[[str], None]], None],
+                   on_error: Optional[Callable[[Exception], None]] = None) -> bool:
+        """Run `work(step)` on a thread of its own, named `what` in the top
+        bar, and return at once -- for what touches the disk (a save), so
+        the page keeps answering while it runs and says where it is.
+        `step(text)` shows what it is doing now beside the name and writes
+        it to the server's log with how long the previous step took, so a
+        save that hangs says on which step (hashing the dataset, waiting
+        for a lock, writing). False, and nothing run, while a task of the
+        same name is still running: a second click on Save waits for the
+        first rather than racing it."""
+        with self._background_lock:
+            if what in self._background:
+                return False
+            self._background.add(what)
+
+        def run():
+            started = time.monotonic()
+            last = {"text": "", "at": started}
+
+            def step(text: str) -> None:
+                now = time.monotonic()
+                if last["text"]:
+                    _log(f"{what}: {last['text']} -- {now - last['at']:.2f} s")
+                last.update(text=text, at=now)
+                self.busy.detail(entry, text)
+
+            _log(f"{what}: started")
+            entry = self.busy.begin(what)
+            try:
+                work(step)
+                step("")
+                _log(f"{what}: done in {time.monotonic() - started:.2f} s")
+            except Exception as ex:  # noqa: BLE001
+                _log(f"{what}: failed after {time.monotonic() - started:.2f} s"
+                     + (f", while {last['text']}" if last["text"] else "") + f": {ex}")
+                traceback.print_exc()
+                if on_error is not None:
+                    try:
+                        on_error(ex)
+                    except Exception:  # noqa: BLE001
+                        traceback.print_exc()
+                else:
+                    self.toast(f"{what} failed: {ex}", "error")
+            finally:
+                self.busy.end(entry)
+                with self._background_lock:
+                    self._background.discard(what)
+                self.mark("chrome")
+
+        threading.Thread(target=run, daemon=True, name=f"lookin-{what[:20]}").start()
+        return True
+
+    def background_running(self, what: str) -> bool:
+        with self._background_lock:
+            return what in self._background
 
     def on_close(self, fn: Callable[[], None]) -> None:
         self._closers.append(fn)

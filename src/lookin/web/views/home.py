@@ -740,7 +740,7 @@ class HomeView(View):
             return
         hub.downloading[ws.id] = "Starting the download..."
         hub.changed()
-        self.s.busy.begin(f"Downloading {ws.label()}")
+        busy = self.s.busy.begin(f"Downloading {ws.label()}")
         last = {"at": 0.0}
         session = self.s
 
@@ -762,7 +762,7 @@ class HomeView(View):
                 fetched, errors = 0, [str(ex)]
             finally:
                 hub.downloading.pop(ws.id, None)
-                session.busy.end()
+                session.busy.end(busy)
             self.reload()
             hub.changed()
             if errors:

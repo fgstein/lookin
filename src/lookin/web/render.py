@@ -390,10 +390,25 @@ def _export_stem(session) -> str:
     return f'<span id="export-stem" data-stem="{h.e(session_stem(session))}" hidden></span>'
 
 
+def busy_indicator(session) -> str:
+    """The top bar's "still running" line: the latest task, what it is
+    doing now, and how many others run beside it (all listed on hover)."""
+    entries = session.busy.entries
+    if not entries:
+        return ""
+
+    def text(what, detail):
+        return f"{what} -- {detail}" if detail else what
+
+    what, detail = entries[-1]
+    more = f" (+{len(entries) - 1})" if len(entries) > 1 else ""
+    tip = "\n".join(text(w, d) for w, d in entries)
+    return (f'<span class="busy" title="{h.e(tip)}"><span class="spinner"></span>'
+            f'<span class="busy-t">{h.e(text(what, detail))}{more}</span></span>')
+
+
 def _render_top(session) -> str:
-    busy = session.busy.running
-    busy_html = (f'<span class="busy" title="{h.e(", ".join(busy))}"><span class="spinner"></span>'
-                 f'{h.e(busy[-1])}{f" (+{len(busy) - 1})" if len(busy) > 1 else ""}</span>') if busy else ""
+    busy_html = busy_indicator(session)
     if session.mode == "home":
         return (f'{_brand()}<div class="top-search">{session.view("home").search_box()}</div>'
                 f'<div class="top-r">{busy_html}{theme_button()}'
@@ -466,6 +481,7 @@ def filter_chip(session) -> str:
 
 def save_chips(session) -> str:
     from lookin.web import save_status
+    from lookin.web.views.workspaces import SAVING_WORKSPACE
 
     st = save_status.compute(session)
 
@@ -484,7 +500,11 @@ def save_chips(session) -> str:
     # while there is something to save. Snapshots stay a deliberate act in
     # the Workspaces window -- each is an id a report may quote.
     save = ""
-    if st.has_data and not st.workspace_saved:
+    running = getattr(session, "background_running", None)
+    if running is not None and running(SAVING_WORKSPACE):
+        save = h.button("Saving...", kind="primary", small=True, icon_name="save", disabled=True,
+                        title="Writing the workspace -- the step it is on is shown beside the spinner.")
+    elif st.has_data and not st.workspace_saved:
         if st.workspace_name:
             save = h.button("Save", act_attr=h.act("app", "save_workspace"), kind="primary", small=True, icon_name="save",
                             title=f"Write the dataset and experiments loaded now into '{st.workspace_name}'. "
@@ -566,10 +586,12 @@ class AppActions(Handler):
 
     def on_save_workspace(self, **_):
         """The app bar's Save: write what is loaded into the workspace open
-        in this tab -- or, with none open, make it one."""
-        from lookin.core import library as lib
+        in this tab -- or, with none open, make it one. Written in the
+        background (Session.background), each step named in the top bar:
+        hashing a large dataset on a slow disk takes a while, and a page
+        frozen on the click could not say whether it is still working."""
         from lookin.web import save_status
-        from lookin.web.views.workspaces import WorkspacesDialog
+        from lookin.web.views.workspaces import WorkspacesDialog, update_workspace_in_background
 
         workspace = self.s.current_workspace
         mount = self.s.upload_view.current_mount()
@@ -578,14 +600,7 @@ class AppActions(Handler):
         if workspace is None or not workspace.exists():
             self.s.open_dialog(WorkspacesDialog(self.s, focus_save=True))
             return
-        fresh = lib.update_workspace_mount(workspace.path, mount)
-        if fresh is None:
-            self.s.toast("Could not write the workspace.", "error")
-            return
-        self.s.current_workspace = fresh
-        save_status.mark_baseline(self.s)
-        self.s.toast(f"Updated workspace {fresh.label()} ({fresh.id}).", "ok")
-        self.s.mark("chrome")
+        update_workspace_in_background(self.s, workspace, mount, save_status.capture(self.s))
 
     def on_save_snapshot(self, **_):
         from lookin.web.views.workspaces import WorkspacesDialog
